@@ -1,0 +1,37 @@
+menu "Fall of Duty Lite"
+
+config FOD_BOARD_DIAGNOSTIC
+    bool "Run the numbered framebuffer diagnostic instead of the game"
+    default n
+
+config FOD_DIAGNOSTIC_SCANOUT_ONLY
+    bool "Disable PPA in the framebuffer diagnostic"
+    depends on FOD_BOARD_DIAGNOSTIC
+    default n
+
+config FOD_CLASSIC_VISUALS
+    bool "Use the original low-cost texture and sky renderer"
+    depends on !FOD_BOARD_DIAGNOSTIC
+    default n
+
+config FOD_REPLAY_SCENE
+    string "SD replay scene (empty for live duel, long-lane or apache)"
+    depends on !FOD_BOARD_DIAGNOSTIC
+    default ""
+
+config FOD_REPLAY_JOURNAL
+    bool "Write game replay journal instead of running performance capture"
+    depends on !FOD_BOARD_DIAGNOSTIC
+    default n
+
+config FOD_REPLAY_COMPACT
+    bool "Use 320x180 for the SD replay"
+    depends on !FOD_BOARD_DIAGNOSTIC
+    default n
+
+config FOD_LATENCY_GPIO
+    int "Optional report-receipt GPIO (-1 disables)"
+    range -1 54
+    default -1
+
+endmenu

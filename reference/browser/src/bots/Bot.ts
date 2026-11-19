@@ -1,0 +1,1299 @@
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import type { Scene, Mesh, TransformNode } from "@babylonjs/core";
+import { PlayerController } from "../player/PlayerController";
+import { BotRouteMemory, selectBestNode, selectSearchNode, selectPatrolNode } from "./BotNavigation";
+import { observePlayer, samplePlayerBody, SIGHT_SAMPLES } from "./BotPerception";
+import { angleDelta, nextFireTimer, rayVsPlayerBody, selectWeapon } from "./BotCombat";
+import type { Combatant } from "./BotCombat";
+import { RIVALS } from "../ui/MatchNames";
+import type { Rival } from "../ui/MatchNames";
+import { BotNav } from "./BotNav";
+import { BOT_WEAPONS, rangeCurve, rand, DEG } from "./BotConfig";
+import type { BotDifficulty, BotWeaponProfile } from "./BotConfig";
+import { buildSoldier, botMaterials } from "./SoldierBody";
+import type { SoldierRig } from "./SoldierBody";
+import { DeathPerformance } from "../anim/DeathPerformance";
+import type { Effects } from "../rendering/Effects";
+import { MatchEvents } from "../ui/MatchEvents";
+
+// One enemy soldier: a procedural body the player's hitscan can hit, a
+// perception model feeding a blackboard, a behavior tree choosing what to do,
+// utility scoring choosing where and with what, and a virtual controller
+// that moves through PlayerController.moveAndCollide — the bot plays by the
+// player's movement rules and shoots through the same occlusion world.
+//
+// Behavior tree (priority selector, ticked at ~8Hz):
+//   Dead
+//   SelfPreserve   retreat when shot up; break sight to reload; quickswap
+//   Combat         choose weapon (utility) -> attack position (utility)
+//                  -> smoothed aim with re-rolled error -> burst fire
+//   Search         move to last-known position, sweep, give up
+//   Patrol         wander the yard, gun lowered
+//
+// The aim is deliberately human: a reaction delay on contact, an angular
+// error re-rolled each burst that settles while tracking, per-shot spread
+// that worsens on the move, and recoil that walks long bursts off target.
+
+export interface BotContext {
+  dt: number;
+  now: number;
+  target: Combatant; // who this bot is fighting: the player, or (free-for-all) the other rival's soldier
+  human: PlayerController; // the player at the keyboard: hit and whiz sounds, death credit, sound distance
+  effects: Effects;
+  playerFired: boolean; // the target fired this frame (hearing)
+}
+
+type BotMode = "dead" | "reload" | "retreat" | "combat" | "search" | "hunt" | "patrol";
+
+const EYE_HEIGHT = 1.62;
+const BODY_HEIGHT = 1.85;
+const BODY_RADIUS = 0.4;
+const THINK_INTERVAL = 0.12;
+const MAX_SHOT_RANGE = 60;
+// The height the combat model fires from: hasLineOfFire rays, the aim-sample
+// re-pick, and the pitch solution all assume the muzzle sits on this line.
+// The rig must agree — SHOULDER_RAISE lifts the gunArm while engaged so the
+// real muzzle (rig muzzle node, chest-mount height when level) comes up to
+// it; otherwise rounds spawn ~0.4m below the model and eat the cover lip
+// the model said was clear.
+const MUZZLE_HEIGHT = EYE_HEIGHT * 0.88;
+const SHOULDER_RAISE = 0.27;
+
+export class Bot {
+  public position = new Vector3();
+  public yaw!: number;
+  public health!: number;
+  public dead!: boolean;
+  public radarTimer = 0; // minimap blip lingers ~2s after firing
+  public killCounted!: boolean; // BotManager scoreboard bookkeeping
+  public lastHitZone!: number; // zoneMult of the most recent hit — headshot kill detection
+  public lastDamageCause!: "player" | "airstrike" | "apache" | "rival"; // kill feed attribution
+  public lastAttacker: Bot | null = null; // the rival soldier behind a "rival" hit
+  public lastHurtAt = -Infinity;
+  public lastShotAt = -Infinity; // free-for-all hearing: the other soldier heard this shot
+  public kills = 0; // free-for-all scoreboard: the player and the other rival, this match
+  public rival: Rival = RIVALS[0];
+  public respawnTimer = 0;
+  public sepX!: number;
+  public sepZ!: number;
+
+  // Blackboard — the bot's working memory: perception writes, the tree reads
+  public bb = {
+    canSeePlayer: false,
+    lastKnownValid: false,
+    distanceToPlayer: Infinity,
+    hasLineOfFire: false,
+    threatLevel: 0,
+    timeSinceSeen: Infinity,
+    detection: 0, // 0..1 sight meter — distance, stance and sprint feed it
+    mode: "patrol" as BotMode,
+  };
+  private lastKnown = new Vector3();
+  private lastKnownVel = new Vector3(); // player velocity at last contact — search leads the run
+  private seenAt!: number;
+  private intelAt!: number; // most recent intel of ANY kind (sight, sound, pain)
+  private freshIntel!: boolean; // new intel since the last think — restart the hunt now
+  private pendingAlert!: boolean; // set by takeDamage; resolved next perceive
+  private hurtFlash!: number;
+
+  // Virtual weapons (bots carry the data, not the player's Weapon machinery)
+  private weapons: Array<{ profile: BotWeaponProfile; clip: number }>;
+  private weaponIndex!: number;
+  private reloadTimer!: number;
+  private switchTimer!: number;
+  private weaponEvalAt!: number;
+
+  // Aim model
+  private aimYaw!: number;
+  private aimPitch!: number;
+  private desiredYaw = 0;
+  private desiredPitch = 0;
+  private errYaw = 0; // re-rolled per burst, decays at aimSettleSpeed
+  private errPitch = 0;
+  private reactionTimer = 0;
+  private burstLeft!: number;
+  private burstTimer = 0;
+  private fireTimer = 0;
+  private sight = { visible: false, exposure: 0, aimSample: 1 };
+  private aimSample = 1; // SIGHT_SAMPLES index combat shoots at — best-ranked visible point
+
+  // Movement / navigation
+  public readonly velocity = new Vector3();
+  private path: number[] = [];
+  private pathIndex!: number;
+  private destNode!: number;
+  private reachedDest!: boolean;
+  private previousDestNode!: number; // recent target memory; discourages instant backtracking
+  private routeMemory = new BotRouteMemory();
+  private wantSprint = false;
+  private moveSpeed = 0; // actual horizontal speed, for animation + shot spread
+  private holdUntil = 0; // combat: route freshness deadline, or the end of a held firing position
+  private holding!: boolean; // combat: parked on a firing position with a sight line
+  private retreatUntil!: number;
+  private patrolNextAt!: number;
+  private lastPatrolNode = -1; // don't immediately re-walk the leg just finished
+  private searchStopsLeft!: number; // expanding search: nearby pockets to sweep before giving up
+  private flankRoll = false;
+  private evalPlayerX = 0; // player position at the last attack-node pick
+  private evalPlayerZ = 0;
+  private stuckTimer = 0;
+  private reverseTimer!: number;
+  private lastMoveDirX!: number;
+  private lastMoveDirZ!: number;
+  private suspicion = new Vector3(); // noisy no-contact guess of where the player probably is
+  private suspicionVel = new Vector3();
+  private suspicionValid!: boolean;
+  private suspicionAt!: number;
+  private nextSuspicionAt!: number;
+  private thinkAccum: number;
+  private lastNow = 0; // stamped each update; lets reset() schedule relative to game time
+  private listener = new Vector3(); // the player's position at the last update: sound volume
+  private idleYawBase!: number; // facing when the feet stopped — idle scan pivots here
+  private idleStopAt!: number;
+  private wasMoving!: boolean;
+
+  // Body (shared SoldierBody rig + the theatrical death that drives it)
+  private rig: SoldierRig;
+  private root: TransformNode;
+  private torsoGroup: TransformNode; // bobs with footfalls, leans at a sprint
+  private gunArm: TransformNode;
+  private muzzle: TransformNode;
+  private hipL: TransformNode;
+  private hipR: TransformNode;
+  private kneeL: TransformNode;
+  private kneeR: TransformNode;
+  private blobShadow: Mesh;
+  private hitParts: Mesh[] = [];
+  private death: DeathPerformance;
+  private fx: Effects | null = null; // stashed each update for the death cue sounds
+  private walkPhase = 0;
+  private walkAmp = 0;
+  private gunPitch = 0.5;
+  private shoulderBlend!: number; // 0 = patrol carry, 1 = stock at the shoulder
+
+  public isTerminator = false;
+
+  private difficulty: BotDifficulty;
+
+  // Shared scratch (single-threaded update — no per-frame allocations)
+  private static readonly TMP_A = new Vector3();
+  private static readonly TMP_B = new Vector3();
+  private static readonly TMP_DIR = new Vector3();
+  private static readonly TMP_POINT = new Vector3();
+  private static readonly TMP_NORMAL = new Vector3();
+  private tmpPrev = new Vector3();
+  private tmpNext = new Vector3();
+
+  constructor(scene: Scene, difficulty: BotDifficulty, primary: BotWeaponProfile, x: number, z: number, index: number) {
+    this.difficulty = difficulty;
+    this.weapons = [
+      { profile: primary, clip: primary.magSize },
+      { profile: BOT_WEAPONS.usp45, clip: BOT_WEAPONS.usp45.magSize },
+    ];
+    this.thinkAccum = index * 0.04; // stagger the fleet's decision ticks
+
+    // One shared anatomy (SoldierBody) in the OPFOR uniform. Every body part
+    // gets { type:"bot", instance, zoneMult } metadata so the player's shared
+    // hitscan resolves zone damage with zero extra code, and the rig's pivots
+    // hand straight to the theatrical DeathPerformance when this one falls.
+    const rig = buildSoldier(scene, `bot${index}`, {
+      mats: botMaterials(scene),
+      headgear: "wrap",
+      scarf: true,
+      sniper: primary.id === "m40a3",
+    });
+    this.rig = rig;
+    this.root = rig.root;
+    this.root.position = this.position; // root shares the vector — one write
+    this.torsoGroup = rig.torso;
+    this.gunArm = rig.gunArm;
+    this.muzzle = rig.muzzle;
+    this.hipL = rig.hipL;
+    this.hipR = rig.hipR;
+    this.kneeL = rig.kneeL;
+    this.kneeR = rig.kneeR;
+    this.blobShadow = rig.blobShadow;
+    for (const part of rig.parts) {
+      part.mesh.metadata = { type: "bot", instance: this, zoneMult: part.zone };
+      this.hitParts.push(part.mesh);
+    }
+    this.death = new DeathPerformance(rig);
+    this.initTransientState(x, z, 0);
+  }
+
+  // ---------------------------------------------------------- terminator skin
+
+  // Difficulty 9+: the body turns liquid-metal chrome with red running
+  // lights (the rifle stays gunmetal). The controller owns the swap, so a
+  // body that lands after the slider moved still gets the right skin.
+  public setTerminator(on: boolean): void {
+    if (this.isTerminator === on) return;
+    this.isTerminator = on;
+    this.rig.body.setTerminator(on);
+  }
+
+  // ------------------------------------------------------------------ damage
+
+  // Returns true when this hit was the kill (drives the red hitmarker).
+  // cause: who gets the kill-feed credit — the player's gun, or a streak.
+  public takeDamage(
+    amount: number,
+    cause: "player" | "airstrike" | "apache" | "rival" = "player",
+    attacker: Bot | null = null
+  ): boolean {
+    if (this.dead) return false;
+    this.health -= amount;
+    this.hurtFlash = Math.min(1, this.hurtFlash + 0.6);
+    this.pendingAlert = true; // they now know roughly where that came from
+    this.lastDamageCause = cause;
+    this.lastAttacker = attacker;
+    this.lastHurtAt = this.lastNow;
+    if (cause !== "player") this.lastHitZone = 1; // streak kills are never "headshots"
+    if (this.health <= 0) {
+      this.die();
+      return true;
+    }
+    return false;
+  }
+
+  private die(): void {
+    this.dead = true;
+    this.health = 0;
+    this.bb.mode = "dead";
+    this.radarTimer = 0;
+    this.burstLeft = 0;
+    this.velocity.setAll(0);
+    this.blobShadow.setEnabled(false);
+    for (const p of this.hitParts) p.isPickable = false; // corpses don't soak rounds
+    // The stage death: clutch the heart, gasp, topple backwards, eyes shut.
+    // Cue sounds scale with how close the player is standing.
+    const vol = (): number => Math.min(1, 1.7 / (1 + Vector3.Distance(this.position, this.listener) * 0.12));
+    this.death.begin({
+      onGasp: () => this.fx?.playDeathGaspSound(vol()),
+      onImpact: () => this.fx?.playBodyFallSound(vol()),
+    });
+  }
+
+  private initTransientState(x: number, z: number, yaw: number): void {
+    this.position.set(x, 0, z);
+    this.velocity.setAll(0);
+    this.sepX = 0;
+    this.sepZ = 0;
+    this.yaw = yaw;
+    this.aimYaw = yaw;
+    this.aimPitch = 0;
+    // DeathPerformance.reset restores the gunArm rotation but not the
+    // shoulder raise — drop the stock back to the patrol carry ourselves
+    this.shoulderBlend = 0;
+    this.gunArm.position.y = 0;
+    this.health = 100 * this.difficulty.healthScale; // Terminator tiers soak more
+    this.dead = false;
+    this.killCounted = false;
+    this.lastHitZone = 1;
+    this.lastDamageCause = "player";
+    this.lastAttacker = null;
+    this.lastHurtAt = -Infinity;
+    this.root.rotation.set(0, yaw, 0);
+    this.blobShadow.setEnabled(true);
+    for (const p of this.hitParts) p.isPickable = true;
+    for (const w of this.weapons) w.clip = w.profile.magSize;
+    this.weaponIndex = 0;
+    this.reloadTimer = 0;
+    this.switchTimer = 0;
+    this.burstLeft = 0;
+    this.path.length = 0;
+    this.pathIndex = 0;
+    this.destNode = -1;
+    this.reachedDest = false;
+    this.previousDestNode = -1;
+    this.searchStopsLeft = 0;
+    this.retreatUntil = 0;
+    this.holding = false;
+    this.reverseTimer = 0;
+    this.lastMoveDirX = 0;
+    this.lastMoveDirZ = 0;
+    this.suspicion.setAll(0);
+    this.suspicionVel.setAll(0);
+    this.suspicionValid = false;
+    this.suspicionAt = -Infinity;
+    this.nextSuspicionAt = this.lastNow + rand(0.15, 0.4);
+    this.idleYawBase = yaw;
+    this.idleStopAt = this.lastNow;
+    this.wasMoving = false;
+    // Start hunting quickly after spawn; long spawn holds read as indecision.
+    this.patrolNextAt = this.lastNow + rand(0.1, 0.35);
+    this.weaponEvalAt = this.lastNow + 1;
+    const bb = this.bb;
+    bb.canSeePlayer = false;
+    bb.lastKnownValid = false;
+    bb.detection = 0;
+    bb.threatLevel = 0;
+    bb.timeSinceSeen = Infinity;
+    bb.mode = "patrol";
+    this.seenAt = -Infinity;
+    this.intelAt = -Infinity;
+    this.freshIntel = false;
+    this.lastKnownVel.setAll(0);
+    this.pendingAlert = false;
+    this.hurtFlash = 0;
+  }
+
+  public reset(x: number, z: number, yaw: number): void {
+    this.death.reset(); // stand the body back up, take the rifle back, open the eyes
+    this.routeMemory.reset();
+    this.initTransientState(x, z, yaw);
+  }
+
+  // Free-for-all: switching who to fight. What the bot believed about the old
+  // target is dropped, so it has to find and settle on the new one. (A pending
+  // hit alert is kept: the switch is usually to whoever just fired.)
+  public retarget(): void {
+    const bb = this.bb;
+    bb.canSeePlayer = false;
+    bb.lastKnownValid = false;
+    bb.hasLineOfFire = false;
+    bb.detection = 0;
+    bb.threatLevel = 0;
+    bb.timeSinceSeen = Infinity;
+    this.seenAt = -Infinity;
+    this.intelAt = -Infinity;
+    this.freshIntel = false;
+    this.suspicionValid = false;
+    this.holding = false;
+    this.burstLeft = 0;
+    this.destNode = -1;
+    this.reachedDest = false;
+    this.path.length = 0;
+    this.pathIndex = 0;
+  }
+
+  public get weaponId(): "mp44" | "usp45" | "m40a3" {
+    return this.weapons[this.weaponIndex].profile.id;
+  }
+
+  // Benched soldiers (the second rival in a duel) are hidden and never updated
+  public setActive(active: boolean): void {
+    this.root.setEnabled(active);
+  }
+
+  private recordIntel(
+    x: number,
+    y: number,
+    z: number,
+    vx: number,
+    vz: number,
+    at: number,
+    fresh: boolean,
+    minDetection?: number
+  ): void {
+    this.lastKnown.set(x, y, z);
+    this.lastKnownVel.set(vx, 0, vz);
+    this.bb.lastKnownValid = true;
+    this.suspicion.copyFrom(this.lastKnown);
+    this.suspicionVel.copyFrom(this.lastKnownVel);
+    this.suspicionValid = true;
+    this.suspicionAt = at;
+    this.intelAt = at;
+    this.nextSuspicionAt = this.lastNow + rand(2.5, 4);
+    if (fresh) this.freshIntel = true;
+    if (minDetection !== undefined) this.bb.detection = Math.max(this.bb.detection, minDetection);
+  }
+
+  // A respawn is not a blank slate: this soldier just died to someone, and a
+  // person walks back in knowing roughly which part of the yard the threat
+  // owns. Seed the blackboard with a deliberately blurred fix (errMeters of
+  // slop) so the bot opens with a purposeful hunt toward the action instead
+  // of a coin-flip patrol leg — and backdate the intel so the hunt is warm
+  // but only sometimes sprint-out-of-the-gate hot. The blur keeps it honest:
+  // they know the neighborhood, never the address.
+  public spawnIntuition(player: Combatant, errMeters: number): void {
+    this.recordIntel(
+      player.position.x + rand(-errMeters, errMeters),
+      player.position.y,
+      player.position.z + rand(-errMeters, errMeters),
+      0,
+      0,
+      this.lastNow - rand(1.5, 7),
+      true,
+      0.45 // wary, not locked on
+    );
+  }
+
+  // ------------------------------------------------------------------ update
+
+  public update(ctx: BotContext): void {
+    const dt = ctx.dt;
+    this.lastNow = ctx.now;
+    this.listener.copyFrom(ctx.human.position);
+    this.fx = ctx.effects;
+    this.radarTimer = Math.max(0, this.radarTimer - dt);
+
+    if (this.dead) {
+      // the death performance plays out, then the body lies there until
+      // the manager respawns us
+      this.death.update(dt);
+      return;
+    }
+
+    // Weapon timers (reload completes a full mag — bots carry bottomless reserves)
+    if (this.reloadTimer > 0) {
+      this.reloadTimer -= dt;
+      if (this.reloadTimer <= 0) {
+        const w = this.weapons[this.weaponIndex];
+        w.clip = w.profile.magSize;
+      }
+    }
+    if (this.switchTimer > 0) this.switchTimer -= dt;
+    this.fireTimer -= dt;
+    this.burstTimer -= dt;
+
+    this.perceive(ctx);
+
+    this.thinkAccum -= dt;
+    if (this.thinkAccum <= 0) {
+      this.thinkAccum = THINK_INTERVAL;
+      this.think(ctx);
+    }
+
+    this.updateCombat(ctx, dt);
+    this.motor(ctx, dt);
+    this.animate(dt);
+  }
+
+  // -------------------------------------------------------------- perception
+
+  private perceive(ctx: BotContext): void {
+    const bb = this.bb;
+    const d = this.difficulty;
+    const p = ctx.target;
+
+    // Taking a hit is perfect information about being in a fight, and decent
+    // information about where from — and holding still under fire is how
+    // bots die, so any held position is forfeited.
+    if (this.pendingAlert) {
+      this.pendingAlert = false;
+      if (!p.isDead) {
+        this.recordIntel(p.position.x, p.position.y, p.position.z, p.velocity.x, p.velocity.z, ctx.now, true, 1);
+        this.holdUntil = 0;
+      }
+    }
+
+    const dx = p.position.x - this.position.x;
+    const dz = p.position.z - this.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    bb.distanceToPlayer = dist;
+
+    // Sight: range + facing cone + occlusion, feeding a detection meter so
+    // distant or crouched targets take longer to register (perfect knowledge
+    // feels awful). The cone widens once the bot is already on edge.
+    // Occlusion samples the whole silhouette: exposure is the fraction of
+    // body points with a clear line, and skill (sightMinExposure) decides
+    // how much of a man it takes to count as contact.
+    this.sight.aimSample = this.aimSample;
+    observePlayer(this.position, this.yaw, p, d, bb.detection > 0.5 || bb.timeSinceSeen < 6, this.sight);
+    const { visible, exposure } = this.sight;
+    this.aimSample = this.sight.aimSample;
+
+    if (visible) {
+      let fillRate = 1.9 - 1.5 * (dist / d.visionRange);
+      if (p.isSprinting) fillRate *= 1.6;
+      else if (p.isProne) fillRate *= 0.35;
+      else if (p.isCrouching) fillRate *= 0.55;
+      // a sliver of a man registers slower than a full silhouette
+      fillRate *= 0.45 + 0.55 * exposure;
+      // mid-fight re-acquisition is near-instant — the slow burn is for
+      // first contact, not for someone peeking the same corner twice
+      if (bb.timeSinceSeen < 6) fillRate *= 4;
+      bb.detection = Math.min(1, bb.detection + fillRate * ctx.dt);
+    } else {
+      bb.detection = Math.max(0, bb.detection - 0.5 * ctx.dt);
+    }
+
+    const hadContact = bb.canSeePlayer;
+    bb.canSeePlayer = visible && bb.detection >= 1;
+    if (bb.canSeePlayer) {
+      if (!hadContact) {
+        // fresh contact: human reaction delay before the first trigger pull,
+        // and a deliberately bad opening aim that settles in. Re-contact in
+        // an ongoing fight reacts much faster — they were already waiting.
+        const recontact = bb.timeSinceSeen < 6 ? 0.35 : 1;
+        this.reactionTimer = (d.reactionTimeMs / 1000) * rand(0.8, 1.3) * recontact;
+        this.rerollError(recontact === 1 ? 1.5 : 0.8);
+      }
+      this.recordIntel(p.position.x, p.position.y, p.position.z, p.velocity.x, p.velocity.z, ctx.now, false);
+      this.seenAt = ctx.now;
+    }
+    bb.timeSinceSeen = ctx.now - this.seenAt;
+
+    // Hearing: gunshots carry across the whole yard — the map is small, and
+    // a shot fired ANYWHERE should start the hunt. Inside hearingRange the
+    // fix is precise; past it the bot only gets the neighborhood, with the
+    // positional error growing by distance (skill keeps its meaning: veteran
+    // ears pin you, recruit ears send them to the right corner).
+    if (ctx.playerFired && !p.isDead) {
+      const over = Math.max(0, dist - d.hearingRange);
+      const err = Math.min(5, over * 0.25);
+      // mid-search, fresh = true restarts the hunt at the new fix
+      this.recordIntel(
+        p.position.x + rand(-err, err),
+        p.position.y,
+        p.position.z + rand(-err, err),
+        p.velocity.x,
+        p.velocity.z,
+        ctx.now,
+        true,
+        over > 0 ? 0.55 : 0.75
+      );
+    }
+
+    this.hurtFlash *= Math.exp(-1.2 * ctx.dt);
+    bb.threatLevel = (bb.canSeePlayer ? 1 - dist / d.visionRange : 0) + this.hurtFlash;
+  }
+
+  // ----------------------------------------------------- behavior tree (8Hz)
+
+  private think(ctx: BotContext): void {
+    const bb = this.bb;
+    const d = this.difficulty;
+
+    this.considerWeapon(ctx);
+    this.refreshSuspicion(ctx);
+
+    // Priority selector — the first open branch claims the tick
+    const prevMode = bb.mode;
+    const retreatHP = 38 * (1 - d.aggression * 0.55); // aggressive bots fight hurt
+    let mode: BotMode;
+    if (this.weapons[this.weaponIndex].clip === 0 || (this.reloadTimer > 0 && (bb.canSeePlayer || prevMode === "reload"))) {
+      mode = "reload";
+    } else if ((this.health < retreatHP && bb.threatLevel > 0.4) || ctx.now < this.retreatUntil) mode = "retreat";
+    else if (bb.canSeePlayer || bb.timeSinceSeen < 6) mode = "combat";
+    else if (bb.lastKnownValid) mode = "search";
+    else if (!ctx.target.isDead) mode = "hunt";
+    else mode = "patrol";
+    bb.mode = mode;
+    const entered = mode !== prevMode;
+    if (entered) this.holding = false;
+
+    if (mode === "reload" || mode === "retreat") {
+      // SelfPreserve: break the sight line, hug cover, come back angry
+      if (mode === "retreat" && entered) {
+        this.retreatUntil = ctx.now + rand(3.5, 6.5);
+        this.destNode = -1;
+      } else if (mode === "reload" && entered && prevMode !== "retreat" && !this.reachedDest) {
+        // Ran dry mid-route: that destination was picked to see the player,
+        // so drop it and break the sight line now rather than reload on arrival.
+        // A bot already parked keeps its spot if it hides it (coveredHere below).
+        this.destNode = -1;
+      }
+      if (this.destNode < 0 || (this.reachedDest && !this.coveredHere(ctx))) {
+        this.goTo(this.pickHiddenNode(ctx));
+      }
+      this.wantSprint = true;
+    } else if (mode === "combat") {
+      const px = bb.canSeePlayer ? ctx.target.position.x : this.lastKnown.x;
+      const pz = bb.canSeePlayer ? ctx.target.position.z : this.lastKnown.z;
+      const refMovedX = px - this.evalPlayerX;
+      const refMovedZ = pz - this.evalPlayerZ;
+      const targetMoved = refMovedX * refMovedX + refMovedZ * refMovedZ > 3.2 * 3.2;
+      // A firing position is worth keeping: sight line, the weapon in its
+      // range band, and the hold window still open. Trained bots settle in
+      // and shoot; they leave when the target relocates, the line is lost,
+      // the timer runs out, or they are being hit where they stand.
+      const profile = this.weapons[this.weaponIndex].profile;
+      const goodSpot = bb.canSeePlayer && bb.hasLineOfFire && rangeCurve(bb.distanceToPlayer, profile.range) >= 0.55;
+      if (this.reachedDest && goodSpot && !this.holding) {
+        this.holding = true;
+        this.holdUntil = ctx.now + rand(d.holdTime[0], d.holdTime[1]);
+      }
+      if (this.holding && (!goodSpot || ctx.now > this.holdUntil || targetMoved || this.hurtFlash > 0.7)) {
+        this.holding = false;
+        this.holdUntil = 0;
+      }
+      const stale =
+        !this.holding &&
+        (this.destNode < 0 ||
+          this.reachedDest ||
+          targetMoved ||
+          (ctx.now > this.holdUntil && this.pathIndex >= Math.max(0, this.path.length - 2)));
+      if (stale) {
+        this.flankRoll = Math.random() < d.flankChance;
+        this.evalPlayerX = px;
+        this.evalPlayerZ = pz;
+        const attack = this.pickAttackNode(ctx, px, pz);
+        this.goTo(attack >= 0 ? attack : this.pickSearchNode(ctx));
+        this.holdUntil = ctx.now + rand(1.0, 1.8);
+      }
+      // sprint only while out of contact — nobody shoots well at a dead run
+      this.wantSprint = !bb.canSeePlayer && d.aggression > 0.25;
+    } else if (mode === "search") {
+      // The hunt. Path to the last-known fix led by the player's escape
+      // direction (chase where they WENT, not where they WERE), and any
+      // fresh intel — a gunshot heard, a round taken — drops the current
+      // route and re-paths to the new fix immediately.
+      if (entered || this.freshIntel) {
+        this.searchStopsLeft = 5;
+        this.goTo(this.pickSearchNode(ctx));
+      } else if (this.destNode < 0 || this.reachedDest) {
+        if (this.reachedDest && this.searchStopsLeft > 0) this.searchStopsLeft--;
+        const coldTrail = ctx.now - this.intelAt > 24 && this.searchStopsLeft <= 0;
+        if (coldTrail) {
+          bb.lastKnownValid = false; // searched it out — back to patrol
+        } else {
+          const next = this.pickSearchNode(ctx);
+          if (next >= 0) this.goTo(next);
+          else bb.lastKnownValid = false;
+        }
+      }
+      if (ctx.now - this.intelAt > 32) bb.lastKnownValid = false; // cold trail
+      this.wantSprint = ctx.now - this.intelAt < 12 || d.aggression > 0.45; // chase hard
+    } else if (mode === "hunt") {
+      // No confirmed contact yet, but no soldier should pace in a vacuum.
+      // Keep a noisy hypothesis of the player's likely neighborhood and keep
+      // taking fresh lanes toward it until real sight/sound intel overrides it.
+      const staleRoute = this.destNode < 0 || this.reachedDest || ctx.now > this.holdUntil;
+      if (entered || staleRoute) {
+        if (entered || this.reachedDest) this.refreshSuspicion(ctx, true);
+        this.goTo(this.pickHuntNode(ctx));
+        this.holdUntil = ctx.now + rand(1.5, 2.8);
+      }
+      const sx = this.suspicion.x - this.position.x;
+      const sz = this.suspicion.z - this.position.z;
+      const suspicionDist = Math.sqrt(sx * sx + sz * sz);
+      this.wantSprint = suspicionDist > 8 && d.aggression > 0.4;
+    } else {
+      // Patrol: keep drifting between useful lanes, weapon low. No long
+      // stand-and-look waits; arriving at one waypoint immediately queues the
+      // next leg so the soldier keeps feeling alive.
+      if ((this.destNode < 0 && ctx.now > this.patrolNextAt) || this.reachedDest) {
+        this.lastPatrolNode = this.pickPatrolNode(ctx);
+        this.goTo(this.lastPatrolNode);
+        this.patrolNextAt = ctx.now + rand(0.2, 0.6);
+      }
+      this.wantSprint = false;
+    }
+    this.freshIntel = false; // intel is consumed by whichever branch ran
+  }
+
+  // Where to hunt: the last-known fix plus a short lead along the player's
+  // last movement direction — converts "where they were" into "where
+  // they're headed". Falls back to the raw fix if the led point is off-mesh.
+  private refreshSuspicion(ctx: BotContext, force = false): void {
+    if (ctx.target.isDead || (this.bb.lastKnownValid && !force)) return;
+    if (this.suspicionValid && !force && ctx.now < this.nextSuspicionAt) return;
+
+    const d = this.difficulty;
+    const p = ctx.target;
+    const dx = p.position.x - this.position.x;
+    const dz = p.position.z - this.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const uncertainty = Math.max(3.5, 10 - d.aggression * 5 + Math.min(3, dist * 0.12));
+    this.suspicion.set(
+      p.position.x + rand(-uncertainty, uncertainty),
+      p.position.y,
+      p.position.z + rand(-uncertainty, uncertainty)
+    );
+    this.suspicionVel.copyFrom(p.velocity).scaleInPlace(0.45 + d.aggression * 0.35);
+    this.suspicionValid = true;
+    this.suspicionAt = ctx.now;
+    this.nextSuspicionAt = ctx.now + rand(2.0, 3.8) * (1.25 - d.aggression * 0.45);
+  }
+
+  private predictedEnemyPosition(ctx: BotContext, maxLead: number): { x: number; z: number } {
+    const visible = this.bb.canSeePlayer && !ctx.target.isDead;
+    const hasIntel = this.bb.lastKnownValid;
+    const base = visible
+      ? ctx.target.position
+      : hasIntel
+        ? this.lastKnown
+        : this.suspicionValid
+          ? this.suspicion
+          : ctx.target.position;
+    const vel = visible ? ctx.target.velocity : hasIntel ? this.lastKnownVel : this.suspicionVel;
+    const vx = vel.x;
+    const vz = vel.z;
+    const speed = Math.sqrt(vx * vx + vz * vz);
+    let x = base.x;
+    let z = base.z;
+    if (speed > 0.8) {
+      const intelAge = visible ? 0 : Math.max(0, ctx.now - (hasIntel ? this.intelAt : this.suspicionAt));
+      const lead = Math.min(maxLead, speed * (0.5 + Math.min(intelAge, 4) * 0.22));
+      x += (vx / speed) * lead;
+      z += (vz / speed) * lead;
+    }
+    return { x, z };
+  }
+
+  private routeMemoryPenalty = (node: number): number =>
+    this.routeMemory.penalty(node, this.destNode, this.previousDestNode, this.lastPatrolNode);
+
+  private pickSearchNode(ctx: BotContext, baseRadius = 3.2, maxRadius = 10): number {
+    const likely = this.predictedEnemyPosition(ctx, 6.5);
+    const ageSource = this.bb.lastKnownValid ? this.intelAt : this.suspicionAt;
+    const age = Math.max(0, ctx.now - ageSource);
+    const sweepRadius = Math.min(maxRadius, baseRadius + age * 0.32 + (5 - Math.max(0, this.searchStopsLeft)) * 0.8);
+    return selectSearchNode(
+      this.position,
+      likely,
+      this.bb.lastKnownValid ? this.lastKnown : this.suspicion,
+      sweepRadius,
+      this.routeMemoryPenalty
+    );
+  }
+
+  private pickHuntNode(ctx: BotContext): number {
+    this.refreshSuspicion(ctx);
+    return this.pickSearchNode(ctx, 5.5, 13);
+  }
+
+  private pickPatrolNode(ctx: BotContext): number {
+    return selectPatrolNode(
+      this.position,
+      this.yaw,
+      this.lastPatrolNode,
+      this.previousDestNode,
+      this.difficulty.coverPreference,
+      this.suspicionValid && !ctx.target.isDead ? this.suspicion : null,
+      this.routeMemoryPenalty
+    );
+  }
+
+  // Weapon selection / reload discipline — the utility scorer of the spec:
+  // score every carried gun for the current range, bias the sidearm up when
+  // the primary runs dry, and demand a margin before swapping so low-skill
+  // bots stick with what they hold.
+  private considerWeapon(ctx: BotContext): void {
+    const bb = this.bb;
+    const d = this.difficulty;
+    if (this.reloadTimer > 0 || this.switchTimer > 0) return;
+
+    const current = this.weapons[this.weaponIndex];
+    if (current.clip === 0) {
+      const other = this.weapons[1 - this.weaponIndex];
+      // dry in someone's face: the trained move is the quickswap, not the reload
+      if (bb.canSeePlayer && bb.distanceToPlayer < 9 && other.clip > 0 && Math.random() < d.weaponSwitchSkill) {
+        this.startSwitch(1 - this.weaponIndex);
+      } else {
+        this.reloadTimer = current.profile.reloadTime;
+        // rounds left in the burst must not fire the instant the magazine is back
+        this.burstLeft = 0;
+      }
+      return;
+    }
+
+    // lull top-up (reloadDiscipline is per-think, so ~a few seconds of quiet)
+    if (
+      !bb.canSeePlayer &&
+      bb.timeSinceSeen > 3 &&
+      current.clip < current.profile.magSize * 0.45 &&
+      Math.random() < d.reloadDiscipline * 0.25
+    ) {
+      this.reloadTimer = current.profile.reloadTime;
+      return;
+    }
+
+    if (ctx.now < this.weaponEvalAt) return;
+    this.weaponEvalAt = ctx.now + 1.5;
+
+    const dist = bb.canSeePlayer || bb.lastKnownValid ? bb.distanceToPlayer : 10;
+    const best = selectWeapon(this.weapons, this.weaponIndex, dist, d.weaponSwitchSkill);
+    if (best !== this.weaponIndex) this.startSwitch(best);
+  }
+
+  private startSwitch(index: number): void {
+    this.weaponIndex = index;
+    this.switchTimer = 0.6;
+    this.burstLeft = 0;
+  }
+
+  // ------------------------------------------------- position utility scores
+
+  private coveredHere(ctx: BotContext): boolean {
+    const ref = this.bb.canSeePlayer ? ctx.target.position : this.bb.lastKnownValid ? this.lastKnown : this.position;
+    const eyeY = ref.y + (this.bb.canSeePlayer ? ctx.target.eyeHeight : EYE_HEIGHT);
+    Bot.TMP_A.set(this.position.x, this.position.y + EYE_HEIGHT, this.position.z);
+    Bot.TMP_B.set(ref.x, eyeY, ref.z);
+    return BotNav.losBlocked(Bot.TMP_A, Bot.TMP_B);
+  }
+
+  // Attack position: a node the current weapon likes the range from, with
+  // line of sight, ideally beside cover, not too far a run, occasionally on
+  // the player's flank. (The Killzone "dynamic tactical position" idea over
+  // the auto-derived node set.)
+  private pickAttackNode(ctx: BotContext, px: number, pz: number): number {
+    const d = this.difficulty;
+    const profile = this.weapons[this.weaponIndex].profile;
+    const eyeY = this.bb.canSeePlayer
+      ? ctx.target.position.y + ctx.target.eyeHeight * 0.8
+      : (this.bb.lastKnownValid ? this.lastKnown.y : this.position.y) + EYE_HEIGHT * 0.8;
+    const currentFightX = this.position.x - px;
+    const currentFightZ = this.position.z - pz;
+    const currentFightDist = Math.sqrt(currentFightX * currentFightX + currentFightZ * currentFightZ);
+    const a1 = this.flankRoll ? Math.atan2(currentFightX, currentFightZ) : 0;
+
+    return selectBestNode(this.position.x, this.position.z, 1.8, 15, (i, nx, nz, toBotX, toBotZ, runDist, bestScore) => {
+      const toPlayerX = nx - px;
+      const toPlayerZ = nz - pz;
+      const fightDist = Math.sqrt(toPlayerX * toPlayerX + toPlayerZ * toPlayerZ);
+      if (fightDist < 2.5) return 0; // never plan a position inside the player
+
+      // standoff: muzzle-hugging positions score down even when the weapon's
+      // range curve is flat up close — soldiers fight from arm's length out
+      const towardPlayer =
+        currentFightDist > 0.001 && runDist > 0.001
+          ? Math.max(0, (-currentFightX * toBotX - currentFightZ * toBotZ) / (currentFightDist * runDist))
+          : 0.5;
+      const closesGap = currentFightDist > 0.001 ? (currentFightDist - fightDist) / currentFightDist : 0;
+      let score =
+        rangeCurve(fightDist, profile.range) *
+        Math.min(1, fightDist / 6) *
+        (1 / (1 + runDist * 0.1)) *
+        (0.72 + 0.35 * towardPlayer) *
+        (0.85 + Math.max(-0.25, closesGap) * 0.45);
+      if (score < bestScore * 0.25) return 0; // skip the LOS ray when hopeless
+
+      Bot.TMP_A.set(nx, EYE_HEIGHT, nz);
+      Bot.TMP_B.set(px, eyeY, pz);
+      if (BotNav.losBlocked(Bot.TMP_A, Bot.TMP_B)) score *= 0.06;
+      if (BotNav.cover[i]) score *= 1 + d.coverPreference * 0.9;
+      score *= this.routeMemoryPenalty(i);
+      if (this.flankRoll) {
+        // reward swinging wide of the player->bot axis
+        const swing = Math.abs(angleDelta(a1, Math.atan2(toPlayerX, toPlayerZ)));
+        score *= swing > 0.9 && swing < 2.3 ? 1.4 : 0.75;
+      }
+      return score * rand(0.85, 1.15); // never metronomic
+    });
+  }
+
+  // Retreat / reload bolt-hole: hidden from the player, beside cover, close
+  // to the bot, with some distance from the threat
+  private pickHiddenNode(ctx: BotContext): number {
+    const ref = this.bb.canSeePlayer ? ctx.target.position : this.bb.lastKnownValid ? this.lastKnown : this.position;
+    const rx = ref.x;
+    const rz = ref.z;
+    const eyeY = ref.y + (this.bb.canSeePlayer ? ctx.target.eyeHeight : EYE_HEIGHT);
+
+    return selectBestNode(this.position.x, this.position.z, 0, 18, (i, nx, nz, _runX, _runZ, runDist, bestScore) => {
+      const toRefX = nx - rx;
+      const toRefZ = nz - rz;
+      const threatDist = Math.sqrt(toRefX * toRefX + toRefZ * toRefZ);
+      const baseScore =
+        (BotNav.cover[i] ? 1.5 : 0.7) * (1 / (1 + runDist * 0.1)) * (0.4 + Math.min(threatDist, 16) / 16) * rand(0.9, 1.1);
+      if (baseScore * 1.4 <= bestScore) return 0; // even hidden, cannot beat bestScore
+
+      Bot.TMP_A.set(nx, EYE_HEIGHT, nz);
+      Bot.TMP_B.set(rx, eyeY, rz);
+      const hidden = BotNav.losBlocked(Bot.TMP_A, Bot.TMP_B);
+      return (hidden ? 1.4 : 0.15) * baseScore;
+    });
+  }
+
+  private goTo(node: number): void {
+    const oldDest = this.destNode;
+    this.destNode = node;
+    this.reachedDest = false;
+    this.path.length = 0;
+    this.pathIndex = 0;
+    if (node < 0) return;
+    const from = BotNav.nearestNode(this.position.x, this.position.z);
+    if (!BotNav.findPath(from, node, this.path)) {
+      this.destNode = -1;
+    } else if (oldDest >= 0 && oldDest !== node) {
+      this.previousDestNode = oldDest;
+      this.routeMemory.remember(node);
+      this.reverseTimer = 0;
+    } else {
+      this.routeMemory.remember(node);
+      this.reverseTimer = 0;
+    }
+  }
+
+  private recoverRoute(ctx: BotContext): void {
+    const bb = this.bb;
+    this.stuckTimer = 0;
+    this.reverseTimer = 0;
+    this.path.length = 0;
+    this.pathIndex = 0;
+    this.destNode = -1;
+    this.reachedDest = false;
+
+    let next = -1;
+    if (bb.mode === "reload" || bb.mode === "retreat") {
+      next = this.pickHiddenNode(ctx);
+    } else if (bb.mode === "combat") {
+      const px = bb.canSeePlayer ? ctx.target.position.x : this.lastKnown.x;
+      const pz = bb.canSeePlayer ? ctx.target.position.z : this.lastKnown.z;
+      next = this.pickAttackNode(ctx, px, pz);
+      if (next < 0) next = this.pickSearchNode(ctx);
+    } else if (bb.mode === "search") {
+      next = this.pickSearchNode(ctx);
+    } else if (bb.mode === "hunt") {
+      this.refreshSuspicion(ctx, true);
+      next = this.pickHuntNode(ctx);
+      this.holdUntil = ctx.now + rand(1.2, 2.2);
+    } else {
+      next = this.pickPatrolNode(ctx);
+    }
+    if (next >= 0) this.goTo(next);
+  }
+
+  // ------------------------------------------------------- aim model + firing
+
+  private rerollError(scale: number): void {
+    const e = this.difficulty.aimErrorDegrees * DEG * scale;
+    this.errYaw = rand(-e, e);
+    this.errPitch = rand(-e * 0.7, e * 0.7);
+  }
+
+  private updateCombat(ctx: BotContext, dt: number): void {
+    const bb = this.bb;
+    const d = this.difficulty;
+
+    // Aim error always settles toward zero while tracking — the "smoothing
+    // model" of the research: early shots stray, later shots arrive
+    const settle = Math.exp(-d.aimSettleSpeed * dt);
+    this.errYaw *= settle;
+    this.errPitch *= settle;
+
+    const engaged = bb.canSeePlayer || (bb.lastKnownValid && bb.timeSinceSeen < 2.8);
+    if (!engaged || ctx.target.isDead) {
+      this.burstLeft = 0;
+      bb.hasLineOfFire = false;
+      // muzzle drifts back to where the feet are going
+      this.aimYaw += angleDelta(this.aimYaw, this.yaw) * (1 - Math.exp(-6 * dt));
+      this.aimPitch *= Math.exp(-6 * dt);
+      return;
+    }
+
+    // Target: the best visible piece of the player — chest when it's clear,
+    // else whatever the cover leaves out (a head over a car hood, shins
+    // under it) — or the remembered spot otherwise (suppression fire pins
+    // the lane they vanished from). The pick is re-rayed from MUZZLE height,
+    // not eye height: the eyes ride higher than the gun, and a piece the eye
+    // sees over a car lip can be unreachable from the barrel. If the gun can
+    // reach no sample, the perception pick stands and the burst gate holds.
+    const p = ctx.target;
+    let tx = 0;
+    let ty = 0;
+    let tz = 0;
+    if (bb.canSeePlayer) {
+      Bot.TMP_A.set(this.position.x, this.position.y + MUZZLE_HEIGHT, this.position.z);
+      let bestRank = Infinity;
+      for (let i = 0; i < SIGHT_SAMPLES.length; i++) {
+        if (SIGHT_SAMPLES[i].aimRank >= bestRank) continue;
+        samplePlayerBody(this.position, p, i, Bot.TMP_B);
+        if (BotNav.losBlocked(Bot.TMP_A, Bot.TMP_B)) continue;
+        bestRank = SIGHT_SAMPLES[i].aimRank;
+        this.aimSample = i;
+        tx = Bot.TMP_B.x;
+        ty = Bot.TMP_B.y;
+        tz = Bot.TMP_B.z;
+      }
+      bb.hasLineOfFire = bestRank < Infinity;
+      if (!bb.hasLineOfFire) {
+        samplePlayerBody(this.position, p, this.aimSample, Bot.TMP_B);
+        tx = Bot.TMP_B.x;
+        ty = Bot.TMP_B.y;
+        tz = Bot.TMP_B.z;
+      }
+    } else {
+      tx = this.lastKnown.x;
+      ty = this.lastKnown.y + 1.3;
+      tz = this.lastKnown.z;
+      Bot.TMP_A.set(this.position.x, this.position.y + MUZZLE_HEIGHT, this.position.z);
+      Bot.TMP_B.set(tx, ty, tz);
+      bb.hasLineOfFire = !BotNav.losBlocked(Bot.TMP_A, Bot.TMP_B);
+    }
+    const dx = tx - this.position.x;
+    const dy = ty - (this.position.y + MUZZLE_HEIGHT);
+    const dz = tz - this.position.z;
+    const horiz = Math.sqrt(dx * dx + dz * dz);
+    this.desiredYaw = Math.atan2(dx, dz);
+    this.desiredPitch = -Math.atan2(dy, horiz);
+
+    // Smoothed pursuit of (target + human error)
+    const chase = 1 - Math.exp(-d.aimSettleSpeed * 2.2 * dt);
+    this.aimYaw += angleDelta(this.aimYaw, this.desiredYaw + this.errYaw) * chase;
+    this.aimPitch += (this.desiredPitch + this.errPitch - this.aimPitch) * chase;
+
+    if (this.reactionTimer > 0) {
+      this.reactionTimer -= dt;
+      return;
+    }
+    if (this.reloadTimer > 0 || this.switchTimer > 0) return;
+
+    const w = this.weapons[this.weaponIndex];
+    if (w.clip === 0) return; // considerWeapon resolves this next think
+
+    // Committing to a burst needs the aim settled inside the skill gate; once
+    // a burst is running the rounds keep coming as long as the muzzle is
+    // roughly on (tracking a strafing target lags a few degrees — that is
+    // what the per-shot spread is for, not a reason to stop shooting)
+    const aimOff = Math.abs(angleDelta(this.aimYaw, this.desiredYaw));
+    const onTarget = aimOff < d.onTargetDegrees * DEG;
+    if (this.burstLeft > 0) {
+      if (this.fireTimer <= 0 && aimOff < Math.max(8, d.onTargetDegrees * 2.5) * DEG) this.fire(ctx);
+    } else if (this.burstTimer <= 0 && onTarget && bb.hasLineOfFire) {
+      // Commit to a burst. Without sight this is suppression — aggression
+      // decides whether they hose the corner or hold the shot.
+      if (bb.canSeePlayer || Math.random() < d.aggression * 0.55) {
+        const [lo, hi] = w.profile.burstLength ?? d.burstLength;
+        this.burstLeft = Math.round(rand(lo, hi));
+        this.rerollError(1); // each burst opens with fresh, settling error
+      } else {
+        this.burstTimer = 0.4; // passed on the shot; reconsider shortly
+      }
+    }
+  }
+
+  private fire(ctx: BotContext): void {
+    const w = this.weapons[this.weaponIndex];
+    const profile = w.profile;
+    const d = this.difficulty;
+    w.clip--;
+    this.burstLeft--;
+    this.fireTimer = nextFireTimer(this.fireTimer, profile.fireInterval, ctx.dt);
+    this.lastShotAt = ctx.now;
+    this.radarTimer = 2; // firing paints the radar
+    if (this.burstLeft <= 0 || w.clip === 0) {
+      const [lo, hi] = profile.burstCooldown ?? d.burstCooldown;
+      this.burstTimer = rand(lo, hi);
+    }
+
+    // Per-shot dispersion on top of the aim error; running and a strafing
+    // target both make everyone worse
+    const p = ctx.target;
+    const targetStrafe = Math.abs(p.velocity.x) + Math.abs(p.velocity.z) > 3 ? 1.25 : 1;
+    const onTheMove = this.moveSpeed > 0.5 ? 1.6 : 1;
+    const spread = profile.spreadDeg * DEG * d.spreadScale * onTheMove * targetStrafe;
+    const shotYaw = this.aimYaw + rand(-spread, spread);
+    const shotPitch = this.aimPitch + rand(-spread, spread) * 0.75;
+    const cosP = Math.cos(shotPitch);
+    const dir = Bot.TMP_DIR.set(Math.sin(shotYaw) * cosP, Math.sin(-shotPitch), Math.cos(shotYaw) * cosP);
+
+    this.muzzle.computeWorldMatrix(true);
+    const muzzlePos = Bot.TMP_A.copyFrom(this.muzzle.getAbsolutePosition());
+
+    // Resolve the round: nearest of world geometry vs the player's capsule
+    const tWorld = BotNav.rayHitWorld(muzzlePos, dir, MAX_SHOT_RANGE, Bot.TMP_POINT, Bot.TMP_NORMAL);
+    const tPlayer = p.isDead ? Infinity : rayVsPlayerBody(muzzlePos, dir, p);
+
+    const tracerEnd = Bot.TMP_B;
+    const atHuman = p === ctx.human;
+    if (tPlayer < tWorld) {
+      const wasDead = p.isDead;
+      const hurt = p.takeDamage(profile.damage * d.damageScale, this.position, this);
+      if (atHuman && !wasDead && p.isDead) {
+        this.kills++;
+        MatchEvents.emit("playerDeath", { weaponId: profile.id, killer: this.rival.id }); // kill feed + score
+      }
+      if (atHuman && hurt) ctx.effects.playPlayerHitSound(); // spawn protection soaks the round silently
+      tracerEnd.copyFrom(dir).scaleInPlace(tPlayer).addInPlace(muzzlePos);
+    } else {
+      // near-miss snap if the streak passes the player's head
+      if (atHuman && !p.isDead) {
+        const ex = p.position.x - muzzlePos.x;
+        const ey = p.position.y + p.eyeHeight - muzzlePos.y;
+        const ez = p.position.z - muzzlePos.z;
+        const tc = ex * dir.x + ey * dir.y + ez * dir.z;
+        if (tc > 0 && tc < Math.min(tWorld, MAX_SHOT_RANGE)) {
+          const mx = ex - dir.x * tc;
+          const my = ey - dir.y * tc;
+          const mz = ez - dir.z * tc;
+          if (mx * mx + my * my + mz * mz < 1.0) ctx.effects.playBulletWhizSound();
+        }
+      }
+      if (tWorld !== Infinity) {
+        ctx.effects.createBulletImpact(Bot.TMP_POINT, Bot.TMP_NORMAL);
+        tracerEnd.copyFrom(Bot.TMP_POINT);
+      } else {
+        tracerEnd.copyFrom(dir).scaleInPlace(MAX_SHOT_RANGE).addInPlace(muzzlePos);
+      }
+    }
+
+    ctx.effects.createTracer(muzzlePos, tracerEnd);
+    ctx.effects.createMuzzleFlash(muzzlePos, 0.75);
+    ctx.effects.playBotShootSound(
+      profile.id,
+      atHuman ? this.bb.distanceToPlayer : Vector3.Distance(this.position, ctx.human.position)
+    );
+
+    // Recoil feeds the error model so long automatic bursts climb off target
+    this.errPitch -= 0.35 * DEG * (profile.id === "m40a3" ? 3 : 1);
+    this.errYaw += rand(-0.18, 0.18) * DEG;
+  }
+
+  // World position of silhouette sample i: a fraction of the player's current
+  // eye height plus a lateral offset perpendicular to this bot's sight line
+  // (so the "shoulder" points straddle whatever edge the player peeks).
+  // Segment vs the player's vertical cylinder (radius matches the collision
+  // solver's). Returns the hit distance or Infinity.
+  // ----------------------------------------------------------------- motor
+
+  private motor(ctx: BotContext, dt: number): void {
+    const bb = this.bb;
+
+    // Follow the path with light string-pulling: skip waypoints while the
+    // straight line to the next-next one is walkable
+    let intendedSpeed = 0;
+    let moveYaw = this.yaw;
+    // Trained shooters stop to fire: while a burst is running at a visible
+    // target the feet stay planted (recruits keep spraying on the move)
+    const planted = this.difficulty.plantFeet && bb.canSeePlayer && this.burstLeft > 0 && !this.wantSprint;
+    if (!planted && this.destNode >= 0 && this.pathIndex < this.path.length) {
+      while (
+        this.pathIndex + 1 < this.path.length &&
+        !BotNav.walkBlocked(
+          this.position.x,
+          this.position.z,
+          BotNav.xs[this.path[this.pathIndex + 1]],
+          BotNav.zs[this.path[this.pathIndex + 1]]
+        )
+      ) {
+        this.pathIndex++;
+      }
+      const wx = BotNav.xs[this.path[this.pathIndex]];
+      const wz = BotNav.zs[this.path[this.pathIndex]];
+      const dx = wx - this.position.x;
+      const dz = wz - this.position.z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+      if (dist < 0.55) {
+        this.pathIndex++;
+        if (this.pathIndex >= this.path.length) this.reachedDest = true;
+      } else {
+        intendedSpeed =
+          this.wantSprint && !bb.canSeePlayer
+            ? PlayerController.SPRINT_SPEED
+            : bb.mode === "patrol"
+              ? PlayerController.WALK_SPEED * 0.6
+              : PlayerController.WALK_SPEED;
+        moveYaw = Math.atan2(dx, dz);
+        this.velocity.x = (dx / dist) * intendedSpeed;
+        this.velocity.z = (dz / dist) * intendedSpeed;
+      }
+    }
+    if (intendedSpeed === 0) {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+    }
+
+    // Facing: square up to the fight when engaged; face the move otherwise.
+    // Standing still, nobody stares at one spot — a slow shoulder-check sweep
+    // keeps stopped bots aware (and watchable). Search sweeps harder.
+    const engaged = bb.canSeePlayer || (bb.lastKnownValid && bb.timeSinceSeen < 2.8);
+    if (this.wasMoving && intendedSpeed === 0) {
+      this.idleYawBase = this.yaw;
+      this.idleStopAt = ctx.now;
+    }
+    this.wasMoving = intendedSpeed > 0;
+    let targetYaw: number;
+    if (engaged) targetYaw = this.aimYaw;
+    else if (intendedSpeed > 0) targetYaw = moveYaw;
+    else targetYaw = this.idleYawBase + Math.sin((ctx.now - this.idleStopAt) * 0.55) * 1.2;
+    this.yaw += angleDelta(this.yaw, targetYaw) * (1 - Math.exp(-(engaged ? 11 : 7) * dt));
+
+    // Same gravity, same solver, same limits as the player
+    const sepDx = this.sepX * dt;
+    const sepDz = this.sepZ * dt;
+    this.velocity.x += this.sepX;
+    this.velocity.z += this.sepZ;
+    this.sepX = 0;
+    this.sepZ = 0;
+    PlayerController.moveAndCollide(
+      this.tmpPrev.copyFrom(this.position),
+      this.velocity,
+      dt,
+      BODY_HEIGHT,
+      BODY_RADIUS,
+      this.tmpNext,
+      PlayerController.GRAVITY
+    );
+    const movedX = this.tmpNext.x - this.position.x - sepDx;
+    const movedZ = this.tmpNext.z - this.position.z - sepDz;
+    this.position.copyFrom(this.tmpNext);
+    this.moveSpeed = intendedSpeed > 0 ? Math.sqrt(movedX * movedX + movedZ * movedZ) / Math.max(dt, 1e-6) : 0;
+
+    // Wedged or pacing: throw away the route now, not after a visible
+    // back-and-forth dance. Stalls usually mean the grid leg clipped an
+    // inflated obstacle; repeated reversal means the scorer picked the lane
+    // it just came from. Both recover into a freshly scored pressure route.
+    let recovered = false;
+    if (intendedSpeed > 0 && this.moveSpeed < intendedSpeed * 0.25) {
+      this.stuckTimer += dt;
+      if (this.stuckTimer > 0.42) {
+        this.recoverRoute(ctx);
+        recovered = true;
+      }
+    } else {
+      this.stuckTimer = 0;
+    }
+    if (!recovered && intendedSpeed > 0 && this.moveSpeed > 0.35) {
+      const movedLen = Math.sqrt(movedX * movedX + movedZ * movedZ);
+      if (movedLen > 1e-5) {
+        const dirX = movedX / movedLen;
+        const dirZ = movedZ / movedLen;
+        const hasHistory = this.lastMoveDirX * this.lastMoveDirX + this.lastMoveDirZ * this.lastMoveDirZ > 0.1;
+        const dot = hasHistory ? dirX * this.lastMoveDirX + dirZ * this.lastMoveDirZ : 1;
+        const canBreakLoop = bb.mode === "hunt" || bb.mode === "patrol" || bb.mode === "search";
+        if (canBreakLoop && dot < -0.78) {
+          this.reverseTimer += dt;
+          if (this.reverseTimer > 0.32) {
+            this.recoverRoute(ctx);
+            recovered = true;
+          }
+        } else {
+          this.reverseTimer = Math.max(0, this.reverseTimer - dt * 2.5);
+        }
+        if (!recovered) {
+          this.lastMoveDirX = this.lastMoveDirX * 0.55 + dirX * 0.45;
+          this.lastMoveDirZ = this.lastMoveDirZ * 0.55 + dirZ * 0.45;
+          const histLen = Math.sqrt(this.lastMoveDirX * this.lastMoveDirX + this.lastMoveDirZ * this.lastMoveDirZ);
+          if (histLen > 1e-5) {
+            this.lastMoveDirX /= histLen;
+            this.lastMoveDirZ /= histLen;
+          }
+        }
+      }
+    } else if (intendedSpeed === 0) {
+      this.reverseTimer = 0;
+    }
+
+    this.root.rotation.y = this.yaw; // root.position aliases this.position
+  }
+
+  private animate(dt: number): void {
+    const ratio = Math.min(1, this.moveSpeed / PlayerController.WALK_SPEED);
+    const targetAmp = this.moveSpeed > 0.3 ? 0.5 * Math.max(0.55, ratio) : 0;
+    this.walkAmp += (targetAmp - this.walkAmp) * (1 - Math.exp(-10 * dt));
+    if (this.walkAmp > 0.01) {
+      this.walkPhase += dt * 7.5 * Math.max(0.6, ratio * 1.4);
+    }
+    // Hips swing opposed; each knee flexes while its leg lifts through the
+    // swing, and the torso dips on every footfall — a gait, not stilts
+    const swing = Math.sin(this.walkPhase) * this.walkAmp;
+    this.hipL.rotation.x = swing;
+    this.hipR.rotation.x = -swing;
+    this.kneeL.rotation.x = -Math.max(0, Math.sin(this.walkPhase + 1.1)) * 0.85 * this.walkAmp;
+    this.kneeR.rotation.x = -Math.max(0, Math.sin(this.walkPhase + 1.1 + Math.PI)) * 0.85 * this.walkAmp;
+    this.torsoGroup.position.y = Math.abs(Math.sin(this.walkPhase)) * 0.04 * this.walkAmp;
+
+    // Lean into a dead run
+    const lean = this.moveSpeed > PlayerController.WALK_SPEED * 1.2 ? 0.14 : 0;
+    this.torsoGroup.rotation.x += (lean - this.torsoGroup.rotation.x) * (1 - Math.exp(-6 * dt));
+
+    // Rifle tracks the aim pitch in a fight, hangs low on patrol — and comes
+    // up to the shoulder, putting the muzzle on the MUZZLE_HEIGHT line the
+    // combat model fires from
+    const engaged = this.bb.canSeePlayer || (this.bb.lastKnownValid && this.bb.timeSinceSeen < 4);
+    const targetGun = engaged ? this.aimPitch : 0.5;
+    this.gunPitch += (targetGun - this.gunPitch) * (1 - Math.exp(-9 * dt));
+    this.gunArm.rotation.x = this.gunPitch;
+    this.shoulderBlend += ((engaged ? 1 : 0) - this.shoulderBlend) * (1 - Math.exp(-9 * dt));
+    this.gunArm.position.y = SHOULDER_RAISE * this.shoulderBlend;
+
+    // The skinned body: idle/walk/run clip blending from the measured speed,
+    // and the spine leans into the aim while engaged
+    this.rig.body.setAim(this.gunPitch, engaged);
+    this.rig.body.update(dt, this.moveSpeed);
+  }
+}

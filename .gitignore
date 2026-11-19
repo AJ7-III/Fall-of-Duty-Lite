@@ -1,0 +1,15 @@
+/build/
+/out/
+/firmware/build/
+/firmware/sdkconfig
+/firmware/sdkconfig.old
+/firmware/managed_components/
+/firmware/build-*/
+/firmware/sdkconfig.*.old
+/firmware/sdkconfig.replay
+
+__pycache__/
+
+/node_modules/
+/reference/browser/public/models/
+.DS_Store

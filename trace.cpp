@@ -1,0 +1,149 @@
+#include "trace.hpp"
+
+#include <algorithm>
+#include <cstring>
+#include <memory>
+
+namespace fod {
+
+bool ReplayTrace::load(const char* path, std::string& error) {
+    const std::unique_ptr<FILE, decltype(&std::fclose)> file(std::fopen(path, "r"), &std::fclose);
+    if (!file) { error = "TRACE NOT FOUND"; return false; }
+    char line[512]{};
+    if (!std::fgets(line, sizeof(line), file.get()) || std::strncmp(line, "FODTRACE 1", 10)) {
+        error = "TRACE SCHEMA";
+        return false;
+    }
+    ReplayTrace next;
+    unsigned seed = 0, flags = 0, weapon = 0, deathTick = 0;
+    if (!std::fgets(line, sizeof(line), file.get()) ||
+        std::sscanf(line, "S %u %d %u %f %f %f %f %f %f %f %f %f %u %d %d %d %d %u",
+                    &seed, &next.difficulty_, &flags,
+                    &next.fixture_.player.x, &next.fixture_.player.y, &next.fixture_.player.z, &next.fixture_.yaw,
+                    &next.fixture_.pitch, &next.fixture_.rival.x, &next.fixture_.rival.y, &next.fixture_.rival.z,
+                    &next.fixture_.rivalYaw, &weapon, &next.fixture_.clip, &next.fixture_.playerScore,
+                    &next.fixture_.rivalScore, &next.fixture_.streak, &deathTick) < 17 ||
+        next.difficulty_ < 1 || next.difficulty_ > 10 || weapon > 2 || flags > 15) {
+        error = "TRACE INITIAL STATE";
+        return false;
+    }
+    const auto inYard = [](Vec3 p) {
+        return std::abs(p.x) <= 16 && std::abs(p.z) <= 16 && p.y >= 0 && p.y <= 20;
+    };
+    if (!inYard(next.fixture_.player) || !inYard(next.fixture_.rival) ||
+        !std::isfinite(next.fixture_.yaw) || !std::isfinite(next.fixture_.pitch) ||
+        !std::isfinite(next.fixture_.rivalYaw) || next.fixture_.clip < -1 || next.fixture_.clip > 30 ||
+        next.fixture_.playerScore < 0 || next.fixture_.playerScore > 9 ||
+        next.fixture_.rivalScore < 0 || next.fixture_.rivalScore > 9 ||
+        next.fixture_.streak < 0 || next.fixture_.streak > 9) {
+        error = "TRACE INITIAL STATE";
+        return false;
+    }
+    next.seed_ = seed;
+    next.fixture_.killPlayerAtTick = deathTick;
+    next.fixture_.weapon = static_cast<Weapon>(weapon);
+    next.fixture_.freezeRival = flags & 1;
+    next.fixture_.airstrikeReady = flags & 2;
+    next.fixture_.apacheReady = flags & 4;
+    next.alternate_ = flags & 8;
+
+    size_t row = 2;
+    const auto invalid = [&] {
+        error = "TRACE RECORD " + std::to_string(row);
+        return false;
+    };
+    while (std::fgets(line, sizeof(line), file.get())) {
+        ++row;
+        if (line[0] == '#') continue;
+        if (line[0] == 'T') {
+            Input input;
+            unsigned held, pressed;
+            if (next.inputs_.size() >= 12000 ||
+                std::sscanf(line, "T %f %f %f %f %u %u", &input.moveX, &input.moveY, &input.lookX, &input.lookY,
+                            &held, &pressed) != 6 ||
+                !(std::abs(input.moveX) <= 1 && std::abs(input.moveY) <= 1 &&
+                  std::abs(input.lookX) <= 2 * pi && std::abs(input.lookY) <= 2 * pi) ||
+                ((held | pressed) & ~((1u << 15) - 1))) return invalid();
+            input.held = held;
+            input.pressed = pressed;
+            next.inputs_.push_back(input);
+        } else if (line[0] == 'R') {
+            Draw draw;
+            unsigned tick = 0;
+            if (next.draws_.size() >= 30000 ||
+                std::sscanf(line, "R %u %39s %lf", &tick, draw.site.data(), &draw.value) != 3 ||
+                tick > next.inputs_.size() || !(draw.value >= 0 && draw.value < 1) ||
+                (!next.draws_.empty() && tick < next.draws_.back().tick)) return invalid();
+            draw.tick = tick;
+            next.draws_.push_back(draw);
+        } else {
+            return invalid();
+        }
+    }
+    if (std::ferror(file.get()) || next.inputs_.empty() || deathTick > next.inputs_.size()) return invalid();
+    *this = std::move(next);
+    error.clear();
+    return true;
+}
+
+bool ReplayTrace::supply(void* data, uint32_t tick, const char* site, double& value) {
+    auto& self = *static_cast<ReplayTrace*>(data);
+    while (self.firstDraw_ < self.draws_.size() && self.draws_[self.firstDraw_].tick < tick) ++self.firstDraw_;
+    for (size_t i = self.firstDraw_; i < self.draws_.size() && self.draws_[i].tick == tick; ++i) {
+        auto& d = self.draws_[i];
+        if (!d.used && std::strcmp(d.site.data(), site) == 0) {
+            d.used = true;
+            value = d.value;
+            return true;
+        }
+    }
+    ++self.missingDraws_;
+    return false;
+}
+
+void ReplayTrace::begin(App& app) {
+    at_ = firstDraw_ = missingDraws_ = 0;
+    for (auto& draw : draws_) draw.used = false;
+    app.game.setRandomHook(draws_.empty() ? nullptr : &supply, this);
+    app.game.start(seed_, difficulty_, alternate_);
+    app.game.setupFixture(fixture_);
+    app.audio.setVolume(app.settings().volume);
+    app.audio.stopSpeech();
+    app.audio.pauseSpeech(false);
+    app.routeAudio();
+}
+
+bool ReplayTrace::step(App& app) {
+    if (at_ >= inputs_.size()) return false;
+    app.game.step(inputs_[at_++]);
+    app.routeAudio();
+    return true;
+}
+
+size_t ReplayTrace::unusedDraws() const {
+    return size_t(std::count_if(draws_.begin(), draws_.end(), [](const Draw& draw) { return !draw.used; }));
+}
+
+void writeTraceTick(FILE* out, const App& app) {
+    const auto& s = app.state();
+    std::fprintf(out,
+                 "{\"tick\":%lu,\"real\":%.9f,\"scaled\":%.9f,\"scale\":%.9f,\"position\":[%.6f,%.6f,%.6f],"
+                 "\"rival\":[%.6f,%.6f,%.6f],\"camera\":[%.6f,%.6f,%.6f],\"yaw\":%.7f,\"pitch\":%.7f,\"eye\":%.7f,\"hp\":%.5f,\"rivalHp\":%.5f,"
+                 "\"gun\":%d,\"gunState\":%d,\"clip\":%d,\"reserve\":%d,\"score\":[%d,%d],\"dead\":%d,"
+                 "\"glass\":\"%016llx\",\"device\":%d,\"apache\":%d,\"events\":[",
+                 static_cast<unsigned long>(s.tick), s.realTime, s.scaledDelta, s.timeScale, s.player.position.x,
+                 s.player.position.y, s.player.position.z, s.rival.position.x, s.rival.position.y, s.rival.position.z,
+                 s.camera.position.x, s.camera.position.y, s.camera.position.z, s.playerYaw, s.playerPitch, s.eyeHeight, s.player.health, s.rival.health, int(s.weapon),
+                 int(s.weaponState), s.clip, s.reserve, s.playerScore, s.rivalScore, s.dead,
+                 static_cast<unsigned long long>(s.brokenGlass), int(s.device), s.apacheActive);
+    bool comma = false;
+    for (size_t i = 0; i < app.game.eventCount(); ++i) {
+        const auto& e = app.game.events()[i];
+        if (e.kind == EventKind::Sound) continue;
+        std::fprintf(out, "%s[%d,%lu,%d]", comma ? "," : "", int(e.kind), static_cast<unsigned long>(e.surface), e.value);
+        comma = true;
+    }
+    std::fputs("]}\n", out);
+}
+
+} // namespace fod

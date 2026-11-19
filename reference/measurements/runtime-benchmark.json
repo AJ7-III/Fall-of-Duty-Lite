@@ -1,0 +1,1482 @@
+{
+  "host": "macOS-26.4-arm64-arm-64bit",
+  "cpu": "Apple M5 Max",
+  "packSha256": "14093c20bf09e6bbc87663f3714fe7cd68c3f874bdaacf33a11da8ff89575a08",
+  "assets": {
+    "before": {
+      "sdBytes": 3653826,
+      "residentAssetBytes": 10859021,
+      "peakAssetLoadBytes": 10940941,
+      "worldTriangles": 37854,
+      "shotTriangles": 37854,
+      "obstacles": 52,
+      "navNodes": 676,
+      "rivalFrames": 13,
+      "textures": 62,
+      "audioClips": 18,
+      "compressedVoiceClips": 27,
+      "residentVoiceCodesBytes": 1025648,
+      "voicePcmEquivalentBytes": 4102598,
+      "sourceRevision": "ecfb87d80d1002a086afaf6f657f4ad2c3f23467",
+      "artSeed": 1299857073
+    },
+    "after": {
+      "sdBytes": 3653826,
+      "residentAssetBytes": 9553337,
+      "peakAssetLoadBytes": 9635257,
+      "worldTriangles": 37854,
+      "shotTriangles": 37854,
+      "obstacles": 52,
+      "navNodes": 676,
+      "rivalFrames": 13,
+      "textures": 62,
+      "audioClips": 18,
+      "compressedVoiceClips": 27,
+      "residentVoiceCodesBytes": 1025648,
+      "voicePcmEquivalentBytes": 4102598,
+      "sourceRevision": "ecfb87d80d1002a086afaf6f657f4ad2c3f23467",
+      "artSeed": 1299857073
+    }
+  },
+  "runs": {
+    "long-lane": [
+      {
+        "before": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 17785,
+            "maxChunks": 110,
+            "maxDepthPasses": 172490,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 4,
+                "p99": 19,
+                "max": 28
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 5,
+                "max": 19
+              },
+              "setup": {
+                "p50": 220,
+                "p95": 464,
+                "p99": 526,
+                "max": 677
+              },
+              "raster": {
+                "p50": 956,
+                "p95": 1199,
+                "p99": 1382,
+                "max": 1679
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 129,
+                "p99": 164,
+                "max": 381
+              },
+              "total": {
+                "p50": 1302,
+                "p95": 1709,
+                "p99": 2027,
+                "max": 2517
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 15550,
+            "maxChunks": 110,
+            "maxDepthPasses": 110375,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 4,
+                "p99": 18,
+                "max": 26
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 26
+              },
+              "setup": {
+                "p50": 217,
+                "p95": 449,
+                "p99": 535,
+                "max": 931
+              },
+              "raster": {
+                "p50": 694,
+                "p95": 905,
+                "p99": 1071,
+                "max": 2390
+              },
+              "cpuScaleAndHud": {
+                "p50": 122,
+                "p95": 133,
+                "p99": 193,
+                "max": 686
+              },
+              "total": {
+                "p50": 1034,
+                "p95": 1447,
+                "p99": 1726,
+                "max": 3340
+              }
+            }
+          }
+        ],
+        "after": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 17785,
+            "maxChunks": 110,
+            "maxDepthPasses": 172490,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 5,
+                "p99": 20,
+                "max": 36
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 114
+              },
+              "setup": {
+                "p50": 226,
+                "p95": 463,
+                "p99": 551,
+                "max": 736
+              },
+              "raster": {
+                "p50": 974,
+                "p95": 1235,
+                "p99": 1407,
+                "max": 2037
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 133,
+                "p99": 183,
+                "max": 523
+              },
+              "total": {
+                "p50": 1319,
+                "p95": 1772,
+                "p99": 2100,
+                "max": 2737
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 15550,
+            "maxChunks": 110,
+            "maxDepthPasses": 110375,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 5,
+                "p99": 19,
+                "max": 24
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 12
+              },
+              "setup": {
+                "p50": 219,
+                "p95": 438,
+                "p99": 510,
+                "max": 596
+              },
+              "raster": {
+                "p50": 686,
+                "p95": 889,
+                "p99": 1028,
+                "max": 1183
+              },
+              "cpuScaleAndHud": {
+                "p50": 122,
+                "p95": 132,
+                "p99": 195,
+                "max": 344
+              },
+              "total": {
+                "p50": 1030,
+                "p95": 1417,
+                "p99": 1653,
+                "max": 1877
+              }
+            }
+          }
+        ]
+      },
+      {
+        "after": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 17785,
+            "maxChunks": 110,
+            "maxDepthPasses": 172490,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 5,
+                "p99": 20,
+                "max": 77
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 21
+              },
+              "setup": {
+                "p50": 232,
+                "p95": 475,
+                "p99": 552,
+                "max": 855
+              },
+              "raster": {
+                "p50": 972,
+                "p95": 1262,
+                "p99": 1450,
+                "max": 2070
+              },
+              "cpuScaleAndHud": {
+                "p50": 122,
+                "p95": 137,
+                "p99": 200,
+                "max": 495
+              },
+              "total": {
+                "p50": 1329,
+                "p95": 1823,
+                "p99": 2101,
+                "max": 3068
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 15550,
+            "maxChunks": 110,
+            "maxDepthPasses": 110375,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 5,
+                "p99": 19,
+                "max": 43
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 46
+              },
+              "setup": {
+                "p50": 219,
+                "p95": 435,
+                "p99": 532,
+                "max": 845
+              },
+              "raster": {
+                "p50": 695,
+                "p95": 904,
+                "p99": 1050,
+                "max": 1501
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 135,
+                "p99": 197,
+                "max": 476
+              },
+              "total": {
+                "p50": 1035,
+                "p95": 1445,
+                "p99": 1702,
+                "max": 2419
+              }
+            }
+          }
+        ],
+        "before": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 17785,
+            "maxChunks": 110,
+            "maxDepthPasses": 172490,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 5,
+                "p99": 20,
+                "max": 39
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 8,
+                "max": 125
+              },
+              "setup": {
+                "p50": 223,
+                "p95": 453,
+                "p99": 556,
+                "max": 794
+              },
+              "raster": {
+                "p50": 981,
+                "p95": 1298,
+                "p99": 1652,
+                "max": 2919
+              },
+              "cpuScaleAndHud": {
+                "p50": 123,
+                "p95": 147,
+                "p99": 234,
+                "max": 1442
+              },
+              "total": {
+                "p50": 1329,
+                "p95": 1868,
+                "p99": 2322,
+                "max": 3462
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 15550,
+            "maxChunks": 110,
+            "maxDepthPasses": 110375,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 4,
+                "p99": 18,
+                "max": 26
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 33
+              },
+              "setup": {
+                "p50": 214,
+                "p95": 434,
+                "p99": 524,
+                "max": 724
+              },
+              "raster": {
+                "p50": 693,
+                "p95": 891,
+                "p99": 1046,
+                "max": 1664
+              },
+              "cpuScaleAndHud": {
+                "p50": 120,
+                "p95": 128,
+                "p99": 182,
+                "max": 313
+              },
+              "total": {
+                "p50": 1031,
+                "p95": 1444,
+                "p99": 1696,
+                "max": 2276
+              }
+            }
+          }
+        ]
+      },
+      {
+        "before": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 17785,
+            "maxChunks": 110,
+            "maxDepthPasses": 172490,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 5,
+                "p99": 20,
+                "max": 30
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 61
+              },
+              "setup": {
+                "p50": 220,
+                "p95": 455,
+                "p99": 562,
+                "max": 997
+              },
+              "raster": {
+                "p50": 964,
+                "p95": 1270,
+                "p99": 1643,
+                "max": 2281
+              },
+              "cpuScaleAndHud": {
+                "p50": 120,
+                "p95": 136,
+                "p99": 219,
+                "max": 362
+              },
+              "total": {
+                "p50": 1306,
+                "p95": 1821,
+                "p99": 2297,
+                "max": 3367
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 15550,
+            "maxChunks": 110,
+            "maxDepthPasses": 110375,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 0,
+                "p95": 4,
+                "p99": 18,
+                "max": 37
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 5,
+                "max": 51
+              },
+              "setup": {
+                "p50": 213,
+                "p95": 433,
+                "p99": 502,
+                "max": 555
+              },
+              "raster": {
+                "p50": 681,
+                "p95": 856,
+                "p99": 1008,
+                "max": 1509
+              },
+              "cpuScaleAndHud": {
+                "p50": 119,
+                "p95": 126,
+                "p99": 154,
+                "max": 216
+              },
+              "total": {
+                "p50": 1018,
+                "p95": 1355,
+                "p99": 1630,
+                "max": 1887
+              }
+            }
+          }
+        ],
+        "after": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 17785,
+            "maxChunks": 110,
+            "maxDepthPasses": 172490,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 5,
+                "p99": 19,
+                "max": 29
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 6,
+                "max": 136
+              },
+              "setup": {
+                "p50": 226,
+                "p95": 458,
+                "p99": 537,
+                "max": 801
+              },
+              "raster": {
+                "p50": 982,
+                "p95": 1269,
+                "p99": 1565,
+                "max": 2268
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 136,
+                "p99": 207,
+                "max": 446
+              },
+              "total": {
+                "p50": 1332,
+                "p95": 1828,
+                "p99": 2116,
+                "max": 3226
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 15550,
+            "maxChunks": 110,
+            "maxDepthPasses": 110375,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 0,
+                "p95": 4,
+                "p99": 18,
+                "max": 23
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 5,
+                "p99": 5,
+                "max": 35
+              },
+              "setup": {
+                "p50": 218,
+                "p95": 435,
+                "p99": 504,
+                "max": 664
+              },
+              "raster": {
+                "p50": 691,
+                "p95": 850,
+                "p99": 1008,
+                "max": 1090
+              },
+              "cpuScaleAndHud": {
+                "p50": 120,
+                "p95": 125,
+                "p99": 141,
+                "max": 226
+              },
+              "total": {
+                "p50": 1029,
+                "p95": 1350,
+                "p99": 1628,
+                "max": 1945
+              }
+            }
+          }
+        ]
+      }
+    ],
+    "apache": [
+      {
+        "before": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 22143,
+            "maxChunks": 136,
+            "maxDepthPasses": 175126,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 4,
+                "p99": 20,
+                "max": 84
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 6,
+                "max": 864
+              },
+              "setup": {
+                "p50": 434,
+                "p95": 568,
+                "p99": 814,
+                "max": 1719
+              },
+              "raster": {
+                "p50": 1189,
+                "p95": 1514,
+                "p99": 2050,
+                "max": 3751
+              },
+              "cpuScaleAndHud": {
+                "p50": 123,
+                "p95": 166,
+                "p99": 277,
+                "max": 1093
+              },
+              "total": {
+                "p50": 1754,
+                "p95": 2200,
+                "p99": 3087,
+                "max": 5852
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 19768,
+            "maxChunks": 136,
+            "maxDepthPasses": 112100,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 4,
+                "p99": 20,
+                "max": 48
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 5,
+                "max": 33
+              },
+              "setup": {
+                "p50": 414,
+                "p95": 542,
+                "p99": 786,
+                "max": 1006
+              },
+              "raster": {
+                "p50": 851,
+                "p95": 1112,
+                "p99": 1541,
+                "max": 1890
+              },
+              "cpuScaleAndHud": {
+                "p50": 122,
+                "p95": 155,
+                "p99": 221,
+                "max": 390
+              },
+              "total": {
+                "p50": 1395,
+                "p95": 1795,
+                "p99": 2521,
+                "max": 3008
+              }
+            }
+          }
+        ],
+        "after": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 22143,
+            "maxChunks": 136,
+            "maxDepthPasses": 175126,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 3,
+                "p99": 20,
+                "max": 33
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 6,
+                "max": 52
+              },
+              "setup": {
+                "p50": 436,
+                "p95": 531,
+                "p99": 580,
+                "max": 1008
+              },
+              "raster": {
+                "p50": 1176,
+                "p95": 1432,
+                "p99": 1556,
+                "max": 2718
+              },
+              "cpuScaleAndHud": {
+                "p50": 120,
+                "p95": 131,
+                "p99": 218,
+                "max": 363
+              },
+              "total": {
+                "p50": 1745,
+                "p95": 2084,
+                "p99": 2278,
+                "max": 3796
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 19768,
+            "maxChunks": 136,
+            "maxDepthPasses": 112100,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 2,
+                "p99": 20,
+                "max": 30
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 4,
+                "max": 33
+              },
+              "setup": {
+                "p50": 415,
+                "p95": 504,
+                "p99": 561,
+                "max": 900
+              },
+              "raster": {
+                "p50": 844,
+                "p95": 1063,
+                "p99": 1144,
+                "max": 1677
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 132,
+                "p99": 173,
+                "max": 365
+              },
+              "total": {
+                "p50": 1394,
+                "p95": 1680,
+                "p99": 1826,
+                "max": 2807
+              }
+            }
+          }
+        ]
+      },
+      {
+        "after": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 22143,
+            "maxChunks": 136,
+            "maxDepthPasses": 175126,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 3,
+                "p99": 19,
+                "max": 21
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 6,
+                "max": 38
+              },
+              "setup": {
+                "p50": 437,
+                "p95": 533,
+                "p99": 606,
+                "max": 838
+              },
+              "raster": {
+                "p50": 1183,
+                "p95": 1449,
+                "p99": 1628,
+                "max": 2146
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 132,
+                "p99": 170,
+                "max": 591
+              },
+              "total": {
+                "p50": 1751,
+                "p95": 2104,
+                "p99": 2391,
+                "max": 3082
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 19768,
+            "maxChunks": 136,
+            "maxDepthPasses": 112100,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 2,
+                "p99": 19,
+                "max": 21
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 4,
+                "max": 15
+              },
+              "setup": {
+                "p50": 413,
+                "p95": 502,
+                "p99": 558,
+                "max": 905
+              },
+              "raster": {
+                "p50": 845,
+                "p95": 1057,
+                "p99": 1126,
+                "max": 1731
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 129,
+                "p99": 163,
+                "max": 356
+              },
+              "total": {
+                "p50": 1393,
+                "p95": 1677,
+                "p99": 1801,
+                "max": 2691
+              }
+            }
+          }
+        ],
+        "before": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 22143,
+            "maxChunks": 136,
+            "maxDepthPasses": 175126,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 3,
+                "p99": 19,
+                "max": 22
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 5,
+                "max": 21
+              },
+              "setup": {
+                "p50": 432,
+                "p95": 533,
+                "p99": 599,
+                "max": 851
+              },
+              "raster": {
+                "p50": 1175,
+                "p95": 1455,
+                "p99": 1571,
+                "max": 2224
+              },
+              "cpuScaleAndHud": {
+                "p50": 120,
+                "p95": 130,
+                "p99": 169,
+                "max": 313
+              },
+              "total": {
+                "p50": 1742,
+                "p95": 2110,
+                "p99": 2301,
+                "max": 3312
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 19768,
+            "maxChunks": 136,
+            "maxDepthPasses": 112100,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 2,
+                "p99": 18,
+                "max": 22
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 3,
+                "p99": 4,
+                "max": 26
+              },
+              "setup": {
+                "p50": 407,
+                "p95": 502,
+                "p99": 538,
+                "max": 795
+              },
+              "raster": {
+                "p50": 835,
+                "p95": 1049,
+                "p99": 1096,
+                "max": 1266
+              },
+              "cpuScaleAndHud": {
+                "p50": 119,
+                "p95": 125,
+                "p99": 149,
+                "max": 287
+              },
+              "total": {
+                "p50": 1378,
+                "p95": 1667,
+                "p99": 1741,
+                "max": 2322
+              }
+            }
+          }
+        ]
+      },
+      {
+        "before": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 22143,
+            "maxChunks": 136,
+            "maxDepthPasses": 175126,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 2,
+                "p99": 19,
+                "max": 32
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 6,
+                "max": 15
+              },
+              "setup": {
+                "p50": 426,
+                "p95": 518,
+                "p99": 551,
+                "max": 1100
+              },
+              "raster": {
+                "p50": 1175,
+                "p95": 1435,
+                "p99": 1496,
+                "max": 2657
+              },
+              "cpuScaleAndHud": {
+                "p50": 119,
+                "p95": 125,
+                "p99": 144,
+                "max": 323
+              },
+              "total": {
+                "p50": 1740,
+                "p95": 2068,
+                "p99": 2161,
+                "max": 3846
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 19768,
+            "maxChunks": 136,
+            "maxDepthPasses": 112100,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 3,
+                "p99": 19,
+                "max": 65
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 4,
+                "max": 35
+              },
+              "setup": {
+                "p50": 401,
+                "p95": 516,
+                "p99": 618,
+                "max": 848
+              },
+              "raster": {
+                "p50": 840,
+                "p95": 1079,
+                "p99": 1273,
+                "max": 2433
+              },
+              "cpuScaleAndHud": {
+                "p50": 120,
+                "p95": 132,
+                "p99": 181,
+                "max": 305
+              },
+              "total": {
+                "p50": 1382,
+                "p95": 1716,
+                "p99": 2048,
+                "max": 3549
+              }
+            }
+          }
+        ],
+        "after": [
+          {
+            "platform": "desktop",
+            "width": 400,
+            "height": 225,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 948000,
+            "audioQueueDrops": 0,
+            "maxTriangles": 22143,
+            "maxChunks": 136,
+            "maxDepthPasses": 175126,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 3,
+                "p99": 20,
+                "max": 31
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 6,
+                "max": 86
+              },
+              "setup": {
+                "p50": 432,
+                "p95": 547,
+                "p99": 719,
+                "max": 991
+              },
+              "raster": {
+                "p50": 1182,
+                "p95": 1473,
+                "p99": 1949,
+                "max": 2688
+              },
+              "cpuScaleAndHud": {
+                "p50": 121,
+                "p95": 148,
+                "p99": 246,
+                "max": 771
+              },
+              "total": {
+                "p50": 1739,
+                "p95": 2155,
+                "p99": 2835,
+                "max": 3718
+              }
+            }
+          },
+          {
+            "platform": "desktop",
+            "width": 320,
+            "height": 180,
+            "frames": 1800,
+            "warmupFrames": 300,
+            "rendererWorkingBytes": 1072470,
+            "colorAndPresentationBytes": 883200,
+            "audioQueueDrops": 0,
+            "maxTriangles": 19768,
+            "maxChunks": 136,
+            "maxDepthPasses": 112100,
+            "microseconds": {
+              "simulationTwoTicks": {
+                "p50": 1,
+                "p95": 2,
+                "p99": 19,
+                "max": 23
+              },
+              "audio800StereoSamples": {
+                "p50": 2,
+                "p95": 4,
+                "p99": 5,
+                "max": 49
+              },
+              "setup": {
+                "p50": 414,
+                "p95": 500,
+                "p99": 538,
+                "max": 844
+              },
+              "raster": {
+                "p50": 845,
+                "p95": 1053,
+                "p99": 1109,
+                "max": 1555
+              },
+              "cpuScaleAndHud": {
+                "p50": 120,
+                "p95": 131,
+                "p99": 160,
+                "max": 296
+              },
+              "total": {
+                "p50": 1394,
+                "p95": 1674,
+                "p99": 1752,
+                "max": 2401
+              }
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "medianMicroseconds": {
+    "long-lane": {
+      "400": {
+        "setup": {
+          "p50": {
+            "before": 220,
+            "after": 226
+          },
+          "p95": {
+            "before": 455,
+            "after": 463
+          }
+        },
+        "raster": {
+          "p50": {
+            "before": 964,
+            "after": 974
+          },
+          "p95": {
+            "before": 1270,
+            "after": 1262
+          }
+        },
+        "total": {
+          "p50": {
+            "before": 1306,
+            "after": 1329
+          },
+          "p95": {
+            "before": 1821,
+            "after": 1823
+          }
+        },
+        "simulationTwoTicks": {
+          "p50": {
+            "before": 1,
+            "after": 1
+          },
+          "p95": {
+            "before": 5,
+            "after": 5
+          }
+        }
+      },
+      "320": {
+        "setup": {
+          "p50": {
+            "before": 214,
+            "after": 219
+          },
+          "p95": {
+            "before": 434,
+            "after": 435
+          }
+        },
+        "raster": {
+          "p50": {
+            "before": 693,
+            "after": 691
+          },
+          "p95": {
+            "before": 891,
+            "after": 889
+          }
+        },
+        "total": {
+          "p50": {
+            "before": 1031,
+            "after": 1030
+          },
+          "p95": {
+            "before": 1444,
+            "after": 1417
+          }
+        },
+        "simulationTwoTicks": {
+          "p50": {
+            "before": 1,
+            "after": 1
+          },
+          "p95": {
+            "before": 4,
+            "after": 5
+          }
+        }
+      }
+    },
+    "apache": {
+      "400": {
+        "setup": {
+          "p50": {
+            "before": 432,
+            "after": 436
+          },
+          "p95": {
+            "before": 533,
+            "after": 533
+          }
+        },
+        "raster": {
+          "p50": {
+            "before": 1175,
+            "after": 1182
+          },
+          "p95": {
+            "before": 1455,
+            "after": 1449
+          }
+        },
+        "total": {
+          "p50": {
+            "before": 1742,
+            "after": 1745
+          },
+          "p95": {
+            "before": 2110,
+            "after": 2104
+          }
+        },
+        "simulationTwoTicks": {
+          "p50": {
+            "before": 1,
+            "after": 1
+          },
+          "p95": {
+            "before": 3,
+            "after": 3
+          }
+        }
+      },
+      "320": {
+        "setup": {
+          "p50": {
+            "before": 407,
+            "after": 414
+          },
+          "p95": {
+            "before": 516,
+            "after": 502
+          }
+        },
+        "raster": {
+          "p50": {
+            "before": 840,
+            "after": 845
+          },
+          "p95": {
+            "before": 1079,
+            "after": 1057
+          }
+        },
+        "total": {
+          "p50": {
+            "before": 1382,
+            "after": 1394
+          },
+          "p95": {
+            "before": 1716,
+            "after": 1677
+          }
+        },
+        "simulationTwoTicks": {
+          "p50": {
+            "before": 1,
+            "after": 1
+          },
+          "p95": {
+            "before": 3,
+            "after": 2
+          }
+        }
+      }
+    }
+  },
+  "assetBytesSaved": 1305684
+}

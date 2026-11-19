@@ -1,0 +1,63 @@
+// Minimal typed pub/sub between gameplay code and the match UI. The hitscan
+// helper and the bots emit; MatchUI listens. Keeps Bot/WeaponTypes free of
+// any DOM knowledge and avoids import cycles through the UI layer.
+
+import type { RivalId } from "./MatchNames";
+
+// The player killed one of the rival's soldiers
+export interface KillEvent {
+  headshot: boolean;
+  cause: "player" | "airstrike" | "apache"; // kill-feed attribution: your gun, or your streak
+  victim: RivalId;
+}
+
+export interface PlayerDeathEvent {
+  weaponId: string; // bot weapon profile id (or streak name) that landed the killing round
+  self?: boolean; // true when the player's own airstrike got them
+  killer?: RivalId; // whose soldier fired it (absent for self)
+}
+
+// Free-for-all: one rival's soldier killed the other's
+export interface RivalKillEvent {
+  killer: RivalId;
+  victim: RivalId;
+  weaponId: string;
+}
+
+interface EventMap {
+  kill: KillEvent;
+  playerDeath: PlayerDeathEvent;
+  rivalKill: RivalKillEvent;
+}
+
+class MatchEventBus {
+  // Values are heterogenous per key; the generic accessors below restore type
+  // safety at the call sites
+  private handlers = new Map<keyof EventMap, Array<(e: never) => void>>();
+
+  public on<K extends keyof EventMap>(type: K, fn: (e: EventMap[K]) => void): () => void {
+    let list = this.handlers.get(type);
+    if (!list) {
+      list = [];
+      this.handlers.set(type, list);
+    }
+    const listener = fn as (e: never) => void;
+    list.push(listener);
+    return () => {
+      const index = list.indexOf(listener);
+      if (index >= 0) list.splice(index, 1);
+    };
+  }
+
+  public emit<K extends keyof EventMap>(type: K, e: EventMap[K]): void {
+    const list = this.handlers.get(type) as Array<(e: EventMap[K]) => void> | undefined;
+    if (!list) return;
+    for (const fn of [...list]) fn(e);
+  }
+
+  public clear(): void {
+    this.handlers.clear();
+  }
+}
+
+export const MatchEvents = new MatchEventBus();

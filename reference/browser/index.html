@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Fall of Duty is a fast browser FPS match on the compact Ship Box map with bots, killstreaks, and bolt-action precision."
+    />
+    <meta name="theme-color" content="#0c0d10" />
+    <title>Fall of Duty</title>
+  </head>
+  <body>
+    <canvas id="renderCanvas" aria-label="Fall of Duty game canvas"></canvas>
+
+    <!-- HUD overlays -->
+    <div id="hud-root">
+      <div id="damage-vignette"></div>
+      <div id="damage-indicator"></div>
+      <div id="scope-overlay" class="hidden">
+        <div class="scope-reticle"></div>
+        <div class="scope-vignette"></div>
+      </div>
+      <div id="hit-marker" class="hidden"></div>
+      <div id="crosshair">
+        <div class="ch-bar ch-top"></div>
+        <div class="ch-bar ch-bottom"></div>
+        <div class="ch-bar ch-left"></div>
+        <div class="ch-bar ch-right"></div>
+      </div>
+      <canvas id="minimap" width="360" height="360"></canvas>
+      <div id="voice-comms" aria-hidden="true">
+        <span class="voice-icon"></span>
+        <span id="voice-name">IPwndUrMom</span>
+        <span class="voice-bars"><i></i><i></i><i></i></span>
+      </div>
+
+      <!-- Match scoreboard (top center): first to 10 -->
+      <div id="scoreboard">
+        <div class="sb-side sb-you"><span class="sb-label">YOU</span><span class="sb-num" id="sb-you">0</span></div>
+        <div class="sb-mid">FIRST TO 10</div>
+        <div class="sb-side sb-enemy">
+          <span class="sb-num" id="sb-enemy">0</span><span class="sb-label" id="sb-enemy-label">OPFOR</span>
+        </div>
+        <div class="sb-side sb-enemy sb-enemy2">
+          <span class="sb-num" id="sb-enemy2">0</span><span class="sb-label" id="sb-enemy2-label"></span>
+        </div>
+      </div>
+
+      <!-- Kill feed (top right) -->
+      <div id="killfeed"></div>
+
+      <!-- Kill rewards: banner + killstreak callout + floating points -->
+      <div id="kill-banner" class="hidden">
+        <div id="kill-banner-title"></div>
+        <div id="kill-banner-sub"></div>
+      </div>
+      <div id="streak-banner" class="hidden"></div>
+      <div id="points-layer"></div>
+
+      <div id="hud-controls">
+        <b>WASD</b> Move &nbsp;·&nbsp; <b>SHIFT</b> Sprint &nbsp;·&nbsp; <b>Z</b> Jump &nbsp;·&nbsp; <b>C</b> Tap crouch / hold
+        prone &nbsp;·&nbsp; <b>SPACE / RMB</b> Aim &nbsp;·&nbsp; <b>LMB</b> Fire &nbsp;·&nbsp; <b>R</b> Reload &nbsp;·&nbsp;
+        <b>X</b> Swap &nbsp;·&nbsp; <b>4</b> Killstreak &nbsp;·&nbsp; <b>P</b> Pause
+      </div>
+      <!-- Killstreak hint (4 = airstrike laptop / Apache transmitter when one is banked) -->
+      <div id="streak-hint" class="hidden"></div>
+      <div id="hud-game">
+        <div id="hud-ammo"><span id="ammo-clip">30</span>/<span id="ammo-reserve">90</span></div>
+      </div>
+      <div id="hud-prompt"></div>
+      <div id="hud-toast" class="hidden" role="status"></div>
+
+      <!-- Futuristic pre-match start screen -->
+      <div id="start-overlay">
+        <div class="start-frame">
+          <div class="start-hero">
+            <div class="start-copy">
+              <div class="start-kicker">LIVE FIRE BRIEFING</div>
+              <h1>FALL OF DUTY</h1>
+              <div class="start-map-card">
+                <span>MAP SELECTED</span>
+                <strong>SHIP BOX</strong>
+                <em>RAIN / CONTAINERS / FIRST TO 10</em>
+              </div>
+            </div>
+            <div class="start-operator">
+              <canvas id="start-character-preview" aria-label="3D operator preview"></canvas>
+              <div class="operator-readout">
+                <span>CALLSIGN</span>
+                <strong id="start-operator-name">Player 1</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="start-side">
+            <div class="start-panel start-identity">
+              <label class="start-panel-label" for="start-username">USERNAME</label>
+              <input
+                id="start-username"
+                class="start-username-input"
+                type="text"
+                value="Player 1"
+                placeholder="Player 1"
+                maxlength="24"
+                autocomplete="nickname"
+                spellcheck="false"
+              />
+            </div>
+
+            <div class="start-panel start-loadout">
+              <div class="start-panel-label">AVAILABLE GUNS</div>
+              <div class="weapon-grid">
+                <div class="weapon-card">
+                  <span>PRIMARY</span>
+                  <strong>MP44</strong>
+                  <div class="stat-bars" style="--a: 82%; --b: 48%; --c: 66%"></div>
+                </div>
+                <div class="weapon-card">
+                  <span>PRECISION</span>
+                  <strong>M40A3</strong>
+                  <div class="stat-bars" style="--a: 42%; --b: 94%; --c: 36%"></div>
+                </div>
+                <div class="weapon-card">
+                  <span>SIDEARM</span>
+                  <strong>USP .45</strong>
+                  <div class="stat-bars" style="--a: 58%; --b: 54%; --c: 78%"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="start-panel start-opponent">
+              <div class="start-panel-label">OPPONENT</div>
+              <div class="rival-picker" role="radiogroup" aria-label="Opponent" data-rival-picker>
+                <button type="button" class="rival-card" role="radio" aria-checked="false" data-rival="ipwndurmom">
+                  <strong>IPwndUrMom</strong>
+                  <span class="rival-line">“Booyah! Chaboy!”</span>
+                  <span class="rival-badge">STANDARD</span>
+                </button>
+                <button type="button" class="rival-card rival-hard" role="radio" aria-checked="false" data-rival="hanz">
+                  <strong>Hanz</strong>
+                  <span class="rival-line">“Immer vorne, nie zurück!”</span>
+                  <span class="rival-badge">+10% HARDER</span>
+                </button>
+                <button type="button" class="rival-card rival-ffa" role="radio" aria-checked="false" data-rival="ffa">
+                  <strong>Free for all</strong>
+                  <span class="rival-line">Both of them. They shoot each other too.</span>
+                  <span class="rival-badge">3-WAY</span>
+                </button>
+              </div>
+              <button type="button" class="rival-sample" data-rival-sample>&#9654; HEAR A TAUNT</button>
+            </div>
+
+            <div class="start-panel start-hardness">
+              <div class="start-panel-label">
+                ENEMY HARDNESS <span id="start-diff-value">5</span>/10 · <span id="start-diff-name">Hardened</span>
+              </div>
+              <input id="start-diff-slider" class="diff-slider" type="range" min="1" max="10" step="1" value="5" />
+              <div class="menu-settings-scale"><span>RECRUIT</span><span>TERMINATOR</span></div>
+            </div>
+
+            <div class="start-panel start-graphics">
+              <div class="start-panel-label">GRAPHICS</div>
+              <div class="quality-picker" role="radiogroup" aria-label="Graphics quality" data-quality-picker>
+                <button type="button" class="quality-opt" data-quality="high">HIGH</button>
+                <button type="button" class="quality-opt" data-quality="balanced">BALANCED</button>
+                <button type="button" class="quality-opt" data-quality="performance">FAST</button>
+              </div>
+              <div class="quality-desc" data-quality-desc></div>
+            </div>
+
+            <div class="start-panel start-comms">
+              <div class="start-panel-label">COMMS</div>
+              <button id="btn-trash-start" class="trash-toggle" type="button" aria-pressed="true">
+                <span class="trash-toggle-text">
+                  <span class="trash-toggle-title">MUTE TRASH TALK</span>
+                  <span class="trash-toggle-desc">Silence enemy voice taunts</span>
+                </span>
+                <span class="trash-toggle-switch"><span class="trash-toggle-knob"></span></span>
+                <span class="trash-toggle-state">ON</span>
+              </button>
+            </div>
+
+            <div id="startup-status" class="startup-status" role="status" aria-live="polite">
+              <p id="startup-message">Loading the yard and soldier…</p>
+              <button id="btn-retry" class="menu-btn hidden" type="button">RETRY LOADING</button>
+            </div>
+            <button id="btn-start" class="start-btn" disabled>START MATCH</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pause menu -->
+      <div id="menu-overlay" class="hidden">
+        <div class="menu-panel">
+          <h1>PAUSED</h1>
+          <div id="pause-score" class="menu-score"></div>
+          <button id="btn-resume" class="menu-btn primary">RESUME</button>
+          <div class="menu-settings">
+            <div class="menu-settings-label">
+              ENEMY DIFFICULTY&nbsp; <span id="diff-value">5</span>/10 &nbsp;·&nbsp; <span id="diff-name">Hardened</span>
+            </div>
+            <input id="diff-slider" class="diff-slider" type="range" min="1" max="10" step="1" value="5" />
+            <div class="menu-settings-scale"><span>RECRUIT</span><span>TERMINATOR</span></div>
+          </div>
+          <div class="menu-settings">
+            <div class="menu-settings-label">GRAPHICS</div>
+            <div class="quality-picker" role="radiogroup" aria-label="Graphics quality" data-quality-picker>
+              <button type="button" class="quality-opt" data-quality="high">HIGH</button>
+              <button type="button" class="quality-opt" data-quality="balanced">BALANCED</button>
+              <button type="button" class="quality-opt" data-quality="performance">FAST</button>
+            </div>
+            <div class="quality-desc" data-quality-desc></div>
+          </div>
+          <button id="btn-trash-pause" class="trash-toggle" type="button" aria-pressed="true">
+            <span class="trash-toggle-text">
+              <span class="trash-toggle-title">MUTE TRASH TALK</span>
+              <span class="trash-toggle-desc">Silence enemy voice taunts</span>
+            </span>
+            <span class="trash-toggle-switch"><span class="trash-toggle-knob"></span></span>
+            <span class="trash-toggle-state">ON</span>
+          </button>
+          <button id="btn-end" class="menu-btn danger">END MATCH</button>
+        </div>
+      </div>
+
+      <!-- Match end screen -->
+      <div id="end-overlay" class="hidden">
+        <div class="end-panel" id="end-panel">
+          <div id="end-emblem" aria-hidden="true"></div>
+          <h1 id="end-title">VICTORY</h1>
+          <div id="end-subtitle"></div>
+          <div id="end-score">0 — 0</div>
+          <div id="end-verdict"></div>
+          <div id="end-stats"></div>
+          <div class="end-rival">
+            <div class="end-rival-label">NEXT OPPONENT</div>
+            <div class="rival-picker rival-picker-compact" role="radiogroup" aria-label="Next opponent" data-rival-picker>
+              <button type="button" class="rival-card" role="radio" aria-checked="false" data-rival="ipwndurmom">
+                <strong>IPwndUrMom</strong>
+                <span class="rival-badge">STANDARD</span>
+              </button>
+              <button type="button" class="rival-card rival-hard" role="radio" aria-checked="false" data-rival="hanz">
+                <strong>Hanz</strong>
+                <span class="rival-badge">+10%</span>
+              </button>
+              <button type="button" class="rival-card rival-ffa" role="radio" aria-checked="false" data-rival="ffa">
+                <strong>Free for all</strong>
+                <span class="rival-badge">3-WAY</span>
+              </button>
+            </div>
+          </div>
+          <button id="btn-again" class="menu-btn primary">PLAY AGAIN</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

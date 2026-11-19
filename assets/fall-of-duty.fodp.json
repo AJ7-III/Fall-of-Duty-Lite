@@ -1,0 +1,971 @@
+{
+  "format": "FODPACK",
+  "schema": 7,
+  "sourceRevision": "ecfb87d80d1002a086afaf6f657f4ad2c3f23467",
+  "sourceDirty": true,
+  "inputLockSha256": "ad0176a9cd8e30910c61feab3ab6c8cde3510f961595fade172878fb7f0e01ec",
+  "babylon": "9.36.0",
+  "playwright": "1.65.0",
+  "art": {
+    "seed": 1299857073,
+    "maxTexture": 128,
+    "walkFrames": 6,
+    "runFrames": 6
+  },
+  "characters": [
+    "IPwndUrMom",
+    "Hanz",
+    "Player"
+  ],
+  "textureSizes": [
+    [
+      "grassTex_12_12",
+      128,
+      128
+    ],
+    [
+      "containerDoorTex_rust",
+      128,
+      128
+    ],
+    [
+      "truckInstrumentsMat_tex",
+      128,
+      48
+    ],
+    [
+      "truck_windshield_tex",
+      128,
+      64
+    ],
+    [
+      "carInstrumentsMat_tex",
+      128,
+      48
+    ],
+    [
+      "car_windshield_tex",
+      128,
+      64
+    ],
+    [
+      "car_rearGlass_tex",
+      128,
+      64
+    ],
+    [
+      "billboardMuralTex_1",
+      192,
+      256
+    ],
+    [
+      "billboardMuralTex_2",
+      128,
+      256
+    ],
+    [
+      "stoneWalkTex",
+      128,
+      128
+    ],
+    [
+      "graffitiWallAtlasTex",
+      1024,
+      512
+    ],
+    [
+      "concreteTex",
+      128,
+      128
+    ],
+    [
+      "metalPanelTex",
+      128,
+      128
+    ],
+    [
+      "containerTex_green",
+      128,
+      128
+    ],
+    [
+      "containerDoorTex_green",
+      128,
+      128
+    ],
+    [
+      "woodCrateTex",
+      128,
+      128
+    ],
+    [
+      "containerTex_blue",
+      128,
+      128
+    ],
+    [
+      "containerDoorTex_blue",
+      128,
+      128
+    ],
+    [
+      "containerTex_rust",
+      128,
+      128
+    ],
+    [
+      "containerTex_gray",
+      128,
+      128
+    ],
+    [
+      "containerDoorTex_gray",
+      128,
+      128
+    ],
+    [
+      "containerTex_red",
+      128,
+      128
+    ],
+    [
+      "containerDoorTex_red",
+      128,
+      128
+    ],
+    [
+      "truckCabPaintTex",
+      128,
+      128
+    ],
+    [
+      "vehicleCarpetTex",
+      128,
+      128
+    ],
+    [
+      "vehicleClothTex",
+      128,
+      128
+    ],
+    [
+      "vehicleDashTex",
+      128,
+      128
+    ],
+    [
+      "vehicleClothTex",
+      128,
+      128
+    ],
+    [
+      "vehicleRubberTex",
+      128,
+      128
+    ],
+    [
+      "vehiclePlateMat_SBX 312_tex",
+      128,
+      48
+    ],
+    [
+      "truckCargoPaintTex",
+      128,
+      128
+    ],
+    [
+      "carBodyTex",
+      128,
+      128
+    ],
+    [
+      "vehiclePlateMat_SBX 074_tex",
+      128,
+      48
+    ],
+    [
+      "windowBandTex",
+      128,
+      128
+    ],
+    [
+      "liteFieldSand_jacket",
+      64,
+      64
+    ],
+    [
+      "liteFieldSlate_jacket",
+      64,
+      64
+    ],
+    [
+      "liteHanz_jacket",
+      64,
+      64
+    ],
+    [
+      "liteFieldSand_pants",
+      32,
+      32
+    ],
+    [
+      "liteFieldSlate_pants",
+      32,
+      32
+    ],
+    [
+      "liteHanz_pants",
+      32,
+      32
+    ],
+    [
+      "liteFieldSand_helmet",
+      32,
+      32
+    ],
+    [
+      "liteFieldSlate_helmet",
+      32,
+      32
+    ],
+    [
+      "liteHanz_helmet",
+      32,
+      32
+    ],
+    [
+      "liteFieldSand_vest",
+      32,
+      32
+    ],
+    [
+      "liteFieldSlate_vest",
+      32,
+      32
+    ],
+    [
+      "liteHanz_vest",
+      32,
+      32
+    ],
+    [
+      "liteFieldSand_pocket",
+      32,
+      32
+    ],
+    [
+      "liteFieldSlate_pocket",
+      32,
+      32
+    ],
+    [
+      "liteHanz_pocket",
+      32,
+      32
+    ],
+    [
+      "liteFieldSand_webbing",
+      32,
+      32
+    ],
+    [
+      "liteFieldSlate_webbing",
+      32,
+      32
+    ],
+    [
+      "liteHanz_webbing",
+      32,
+      32
+    ],
+    [
+      "liteFieldSand_gloves",
+      64,
+      64
+    ],
+    [
+      "liteFieldSlate_gloves",
+      64,
+      64
+    ],
+    [
+      "liteHanz_gloves",
+      64,
+      64
+    ],
+    [
+      "liteFieldSand_walnut",
+      32,
+      32
+    ],
+    [
+      "knurlTex",
+      128,
+      128
+    ],
+    [
+      "mp44MetalTex",
+      128,
+      128
+    ],
+    [
+      "mp44WoodTex",
+      128,
+      128
+    ],
+    [
+      "liteGraphiteStock",
+      128,
+      128
+    ],
+    [
+      "uspStippleTex",
+      128,
+      128
+    ],
+    [
+      "uspPolymerTex",
+      128,
+      128
+    ]
+  ],
+  "meshCounts": [
+    {
+      "vertices": 39358,
+      "triangles": 37854,
+      "chunks": 169
+    },
+    {
+      "vertices": 4828,
+      "triangles": 5472,
+      "chunks": 1
+    },
+    {
+      "vertices": 4207,
+      "triangles": 5646,
+      "chunks": 1
+    },
+    {
+      "vertices": 2887,
+      "triangles": 3344,
+      "chunks": 1
+    },
+    {
+      "vertices": 780,
+      "triangles": 920,
+      "chunks": 1
+    },
+    {
+      "vertices": 4828,
+      "triangles": 5472,
+      "chunks": 1
+    },
+    {
+      "vertices": 4207,
+      "triangles": 5646,
+      "chunks": 1
+    },
+    {
+      "vertices": 2887,
+      "triangles": 3344,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    },
+    {
+      "vertices": 2868,
+      "triangles": 4896,
+      "chunks": 1
+    }
+  ],
+  "weaponTracks": [
+    [
+      0,
+      0.2,
+      0.39,
+      0.52,
+      0.62,
+      0.77,
+      0.92,
+      1.1,
+      1.26
+    ],
+    [
+      0,
+      0.15,
+      0.3,
+      0.41,
+      0.53,
+      0.65,
+      0.79,
+      0.91,
+      1.04,
+      1.17,
+      1.33,
+      1.47,
+      1.62
+    ],
+    [
+      0,
+      0.15,
+      0.31,
+      0.42,
+      0.55,
+      0.75,
+      0.94,
+      1.16
+    ],
+    [
+      0,
+      0.216,
+      0.45599999999999996,
+      0.672,
+      0.888,
+      1.08,
+      1.2
+    ],
+    [
+      0,
+      0.2,
+      0.39,
+      0.52,
+      0.63,
+      0.92,
+      1.1,
+      1.23,
+      1.36,
+      1.51,
+      1.62
+    ],
+    [
+      0,
+      0.15,
+      0.31,
+      0.42,
+      0.55,
+      0.75,
+      0.94,
+      1.16
+    ]
+  ],
+  "boltClearance": {
+    "samples": 178,
+    "crossSectionMarginMm": 3.272569876643854
+  },
+  "hanzPoseTriangles": 4820,
+  "playerTriangles": 5024,
+  "jetTriangles": 164,
+  "shotSurfaces": [
+    "floor",
+    "neFront_door",
+    "truck_instruments_dials",
+    "truck_windshield",
+    "truck_glassDoor-1",
+    "truck_glassDoor1",
+    "car_instruments_dials",
+    "car_windshield",
+    "car_rearGlass",
+    "car_glassF-1",
+    "car_glassR-1",
+    "car_glassF1",
+    "car_glassR1",
+    "billN_img",
+    "billE_img",
+    "walkNS_merged",
+    "wallN_merged",
+    "wallN_cap_merged",
+    "wallN_post0_merged",
+    "nwN_lo_merged",
+    "nwN_lo_door_merged",
+    "nwOpen_floor_merged",
+    "neBack_merged",
+    "neBack_door_merged",
+    "neFront_merged",
+    "swFront_merged",
+    "swFront_door_merged",
+    "seLo-2.34_merged",
+    "seLo-2.34_door_merged",
+    "truck_frameRail-1_merged",
+    "truck_fuelTank_merged",
+    "truck_cabFront_merged",
+    "truck_arch-1_liner_merged",
+    "truck_cabCarpet_merged",
+    "truck_headliner_merged",
+    "truck_dash_merged",
+    "truck_seat-0.57_insert_merged",
+    "truck_seat-0.57_cushionStitch-1_merged",
+    "truck_seat-0.57_release_merged",
+    "truck_gearBoot_merged",
+    "truck_plateF_merged",
+    "truck_headlamp-1_merged",
+    "truck_indicator-1_merged",
+    "truck_boxWallL_merged",
+    "truck_taillamp-1_merged",
+    "car_shoulder-1_merged",
+    "car_plateF_merged",
+    "warehouseN_merged",
+    "warehouseN_win1_merged",
+    "warehouseN_door1_merged",
+    "warehouseN_vent1_merged",
+    "gantry_beam_merged",
+    "oobStackS1a_merged",
+    "oobStackS2a_merged",
+    "oobStackS2b_merged",
+    "lamp_head_-20_11_merged"
+  ],
+  "shotTriangleCount": 37854,
+  "obstacles": 52,
+  "navNodes": 676,
+  "navEdges": 2392,
+  "hitboxFrames": 13,
+  "glass": [
+    3,
+    1,
+    1,
+    3,
+    3,
+    1,
+    1,
+    1,
+    1
+  ],
+  "voiceCodec": "IMA ADPCM, mono 24 kHz",
+  "voices": [
+    {
+      "name": "ipwndurmom/match-start-01.wav",
+      "sampleCount": 60480,
+      "pcmBytes": 120960,
+      "adpcmBytes": 30248,
+      "snrDb": 27.34
+    },
+    {
+      "name": "ipwndurmom/match-start-02.wav",
+      "sampleCount": 132480,
+      "pcmBytes": 264960,
+      "adpcmBytes": 66248,
+      "snrDb": 27.55
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-01.wav",
+      "sampleCount": 104640,
+      "pcmBytes": 209280,
+      "adpcmBytes": 52328,
+      "snrDb": 33.64
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-02.wav",
+      "sampleCount": 138240,
+      "pcmBytes": 276480,
+      "adpcmBytes": 69128,
+      "snrDb": 24.55
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-03.wav",
+      "sampleCount": 96000,
+      "pcmBytes": 192000,
+      "adpcmBytes": 48008,
+      "snrDb": 24.48
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-04.wav",
+      "sampleCount": 35520,
+      "pcmBytes": 71040,
+      "adpcmBytes": 17768,
+      "snrDb": 40.2
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-05.wav",
+      "sampleCount": 54720,
+      "pcmBytes": 109440,
+      "adpcmBytes": 27368,
+      "snrDb": 27.81
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-06.wav",
+      "sampleCount": 109440,
+      "pcmBytes": 218880,
+      "adpcmBytes": 54728,
+      "snrDb": 25.11
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-07.wav",
+      "sampleCount": 67200,
+      "pcmBytes": 134400,
+      "adpcmBytes": 33608,
+      "snrDb": 27.4
+    },
+    {
+      "name": "ipwndurmom/taunt-kill-08.wav",
+      "sampleCount": 64320,
+      "pcmBytes": 128640,
+      "adpcmBytes": 32168,
+      "snrDb": 27.31
+    },
+    {
+      "name": "ipwndurmom/taunt-victory-01.wav",
+      "sampleCount": 108480,
+      "pcmBytes": 216960,
+      "adpcmBytes": 54248,
+      "snrDb": 28.68
+    },
+    {
+      "name": "ipwndurmom/taunt-victory-02.wav",
+      "sampleCount": 98880,
+      "pcmBytes": 197760,
+      "adpcmBytes": 49448,
+      "snrDb": 29.66
+    },
+    {
+      "name": "ipwndurmom/taunt-victory-03.wav",
+      "sampleCount": 105600,
+      "pcmBytes": 211200,
+      "adpcmBytes": 52808,
+      "snrDb": 30.59
+    },
+    {
+      "name": "ipwndurmom/taunt-victory-04.wav",
+      "sampleCount": 30720,
+      "pcmBytes": 61440,
+      "adpcmBytes": 15368,
+      "snrDb": 33.36
+    },
+    {
+      "name": "ipwndurmom/taunt-victory-05.wav",
+      "sampleCount": 93120,
+      "pcmBytes": 186240,
+      "adpcmBytes": 46568,
+      "snrDb": 28.71
+    },
+    {
+      "name": "ipwndurmom/taunt-victory-06.wav",
+      "sampleCount": 46080,
+      "pcmBytes": 92160,
+      "adpcmBytes": 23048,
+      "snrDb": 28.35
+    },
+    {
+      "name": "ipwndurmom/taunt-victory-07.wav",
+      "sampleCount": 65280,
+      "pcmBytes": 130560,
+      "adpcmBytes": 32648,
+      "snrDb": 28.34
+    },
+    {
+      "name": "hanz/match-start-01.mp3",
+      "sampleCount": 73978,
+      "pcmBytes": 147956,
+      "adpcmBytes": 36997,
+      "snrDb": 23.91
+    },
+    {
+      "name": "hanz/taunt-kill-01.mp3",
+      "sampleCount": 48901,
+      "pcmBytes": 97802,
+      "adpcmBytes": 24458,
+      "snrDb": 27.32
+    },
+    {
+      "name": "hanz/taunt-kill-02.mp3",
+      "sampleCount": 52662,
+      "pcmBytes": 105324,
+      "adpcmBytes": 26339,
+      "snrDb": 23.63
+    },
+    {
+      "name": "hanz/taunt-kill-03.mp3",
+      "sampleCount": 70217,
+      "pcmBytes": 140434,
+      "adpcmBytes": 35116,
+      "snrDb": 26.63
+    },
+    {
+      "name": "hanz/taunt-kill-04.mp3",
+      "sampleCount": 64574,
+      "pcmBytes": 129148,
+      "adpcmBytes": 32295,
+      "snrDb": 26.76
+    },
+    {
+      "name": "hanz/taunt-kill-05.mp3",
+      "sampleCount": 100937,
+      "pcmBytes": 201874,
+      "adpcmBytes": 50476,
+      "snrDb": 30.76
+    },
+    {
+      "name": "hanz/taunt-victory-01.mp3",
+      "sampleCount": 64574,
+      "pcmBytes": 129148,
+      "adpcmBytes": 32295,
+      "snrDb": 25.12
+    },
+    {
+      "name": "hanz/taunt-victory-02.mp3",
+      "sampleCount": 64574,
+      "pcmBytes": 129148,
+      "adpcmBytes": 32295,
+      "snrDb": 22.04
+    },
+    {
+      "name": "hanz/taunt-victory-03.mp3",
+      "sampleCount": 62066,
+      "pcmBytes": 124132,
+      "adpcmBytes": 31041,
+      "snrDb": 27.45
+    },
+    {
+      "name": "hanz/taunt-victory-04.mp3",
+      "sampleCount": 37616,
+      "pcmBytes": 75232,
+      "adpcmBytes": 18816,
+      "snrDb": 25.79
+    }
+  ],
+  "audio": [
+    [
+      "playMp44ShootSound",
+      7680
+    ],
+    [
+      "playShootSound",
+      13680
+    ],
+    [
+      "playPistolShootSound",
+      7200
+    ],
+    [
+      "playMagInSound",
+      5760
+    ],
+    [
+      "playBoltCycleSound",
+      11520
+    ],
+    [
+      "playDryFireSound",
+      3600
+    ],
+    [
+      "footstep",
+      4800
+    ],
+    [
+      "playBulletWhizSound",
+      3120
+    ],
+    [
+      "playGlassBreakSound",
+      9600
+    ],
+    [
+      "playHitSound",
+      4081
+    ],
+    [
+      "playPlayerDeathSound",
+      20400
+    ],
+    [
+      "playUavOnlineSound",
+      21600
+    ],
+    [
+      "playLaptopOpenSound",
+      7200
+    ],
+    [
+      "playExplosionSound",
+      29760
+    ],
+    [
+      "setRotorVolume",
+      48000
+    ],
+    [
+      "reservedRain",
+      1
+    ],
+    [
+      "playKillSound",
+      6000
+    ],
+    [
+      "playKillSound",
+      9120
+    ]
+  ],
+  "encodings": {
+    "positions": "q16",
+    "shots": "indexed",
+    "storage": "deflate"
+  },
+  "positionErrorMeters": 0.000762939453125,
+  "singleRivalTopology": true,
+  "adsVertexCorrespondence": [
+    true,
+    true,
+    true
+  ],
+  "uniqueShotVertices": 20293,
+  "storedBytes": 3653826,
+  "sections": [
+    {
+      "name": "materials",
+      "storedBytes": 401,
+      "decodedPayloadBytes": 672,
+      "crc32": "6cf777b0",
+      "unpackedBytes": 676
+    },
+    {
+      "name": "textures",
+      "storedBytes": 415549,
+      "decodedPayloadBytes": 2375680,
+      "crc32": "d3e5a116",
+      "unpackedBytes": 2375932
+    },
+    {
+      "name": "mesh geometry",
+      "storedBytes": 758351,
+      "decodedPayloadBytes": 2961000,
+      "crc32": "177cc81d",
+      "unpackedBytes": 1983544
+    },
+    {
+      "name": "player shot surfaces",
+      "storedBytes": 287762,
+      "decodedPayloadBytes": 1670984,
+      "crc32": "fc17dcf8",
+      "unpackedBytes": 703188
+    },
+    {
+      "name": "movement obstacles",
+      "storedBytes": 593,
+      "decodedPayloadBytes": 1872,
+      "crc32": "0f4a940b",
+      "unpackedBytes": 1876
+    },
+    {
+      "name": "bot navigation",
+      "storedBytes": 7704,
+      "decodedPayloadBytes": 35360,
+      "crc32": "008ad6c1",
+      "unpackedBytes": 34016
+    },
+    {
+      "name": "glass pane strength",
+      "storedBytes": 13,
+      "decodedPayloadBytes": 9,
+      "crc32": "cde77f7e",
+      "unpackedBytes": 13
+    },
+    {
+      "name": "audio",
+      "storedBytes": 252012,
+      "decodedPayloadBytes": 426244,
+      "crc32": "74209698",
+      "unpackedBytes": 426320
+    },
+    {
+      "name": "posed rival hitboxes",
+      "storedBytes": 7143,
+      "decodedPayloadBytes": 9152,
+      "crc32": "ee7bafc0",
+      "unpackedBytes": 9208
+    },
+    {
+      "name": "weapon motion tracks",
+      "storedBytes": 812756,
+      "decodedPayloadBytes": 1364488,
+      "crc32": "b532a7c5",
+      "unpackedBytes": 1361604
+    },
+    {
+      "name": "strike jet",
+      "storedBytes": 1390,
+      "decodedPayloadBytes": 5716,
+      "crc32": "a6cf7ad0",
+      "unpackedBytes": 4838
+    },
+    {
+      "name": "ADPCM rival voices",
+      "storedBytes": 846227,
+      "decodedPayloadBytes": 1025648,
+      "crc32": "e026e556",
+      "unpackedBytes": 1025892
+    },
+    {
+      "name": "sky cubemap",
+      "storedBytes": 6080,
+      "decodedPayloadBytes": 24576,
+      "crc32": "66e50ac0",
+      "unpackedBytes": 24576
+    },
+    {
+      "name": "Hanz and player meshes",
+      "storedBytes": 257405,
+      "decodedPayloadBytes": 950348,
+      "crc32": "a98e44cf",
+      "unpackedBytes": 442070
+    }
+  ],
+  "sha256": "14093c20bf09e6bbc87663f3714fe7cd68c3f874bdaacf33a11da8ff89575a08"
+}

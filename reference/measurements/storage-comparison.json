@@ -1,0 +1,107 @@
+{
+  "beforeBytes": 8394137,
+  "afterBytes": 3653826,
+  "sizeReduction": 0.5647168970437342,
+  "doomSharewareBytes": 4196020,
+  "allSectionsByteIdentical": true,
+  "sections": [
+    {
+      "id": 1,
+      "before": 676,
+      "after": 401,
+      "blocks": 1,
+      "rawBlocks": 0
+    },
+    {
+      "id": 2,
+      "before": 2375932,
+      "after": 415549,
+      "blocks": 291,
+      "rawBlocks": 0
+    },
+    {
+      "id": 3,
+      "before": 1983544,
+      "after": 758351,
+      "blocks": 243,
+      "rawBlocks": 0
+    },
+    {
+      "id": 4,
+      "before": 703188,
+      "after": 287762,
+      "blocks": 86,
+      "rawBlocks": 0
+    },
+    {
+      "id": 5,
+      "before": 1876,
+      "after": 593,
+      "blocks": 1,
+      "rawBlocks": 0
+    },
+    {
+      "id": 6,
+      "before": 34016,
+      "after": 7704,
+      "blocks": 5,
+      "rawBlocks": 0
+    },
+    {
+      "id": 7,
+      "before": 13,
+      "after": 13,
+      "blocks": 0,
+      "rawBlocks": 0
+    },
+    {
+      "id": 8,
+      "before": 426320,
+      "after": 252012,
+      "blocks": 53,
+      "rawBlocks": 0
+    },
+    {
+      "id": 9,
+      "before": 9208,
+      "after": 7143,
+      "blocks": 2,
+      "rawBlocks": 0
+    },
+    {
+      "id": 10,
+      "before": 1361604,
+      "after": 812756,
+      "blocks": 167,
+      "rawBlocks": 0
+    },
+    {
+      "id": 11,
+      "before": 4838,
+      "after": 1390,
+      "blocks": 1,
+      "rawBlocks": 0
+    },
+    {
+      "id": 12,
+      "before": 1025892,
+      "after": 846227,
+      "blocks": 126,
+      "rawBlocks": 0
+    },
+    {
+      "id": 13,
+      "before": 24576,
+      "after": 6080,
+      "blocks": 3,
+      "rawBlocks": 0
+    },
+    {
+      "id": 14,
+      "before": 442070,
+      "after": 257405,
+      "blocks": 54,
+      "rawBlocks": 0
+    }
+  ]
+}
