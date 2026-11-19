@@ -1,6 +1,6 @@
 # Fall of Duty Lite
 
-**3.72 MB of game data.** The published v1.0.0 download with Guition firmware is **4.17 MB**.
+**3.72 MB of game data in this checkout.** The published v1.0.0 handheld download is **4.17 MB** with Guition firmware.
 
 Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten duel in Ship Box, a rain-soaked container yard. Pick one of two rivals and a difficulty from 1 to 10. Difficulty defaults to level 5. The game renders at 400×225 or 320×180 and presents at 800×480.
 
@@ -25,6 +25,8 @@ Grab the prebuilt v1.0.0 handheld package from the [GitHub release page](https:/
 - [Fall-of-Duty-Lite-Guition-ESP32-P4.zip](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip)
 - [Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256)
 - [Latest releases](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/latest)
+
+For the renderer and gameplay updates shown here, [build the handheld package from this checkout](#build-and-package-handheld-firmware). The verified archive is **4.25 MB**.
 
 The archive bundles the bootloader, partition table, application binary, schema 7 SD pack, reference replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`. Keep the firmware and SD pack from the same archive together because schema 7 packs require firmware with schema 7 support.
 
