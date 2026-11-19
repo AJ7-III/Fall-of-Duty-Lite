@@ -76,6 +76,7 @@ void checkTouchAndReconnect(const Assets& assets) {
     input.touchY = startY + 16;
     app.tick(input);
     check(app.state().match == Match::Playing, "Touch should start the live duel.");
+    check(app.state().difficulty == 5, "A new installation should start at difficulty level 5.");
     check(app.state().alternateRival, "A new installation should start a duel against Hanz.");
     std::array<int16_t, 64> silence{};
     app.audio.mix(silence.data(), silence.size() / 2);

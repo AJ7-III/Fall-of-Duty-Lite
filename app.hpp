@@ -7,7 +7,7 @@ namespace fod {
 
 struct MenuState {
     std::array<char, 17> callsign{'P', 'L', 'A', 'Y', 'E', 'R', '\0'};
-    int selection = 0, difficulty = 3, volume = 70, callsignCursor = 0;
+    int selection = 0, difficulty = defaultDifficulty, volume = 70, callsignCursor = 0;
     bool compact = false, voice = true, alternateRival = defaultAlternateRival, editing = false, setup = false;
 
     int width() const { return compact ? 320 : 400; }

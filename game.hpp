@@ -66,7 +66,7 @@ struct Snapshot {
     double scaledTime = 0, realTime = 0, scaledDelta = 0, timeScale = 1;
     uint32_t tick = 0;
     uint64_t brokenGlass = 0;
-    int playerScore = 0, rivalScore = 0, streak = 0, clip = 30, reserve = 90, difficulty = 3;
+    int playerScore = 0, rivalScore = 0, streak = 0, clip = 30, reserve = 90, difficulty = defaultDifficulty;
     Match match = Match::Start;
     Weapon weapon = Weapon::Mp44;
     WeaponState weaponState = WeaponState::Idle;

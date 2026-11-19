@@ -118,7 +118,13 @@ void testMovementAndPause(const Assets& assets) {
     g.setupFixture(f);
     Input move;
     move.moveY = 1;
-    ticks(g, 12, move);
+    g.step(move);
+    const auto* end = g.events() + g.eventCount();
+    const auto* step = std::find_if(g.events(), end, [](const Event& e) {
+        return e.kind == EventKind::Sound && e.sound == Sound::Footstep;
+    });
+    CHECK(step != end && std::abs(step->volume - .119f) < .001f);
+    ticks(g, 11, move);
     CHECK(std::abs(g.state().player.position.z - (f.player.z + .8f)) < .001f);
     g.step(buttons(Jump, Jump));
     ticks(g, 18);

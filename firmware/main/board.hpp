@@ -24,7 +24,7 @@ void unmountSd();
 void initializeSettings();
 
 struct SavedSettings {
-    int32_t difficulty = 3;
+    int32_t difficulty = fod::defaultDifficulty;
     uint8_t fast = 0;
     uint8_t voice = 1;
     uint8_t volume = 70;

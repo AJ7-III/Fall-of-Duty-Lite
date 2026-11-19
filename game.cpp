@@ -15,6 +15,7 @@ constexpr double fallAt[]{1.32, 1.62, 1.30};
 constexpr double fallStart[]{.50, .98, .62};
 constexpr double gaspAt[]{.30, .32, .26};
 constexpr float standEye = 1.7f, crouchEye = .95f, proneEye = .42f;
+constexpr float footstepGain = .35f;
 
 struct ReloadCue {
     double time = 0;
@@ -351,7 +352,7 @@ struct Game::Impl {
         if (moving && s.grounded && s.player.speed > .2f && !s.prone) {
             footstep -= dt;
             if (footstep <= 0) {
-                sound(Sound::Footstep, s.sprint ? .55f : s.crouch ? .18f : .34f);
+                sound(Sound::Footstep, footstepGain * (s.sprint ? .55f : s.crouch ? .18f : .34f));
                 footstep += s.sprint ? .34 : s.crouch ? .60 : .45;
             }
         } else {
@@ -1034,7 +1035,7 @@ struct Game::Impl {
             const float speed = bot.actor.speed;
             rivalFootstep -= dt;
             if (rivalFootstep <= 0) {
-                sound(Sound::Footstep, .4f, true, bot.actor.position);
+                sound(Sound::Footstep, footstepGain * .4f, true, bot.actor.position);
                 rivalFootstep += speed > 4.8f ? .34 : .45;
             }
         } else {

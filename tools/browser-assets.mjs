@@ -16,6 +16,7 @@ import { Killstreaks } from "../reference/browser/src/killstreaks/Killstreaks.ts
 import { AudioSynth } from "../reference/browser/src/rendering/AudioSynth.ts";
 import { buildFieldInfantry, buildViewArms, registerInfantryMaterials } from "./lite-infantry.mjs";
 import { buildLiteSniper, sampleBoltClearance } from "./lite-sniper-stock.mjs";
+import { finishTexture, textureLift } from "./texture-treatment.mjs";
 import duelHitboxes from "./rival-hitboxes.json";
 
 const audioHz = 24000;
@@ -43,7 +44,6 @@ function base64(typed) {
 }
 
 function liteTextureTone(name) {
-  if (name.startsWith("grassTex_")) return [0.20, 1.12, 1.03, 0.91];
   if (name === "containerTex_green" || name === "containerDoorTex_green") return [0.43, 1.06, 1.00, 0.93];
   return null;
 }
@@ -65,7 +65,9 @@ class Palette {
     this.idByMaterial.set(mat, id);
     const albedo = mat?.albedoColor ?? mat?.diffuseColor ?? { r: 0.45, g: 0.45, b: 0.45 };
     const emissive = mat?.emissiveColor ?? { r: 0, g: 0, b: 0 };
-    const color = to565(albedo.r * 0.86 + emissive.r, albedo.g * 0.89 + emissive.g, albedo.b * 0.92 + emissive.b);
+    const color = mat?.name === "lampHeadMat"
+      ? to565(1.0, 0.76, 0.42)
+      : to565(albedo.r * 0.86 + emissive.r, albedo.g * 0.89 + emissive.g, albedo.b * 0.92 + emissive.b);
     const variant = {
       name: mat?.name ?? "untextured",
       color,
@@ -93,6 +95,8 @@ class Palette {
     const pixels = new Uint16Array(targetW * targetH);
     const range = raw instanceof Float32Array ? 1 : 255;
     const tone = liteTextureTone(tex.name);
+    const lift = textureLift(tex.name);
+    const colors = lift ? new Float32Array(pixels.length * 3) : null;
     for (let y = 0; y < targetH; y++) {
       const fromY = Math.floor((y * height) / targetH);
       const toY = Math.floor(((y + 1) * height) / targetH);
@@ -120,8 +124,19 @@ class Palette {
           g = g * source + gray * green;
           b = b * source + gray * blue;
         }
-        pixels[y * targetW + x] = to565(r, g, b);
+        const i = y * targetW + x;
+        if (colors) {
+          colors[i * 3] = r;
+          colors[i * 3 + 1] = g;
+          colors[i * 3 + 2] = b;
+        } else {
+          pixels[i] = to565(r, g, b);
+        }
       }
+    }
+    if (colors) {
+      finishTexture(colors, targetW, targetH, lift, !/^(graffitiWallAtlas|billboardMural)/.test(tex.name));
+      for (let i = 0; i < pixels.length; i++) pixels[i] = to565(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]);
     }
     variant.texture = this.textures.length;
     this.textures.push({ name: tex.name, width: targetW, height: targetH, pixels: base64(pixels) });
@@ -170,6 +185,39 @@ function partition(mesh, sizes, spatial) {
     for (const value of bucket) triangles.push(value);
   }
   return { vertices: mesh.vertices, triangles, chunks };
+}
+
+function addGrassTufts(mesh, palette, instances) {
+  const yard = instances.filter(({ m }) => Math.max(Math.abs(m[12]), Math.abs(m[14])) < 16);
+  if (!yard.length) return;
+
+  const material = palette.materials.length;
+  for (const [r, g, b] of [[0.20, 0.31, 0.16], [0.31, 0.43, 0.21], [0.42, 0.50, 0.27]]) {
+    palette.materials.push({ color: to565(r, g, b), texture: -1, alpha: 255, doubleSided: true });
+  }
+
+  const random = seededRandom(0x72162c4f);
+  // Sample one in three of the browser's valid yard placements. Three tapered
+  // blades give each clump a silhouette using the existing opaque mesh format.
+  for (let i = 0; i < yard.length; i += 3) {
+    const { m } = yard[i + Math.floor(random() * Math.min(3, yard.length - i))];
+    const rotation = random() * 2 * Math.PI;
+    for (let blade = 0; blade < 3; blade++) {
+      const angle = rotation + blade * (2 * Math.PI / 3);
+      const dx = Math.cos(angle), dz = Math.sin(angle);
+      const rootX = m[12] + dx * 0.055, rootZ = m[14] + dz * 0.055;
+      const width = 0.044 + 0.023 * random();
+      const height = (0.21 + 0.15 * random()) * m[5];
+      const lean = height * (0.28 + 0.30 * random());
+      const first = mesh.vertices.length / 5;
+      mesh.vertices.push(
+        rootX + dz * width, 0, rootZ - dx * width, 0, 0,
+        rootX - dz * width, 0, rootZ + dx * width, 0, 0,
+        rootX + dx * lean, height, rootZ + dz * lean, 0, 0,
+      );
+      mesh.triangles.push(first, first + 1, first + 2, material + blade, -1);
+    }
+  }
 }
 
 async function meshData(
@@ -235,8 +283,8 @@ async function meshData(
       }
     }
   }
-  const geometry = partition(result, 5, spatial);
-  return captureShot ? { ...geometry, shot: partition(shot, 5, true), surfaceNames } : geometry;
+  // The world is partitioned after its render-only foliage has been added.
+  return captureShot ? { ...result, shot: partition(shot, 5, true), surfaceNames } : partition(result, 5, spatial);
 }
 
 function appendMesh(target, added) {
@@ -399,8 +447,7 @@ function readSky(scene) {
         const [dx, dy, dz] = direction((x * 2) / (size - 1) - 1, (y * 2) / (size - 1) - 1);
         const u = ((Math.atan2(dx, dz) / (2 * Math.PI) + 1) % 1) * width;
         const v = (0.5 + Math.atan2(dy, Math.hypot(dx, dz)) / Math.PI) * height;
-        // The browser's color grade darkens the clouds in a live match.
-        pixels[y * size + x] = Math.round(sample(u, v, 1) * 0.81);
+        pixels[y * size + x] = Math.round(sample(u, v, 1) * 0.83);
       }
     }
     return base64(pixels);
@@ -433,13 +480,14 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
         glassHits.push(mesh.metadata.instance.panes.get(mesh).crackTex ? 3 : 1);
       }
     }
+    const grass = scene.meshes.find((mesh) => mesh.hasThinInstances && mesh.material?.name === "grassTuftMat");
     const world = await meshData(
       scene.meshes.filter((m) => m.name !== "skyDome" && !m.hasThinInstances),
       palette,
       { spatial: true, glassIds: glass, captureShot: true }
     );
     for (const mesh of scene.meshes) mesh.setEnabled(false);
-    window.assetProgress = `Ship Box: ${world.triangles.length / 5} visual triangles, ${world.shot.triangles.length / 5} pickable triangles`;
+    window.assetProgress = `Ship Box base mesh: ${world.triangles.length / 5} visual triangles, ${world.shot.triangles.length / 5} pickable triangles`;
     console.log(window.assetProgress);
 
     const rig = new ViewModelRig(scene, camera, false, buildLiteSniper);
@@ -568,8 +616,10 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
     const sky = readSky(scene);
     const obstacles = PlayerController.getObstacles().map((o) => [o.cx, o.cz, o.hw, o.hd, o.minY, o.maxY, o.yaw, o.cos, o.sin]);
     const { shot, surfaceNames, ...worldMesh } = world;
+    const playerBody = partition(buildFieldInfantry("idle", 0, infantry.player, "player"), 5, false);
+    addGrassTufts(worldMesh, palette, grass?.thinInstanceGetWorldMatrices() ?? []);
     return {
-      meshes: [worldMesh, ...viewModels, helicopter, ...viewModelsAds, ...rivalFrames],
+      meshes: [partition(worldMesh, 5, true), ...viewModels, helicopter, ...viewModelsAds, ...rivalFrames],
       materials: palette.materials,
       textures: palette.textures,
       shot,
@@ -578,7 +628,7 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
       glassHits,
       rivalHitboxes,
       hanzFrames,
-      playerBody: partition(buildFieldInfantry("idle", 0, infantry.player, "player"), 5, false),
+      playerBody,
       ...readNavigation(),
       audio,
       voices,

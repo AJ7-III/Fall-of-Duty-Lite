@@ -55,6 +55,7 @@ enum class Sound : uint8_t {
 };
 
 enum class Speaker : uint8_t { None, IPwndUrMom, Hanz };
+constexpr int defaultDifficulty = 5;
 constexpr bool defaultAlternateRival = true;
 
 constexpr int audioHz = 24000;

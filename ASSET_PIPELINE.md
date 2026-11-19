@@ -11,7 +11,15 @@ npm run data:check
 npm run assets:export -- --reference-set out/candidates
 ```
 
-The exporter runs the browser asset builders in local Chromium. It writes to `out/sd/` by default. `--storage raw` writes a schema 6 pack. Use that flag with `--reference-set` to measure geometry encodings with raw storage across all candidates. Synthesized effects can vary across exports. The checked-in schema 7 pack was converted losslessly from the verified release and preserves every asset payload.
+The exporter runs the browser asset builders in local Chromium. It writes to `out/sd/` by default. `--storage raw` writes a schema 6 pack. Use that flag with `--reference-set` to measure geometry encodings with raw storage across all candidates. Synthesized effects can vary across exports. The checked-in pack retains the original release audio payload.
+
+## Texture finishing
+
+The exporter grades and sharpens selected surfaces at their final texture dimensions before converting them to RGB565. The [sharpening pass](tools/texture-treatment.mjs) applies a bounded luminance adjustment to keep lettering, joints, and corrugations readable.
+
+The cloud tones are sampled in panorama space before export to six 64×64 luminance faces. The renderer interpolates cloud tones and looks up the sky color in a small RGB565 palette. The game draws the HUD at display resolution.
+
+The exporter samples one in three of the browser yard's grass placements and builds three opaque blades for each tuft. The blades share three flat colors and use the same spatial chunks as the rest of the yard. The ground uses the existing 128×128 grass tile in a greener palette. Foliage is included only in the visual mesh.
 
 ## Pack layout
 

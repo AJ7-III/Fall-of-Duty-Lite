@@ -14,7 +14,13 @@ The earlier renderer pass reuses 128 vertex projections across adjacent triangle
 
 ## Compact asset pack
 
-The installed pack occupies 3,653,826 bytes. Lossless section compression reduced the previous 8,394,137-byte file by 56.5%. All 14 payloads matched byte for byte. The P4 decoder adds about 19 KiB of temporary storage during asset loading. Median desktop load time rose from 23.0 to 37.9 ms in the original storage comparison. [Section-by-section results](reference/measurements/storage-comparison.json)
+The original schema 7 pack occupied 3,653,826 bytes. Lossless section compression reduced the 8,394,137-byte schema 6 file by 56.5%. All 14 payloads matched byte for byte in that comparison. The P4 decoder adds about 19 KiB of temporary storage during asset loading. Median desktop load time rose from 23.0 to 37.9 ms in the original storage comparison. [Section-by-section results](reference/measurements/storage-comparison.json)
+
+The current pack occupies 3,723,292 bytes, including greener turf and 300 grass tufts. The loader reports 9,621,947 resident asset bytes and 9,703,867 estimated peak asset-loading bytes. The shot geometry, movement obstacles, and navigation map match the original pack byte for byte. [Current pack manifest](assets/fall-of-duty.fodp.json)
+
+## Texture sampling and edge smoothing
+
+The renderer uses a 640- or 800-byte row buffer for diagonal edge smoothing. In three paired desktop trials per scene, the new renderer and pack added 0.00–0.14 ms to median p95 frame work over the brush build across the Apache and long-lane traces at 320×180 and 400×225. These timings exclude live scanout. The ESP-IDF cross-build produced an 854,240-byte app image, and the verified local firmware and SD archive occupies 4,245,666 bytes.
 
 ## Replay fixtures
 

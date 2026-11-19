@@ -28,7 +28,7 @@ private:
 
     Fixture fixture_{};
     uint32_t seed_ = 0, missingDraws_ = 0;
-    int difficulty_ = 3;
+    int difficulty_ = defaultDifficulty;
     bool alternate_ = false;
     size_t at_ = 0, firstDraw_ = 0;
     std::vector<Input> inputs_;

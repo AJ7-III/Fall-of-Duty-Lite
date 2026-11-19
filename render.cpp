@@ -36,6 +36,12 @@ struct PosedVertex {
     Vec3 world, camera;
 };
 
+struct TextureSample {
+    const Texture* fine;
+    const Texture* coarse = nullptr;
+    unsigned mix = 0;
+};
+
 enum class MeshSpace { World, View };
 
 struct View {
@@ -80,7 +86,7 @@ View makeView(const Camera& camera, int width, int height, float near) {
             slope * width / height, slope, near, width, height};
 }
 
-uint16_t rgb(int r, int g, int b) { return uint16_t((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3)); }
+constexpr uint16_t rgb(int r, int g, int b) { return uint16_t((r >> 3) << 11 | (g >> 2) << 5 | (b >> 3)); }
 
 uint16_t multiply(uint16_t color, unsigned shade) {
     return uint16_t((((color >> 11) * shade >> 8) << 11) |
@@ -96,6 +102,22 @@ uint16_t blend(uint16_t a, uint16_t b, unsigned alpha) {
     const uint32_t to = ((uint32_t(b) << 16) | b) & mask;
     const uint32_t value = ((from * inv + to * alpha) >> 5) & mask;
     return uint16_t(value | (value >> 16));
+}
+
+int edgeLuma(uint16_t color) { return color & 0x7e0; }
+
+uint16_t softenDiagonal(uint16_t center, uint16_t top, uint16_t right, uint16_t bottom, uint16_t left) {
+    // Only blend staircase corners. Both axes must cross a high contrast
+    // boundary, with one neighbor on the center pixel's side.
+    constexpr int edgeContrast = 8 * 32, sameSide = 3 * 32;
+    if (std::abs(edgeLuma(top) - edgeLuma(bottom)) < edgeContrast ||
+        std::abs(edgeLuma(left) - edgeLuma(right)) < edgeContrast) return center;
+    const int mid = edgeLuma(center);
+    if (std::abs(edgeLuma(top) - mid) < std::abs(edgeLuma(bottom) - mid)) std::swap(top, bottom);
+    if (std::abs(edgeLuma(left) - mid) < std::abs(edgeLuma(right) - mid)) std::swap(left, right);
+    if (std::abs(edgeLuma(bottom) - mid) > sameSide || std::abs(edgeLuma(right) - mid) > sameSide ||
+        std::abs(edgeLuma(top) - edgeLuma(left)) > sameSide) return center;
+    return blend(center, blend(top, left, 128), 64);
 }
 
 float edge(const Projected& a, const Projected& b, float x, float y) {
@@ -158,6 +180,13 @@ constexpr auto skyNoise() {
 
 constexpr auto skyDither = skyNoise();
 
+constexpr auto skyPalette = [] {
+    std::array<uint16_t, 256> colors{};
+    for (int value = 0; value < int(colors.size()); ++value)
+        colors[value] = rgb(std::max(0, value - 5), value, std::min(255, value + 15));
+    return colors;
+}();
+
 Texture halfTexture(const Texture& source) {
     Texture texture{std::max(1, source.width / 2), std::max(1, source.height / 2), {}};
     texture.pixels.resize(texture.width * texture.height);
@@ -188,6 +217,7 @@ struct Renderer::Impl {
     std::vector<uint16_t> depth = std::vector<uint16_t>(400 * 225);
     std::vector<Vec3> culledNormals;
     std::vector<uint8_t> worldLights;
+    std::vector<uint16_t> edgeRow;
     std::vector<std::vector<Texture>> mipmaps;
     std::vector<PosedVertex> posedVertices;
     // Reused for each mesh and view. The world keeps its cache across visible chunks.
@@ -417,24 +447,24 @@ struct Renderer::Impl {
 
     static uint16_t sampleSky(const uint8_t* face, float u, float v, int pixelX, int pixelY) {
         constexpr int size = skyFaceSize;
-        const float x = std::clamp(u, 0.0f, 1.0f) * (size - 1);
-        const float y = std::clamp(v, 0.0f, 1.0f) * (size - 1);
-        const int x0 = int(x), y0 = int(y);
+        constexpr int last = (size - 1) * 256;
+        const int x = int(std::clamp(u, 0.0f, 1.0f) * last);
+        const int y = int(std::clamp(v, 0.0f, 1.0f) * last);
+        const int x0 = x >> 8, y0 = y >> 8;
         const int x1 = std::min(x0 + 1, size - 1), y1 = std::min(y0 + 1, size - 1);
-        const int fx = int((x - x0) * 256), fy = int((y - y0) * 256);
+        const int fx = x & 255, fy = y & 255;
         const int a = face[y0 * size + x0] * (256 - fx) + face[y0 * size + x1] * fx;
         const int b = face[y1 * size + x0] * (256 - fx) + face[y1 * size + x1] * fx;
         const int luma = (a * (256 - fy) + b * fy + 32768) >> 16;
         const int bias = skyDither[(pixelY & 63) * 64 + (pixelX & 63)];
-        return rgb(std::clamp(luma - 3 + bias, 0, 255), std::clamp(luma + 1 + bias / 2, 0, 255),
-                   std::clamp(luma + 8 + bias, 0, 255));
+        return skyPalette[std::min(luma + bias, 255)];
     }
 
     template<bool backdrop = false>
     void raster(const Primitive& t, bool opaque, const uint8_t* skyPixels = nullptr) {
         const auto& [a, b, c] = t.p;
         const Material* material = backdrop ? nullptr : &assets.materials[t.material];
-        const Texture* texture = backdrop ? nullptr :
+        const Texture* base = backdrop ? nullptr :
             material->texture >= 0 ? &assets.textures[material->texture] : nullptr;
         const int minX = int(std::max(0.0f, std::ceil(std::min({a.x, b.x, c.x}) - 0.5f)));
         const int minY = int(std::max(0.0f, std::ceil(std::min({a.y, b.y, c.y}) - 0.5f)));
@@ -454,25 +484,38 @@ struct Renderer::Impl {
         const float dudx = gradient(a.u, b.u, c.u, dx);
         const float dvdx = gradient(a.v, b.v, c.v, dx);
 
-        if (!backdrop && texture && t.mipmapped) {
-            const auto& levels = mipmaps[material->texture];
-            const float dy[3]{c.x - b.x, a.x - c.x, b.x - a.x};
-            const float dzdy = gradient(a.depth, b.depth, c.depth, dy);
-            const float dudy = gradient(a.u, b.u, c.u, dy);
-            const float dvdy = gradient(a.v, b.v, c.v, dy);
-            const float sumZ = a.depth + b.depth + c.depth;
-            const float u = (a.u + b.u + c.u) / sumZ;
-            const float v = (a.v + b.v + c.v) / sumZ;
-            const float verticalU = std::abs(dudy - u * dzdy);
-            const float verticalV = std::abs(dvdy - v * dzdy);
+        float dzdy = 0, dudy = 0, dvdy = 0;
+        const std::vector<Texture>* levels = nullptr;
+        const auto mipAt = [&](float z, float uOverZ, float vOverZ) {
+            const float inv = 1 / z;
+            const float u = uOverZ * inv, v = vOverZ * inv;
             float footprint = std::max(
-                std::max(std::abs(dudx - u * dzdx), verticalU) * texture->width,
-                std::max(std::abs(dvdx - v * dzdx), verticalV) * texture->height) * (3 / sumZ);
-            for (const auto& level : levels) {
-                if (footprint < 2.2f) break;
-                texture = &level;
+                std::max(std::abs(dudx - u * dzdx), std::abs(dudy - u * dzdy)) * base->width,
+                std::max(std::abs(dvdx - v * dzdx), std::abs(dvdy - v * dzdy)) * base->height) * inv;
+            const Texture* fine = base;
+            for (const auto& next : *levels) {
+                if (footprint <= 1.3f) break;
+                if (footprint < 2.1f) return TextureSample{fine, &next, unsigned((footprint - 1.3f) * 320)};
+                fine = &next;
                 footprint *= 0.5f;
             }
+            return TextureSample{fine};
+        };
+        TextureSample triangleTexture{base};
+        bool perspectiveMips = false;
+        if (!backdrop && base && t.mipmapped && !mipmaps[material->texture].empty()) {
+            levels = &mipmaps[material->texture];
+            const float dy[3]{c.x - b.x, a.x - c.x, b.x - a.x};
+            dzdy = gradient(a.depth, b.depth, c.depth, dy);
+            dudy = gradient(a.u, b.u, c.u, dy);
+            dvdy = gradient(a.v, b.v, c.v, dy);
+            // A wall or floor can cover many depths on one triangle. Sample
+            // the local footprint on short spans to keep the near end sharp
+            // and the far end stable. Small or shallow faces share one mip.
+            perspectiveMips = std::max(maxX - minX, maxY - minY) >= 24 &&
+                std::max({a.depth, b.depth, c.depth}) > 1.35f * std::min({a.depth, b.depth, c.depth});
+            if (!perspectiveMips)
+                triangleTexture = mipAt((a.depth + b.depth + c.depth) / 3, (a.u + b.u + c.u) / 3, (a.v + b.v + c.v) / 3);
         }
 
         for (int y = minY; y <= maxY; ++y) {
@@ -496,28 +539,45 @@ struct Renderer::Impl {
             float u = (a.u * e0 + b.u * e1 + c.u * e2) * inverseArea;
             float v = (a.v * e0 + b.v * e1 + c.v * e2) * inverseArea;
             int at = y * view.width + minX + left;
-            for (int x = left; x <= right; ++x, ++at, z += dzdx, u += dudx, v += dvdx) {
-                uint16_t newDepth = 0;
-                if constexpr (backdrop) {
-                    if (depth[at]) continue;
-                    const float invZ = 1.0f / z;
-                    color[at] = sampleSky(skyPixels, u * invZ, v * invZ, minX + x, y);
+            for (int x = left; x <= right;) {
+                const int end = perspectiveMips ? std::min(right, x + 15) : right;
+                const float midpoint = (end - x) * 0.5f;
+                const auto sample = perspectiveMips ? mipAt(z + dzdx * midpoint, u + dudx * midpoint, v + dvdx * midpoint)
+                                                    : triangleTexture;
+                const auto* texture = sample.fine;
+                const bool halfSize = sample.coarse && texture->width == sample.coarse->width * 2 &&
+                    texture->height == sample.coarse->height * 2;
+                for (; x <= end; ++x, ++at, z += dzdx, u += dudx, v += dvdx) {
+                    uint16_t newDepth = 0;
+                    if constexpr (backdrop) {
+                        if (depth[at]) continue;
+                        const float invZ = 1.0f / z;
+                        color[at] = sampleSky(skyPixels, u * invZ, v * invZ, minX + x, y);
+                        ++stats.depthPasses;
+                        continue;
+                    } else {
+                        newDepth = enhanced ? encodedDepth(z) : uint16_t(std::clamp(z * depthScale, 0.0f, 65535.0f));
+                        if (newDepth <= depth[at]) continue;
+                    }
+                    uint16_t pixel = flat;
+                    if (texture) {
+                        const float invZ = 1.0f / z;
+                        const float texU = u * invZ, texV = v * invZ;
+                        const int tx = texel(texU * texture->width, texture->width);
+                        const int ty = texel(texV * texture->height, texture->height);
+                        pixel = texture->pixels[ty * texture->width + tx];
+                        if (sample.coarse) {
+                            const auto& coarse = *sample.coarse;
+                            const int cx = halfSize ? tx / 2 : texel(texU * coarse.width, coarse.width);
+                            const int cy = halfSize ? ty / 2 : texel(texV * coarse.height, coarse.height);
+                            pixel = blend(pixel, coarse.pixels[cy * coarse.width + cx], sample.mix);
+                        }
+                        pixel = multiply(pixel, t.light);
+                    }
+                    color[at] = opaque ? pixel : blend(color[at], pixel, material->alpha);
+                    if (opaque) depth[at] = newDepth;
                     ++stats.depthPasses;
-                    continue;
-                } else {
-                    newDepth = enhanced ? encodedDepth(z) : uint16_t(std::clamp(z * depthScale, 0.0f, 65535.0f));
-                    if (newDepth <= depth[at]) continue;
                 }
-                uint16_t pixel = flat;
-                if (texture) {
-                    const float invZ = 1.0f / z;
-                    const int tx = texel(u * invZ * texture->width, texture->width);
-                    const int ty = texel(v * invZ * texture->height, texture->height);
-                    pixel = multiply(texture->pixels[ty * texture->width + tx], t.light);
-                }
-                color[at] = opaque ? pixel : blend(color[at], pixel, material->alpha);
-                if (opaque) depth[at] = newDepth;
-                ++stats.depthPasses;
             }
         }
     }
@@ -727,6 +787,26 @@ struct Renderer::Impl {
         }
     }
 
+    void smoothDiagonals() {
+        const auto start = Clock::now();
+        const int width = view.width;
+        edgeRow.resize(width);
+        std::copy_n(color, width, edgeRow.begin());
+        for (int y = 1; y < view.height - 1; ++y) {
+            auto* row = color + y * width;
+            const auto* next = row + width;
+            uint16_t left = row[0];
+            edgeRow[0] = left;
+            for (int x = 1; x < width - 1; ++x) {
+                const uint16_t center = row[x];
+                row[x] = softenDiagonal(center, edgeRow[x], row[x + 1], next[x], left);
+                edgeRow[x] = left = center;
+            }
+            edgeRow[width - 1] = row[width - 1];
+        }
+        stats.rasterUs += microseconds(start, Clock::now());
+    }
+
     void render(const Snapshot& state, int width, int height, uint16_t* target) {
         if (!target || width < 3 || height < 5 || int64_t(width) * height > int64_t(depth.size())) return;
         const auto start = Clock::now();
@@ -762,6 +842,7 @@ struct Renderer::Impl {
             draw(solid, true);
             draw(translucent, false);
         }
+        if (enhanced) smoothDiagonals();
         const auto elapsed = microseconds(start, Clock::now());
         stats.setupUs = elapsed - std::min(elapsed, stats.rasterUs);
     }
@@ -777,7 +858,7 @@ uint64_t Renderer::workingBytes() const {
         mips += levels.capacity() * sizeof(Texture);
         for (const auto& level : levels) mips += level.pixels.capacity() * sizeof(uint16_t);
     }
-    return sizeof(Impl) + mips + impl_->depth.capacity() * sizeof(uint16_t) +
+    return sizeof(Impl) + mips + (impl_->depth.capacity() + impl_->edgeRow.capacity()) * sizeof(uint16_t) +
            impl_->culledNormals.capacity() * sizeof(Vec3) + impl_->worldLights.capacity() +
            impl_->posedVertices.capacity() * sizeof(PosedVertex) +
            (impl_->solid.capacity() + impl_->translucent.capacity()) * sizeof(Primitive) +

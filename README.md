@@ -1,10 +1,10 @@
 # Fall of Duty Lite
 
-**3.65 MB of game data. 4.17 MB to download with Guition firmware.**
+**3.72 MB of game data.** The published v1.0.0 download with Guition firmware is **4.17 MB**.
 
-Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten duel in Ship Box, a rain-soaked container yard. Pick one of two rivals and set the difficulty from ten levels. The game renders at 400×225 or 320×180 and presents at 800×480.
+Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten duel in Ship Box, a rain-soaked container yard. Pick one of two rivals and a difficulty from 1 to 10. Difficulty defaults to level 5. The game renders at 400×225 or 320×180 and presents at 800×480.
 
-The microSD game pack is **13% smaller than the Doom v1.9 shareware WAD**. [Lite pack measurements](reference/measurements/storage-comparison.json) · [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
+The microSD game pack is **11% smaller than the Doom v1.9 shareware WAD**. [Current pack manifest](assets/fall-of-duty.fodp.json) · [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
 
 [Download v1.0.0 handheld package](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0) · [Handheld setup](INSTALL.md) · [Play on desktop](#play-on-desktop) · [Board build and qualification](BOARD.md) · [Evidence and benchmarks](EVIDENCE.md)
 
@@ -14,8 +14,9 @@ The microSD game pack is **13% smaller than the Doom v1.9 shareware WAD**. [Lite
 
 - **Three weapons with first-person arms** — MP44 rifle, M40A3 bolt-action rifle with scope, and USP .45 sidearm with weapon motion tracks from the browser edition.
 - **Killstreaks and rival voice comms** — Three consecutive kills activate UAV radar. Five unlock a targeted airstrike and seven unlock Apache support. The shared 27-line voice bank decodes mono 24 kHz IMA ADPCM on demand.
-- **Enhanced software renderer** — Texture mipmaps, 16-bit reciprocal depth, a dithered sky cubemap, and a 1024×512 graffiti atlas, plus a `--look classic` mode for comparisons ([audio and rendering notes](QUALITY.md)).
-- **Lossless asset compression** — The schema 7 pack takes 56.5% less space than the earlier pack. All 14 sections decode byte for byte to the same data.
+- **Ship Box yard** — Green turf and 300 low-poly grass tufts fill the yard between the stone paths. Mild texture sharpening keeps lettering and surface edges legible at both render sizes.
+- **Enhanced software renderer** — Perspective-aware mip blending, diagonal edge smoothing, 16-bit reciprocal depth, and a dithered sky cubemap. Desktop `--look classic` runs the earlier renderer for comparisons. [Rendering notes](QUALITY.md)
+- **Lossless asset compression** — The schema 7 pack stores independently compressed blocks and decodes them as it loads.
 
 ## Handheld download and hardware
 
@@ -67,7 +68,7 @@ SDL gamepads use the same layout as the handheld DualShock 4. On the Guition, to
 | Crouch (tap) or prone (hold) | `C` | `Circle` / `B` |
 | Reload | `R` | `Square` / `X` |
 | Swap weapon | `X` | `Triangle` / `Y` |
-| Deploy banked streak or close laptop | `4` | `D-pad Up` |
+| Deploy banked streak or close laptop | `Up` arrow or `4` | `D-pad Up` |
 | Confirm or start duel | `Enter` or click menu | `Cross` / `A` |
 | Navigate menus | Arrow keys | `D-pad` |
 | Back from Duel Setup | `Esc` or `P` | `Circle` / `B` |
@@ -90,10 +91,10 @@ Host verification and cross-build checks are recorded in [EVIDENCE.md](EVIDENCE.
 | Area | Status | Summary |
 | --- | --- | --- |
 | Native test suite | Verified on desktop | `native_tests` and `platform_tests` pass in Release and sanitizer builds and finish first-to-ten duels against both rivals |
-| Replay parity | Verified on desktop | Eight [reference fixtures](reference/fixtures) cover 3,076 steps. The geometry optimization produced 48 checkpoint images and 32 gameplay journals identical to the previous native build across both render modes. |
-| Asset memory | Verified on desktop | The loader reports 9,553,337 resident asset bytes and an estimated 9,635,257-byte loading peak (12 MiB limit). |
+| Replay parity | Verified on desktop | Eight [reference fixtures](reference/fixtures) cover 3,076 steps. The current renderer and pack produce the same gameplay journals as the original at both render sizes. |
+| Asset memory | Verified on desktop | The loader reports 9,621,947 resident asset bytes and an estimated 9,703,867-byte loading peak (12 MiB limit). |
 | Desktop frame timings | Measured on desktop | Projection reuse reduced geometry setup p95 by 29–33% and whole-frame p95 by 1.6–14.6%, while the later runtime geometry pass lowered resident memory with an inconclusive frame-time spread between 2.3% faster and 0.1% slower |
-| Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 851,552-byte application image. The release passed flash layout and checksum checks. |
+| Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 854,240-byte application image. The local package passed flash layout and checksum checks. |
 | Guition hardware | Qualification pending | See the [on-device test procedure](BOARD.md#replay-and-measurement) for scanout, input, audio, latency, and full hardware duels. |
 
 The Apache comparison has a known browser-to-native difference at tick 564 in the dead rival’s vertical root position. [See the replay evidence.](EVIDENCE.md#replay-fixtures)
