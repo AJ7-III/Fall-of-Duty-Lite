@@ -1,6 +1,10 @@
 # Fall of Duty Lite
 
-A compact first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 handheld and SDL2 desktops. Fight an offline first-to-ten duel in Ship Box, a rain-soaked container yard. Choose from two rivals and ten difficulty levels. The game renders at 400×225 or 320×180 and presents at 800×480. The full game data takes 3.65 MB on microSD.
+**3.65 MB of game data. 4.17 MB to download with Guition firmware.**
+
+Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten duel in Ship Box, a rain-soaked container yard. Pick one of two rivals and set the difficulty from ten levels. The game renders at 400×225 or 320×180 and presents at 800×480.
+
+The microSD game pack is **13% smaller than the Doom v1.9 shareware WAD**. [Lite pack measurements](reference/measurements/storage-comparison.json) · [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
 
 [Download v1.0.0 handheld package](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0) · [Handheld setup](INSTALL.md) · [Play on desktop](#play-on-desktop) · [Board build and qualification](BOARD.md) · [Evidence and benchmarks](EVIDENCE.md)
 
@@ -11,7 +15,7 @@ A compact first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 handheld
 - **Three weapons with first-person arms** — MP44 rifle, M40A3 bolt-action rifle with scope, and USP .45 sidearm with weapon motion tracks from the browser edition.
 - **Killstreaks and rival voice comms** — Three consecutive kills activate UAV radar. Five unlock a targeted airstrike and seven unlock Apache support. The shared 27-line voice bank decodes mono 24 kHz IMA ADPCM on demand.
 - **Enhanced software renderer** — Texture mipmaps, 16-bit reciprocal depth, a dithered sky cubemap, and a 1024×512 graffiti atlas, plus a `--look classic` mode for comparisons ([audio and rendering notes](QUALITY.md)).
-- **Compact asset pack** — The checked-in schema 7 pack uses lossless storage compression, shared mesh vertices, and position-only animation poses.
+- **Lossless asset compression** — The schema 7 pack takes 56.5% less space than the earlier pack. All 14 sections decode byte for byte to the same data.
 
 ## Handheld download and hardware
 
@@ -87,7 +91,7 @@ Host verification and cross-build checks are recorded in [EVIDENCE.md](EVIDENCE.
 | --- | --- | --- |
 | Native test suite | Verified on desktop | `native_tests` and `platform_tests` pass in Release and sanitizer builds and finish first-to-ten duels against both rivals |
 | Replay parity | Verified on desktop | Eight [reference fixtures](reference/fixtures) cover 3,076 steps. The geometry optimization produced 48 checkpoint images and 32 gameplay journals identical to the previous native build across both render modes. |
-| Asset pack and memory | Verified on desktop | Schema 7 lossless compression cut pack size by 56.5% from 8,394,137 to 3,653,826 bytes across 14 byte-identical payloads, with 9,553,337 resident asset bytes and 9,635,257 estimated peak load bytes (12 MiB limit) |
+| Asset memory | Verified on desktop | The loader reports 9,553,337 resident asset bytes and an estimated 9,635,257-byte loading peak (12 MiB limit). |
 | Desktop frame timings | Measured on desktop | Projection reuse reduced geometry setup p95 by 29–33% and whole-frame p95 by 1.6–14.6%, while the later runtime geometry pass lowered resident memory with an inconclusive frame-time spread between 2.3% faster and 0.1% slower |
 | Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 851,552-byte application image. The release passed flash layout and checksum checks. |
 | Guition hardware | Qualification pending | See the [on-device test procedure](BOARD.md#replay-and-measurement) for scanout, input, audio, latency, and full hardware duels. |
