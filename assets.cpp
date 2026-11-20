@@ -53,6 +53,7 @@ struct BlockInflater {
     }
 };
 
+#ifdef ESP_PLATFORM
 constexpr std::array<uint32_t, 256> crcTable() {
     std::array<uint32_t, 256> table{};
     for (uint32_t i = 0; i < table.size(); ++i) {
@@ -63,6 +64,7 @@ constexpr std::array<uint32_t, 256> crcTable() {
     return table;
 }
 constexpr auto crcs = crcTable();
+#endif
 
 class Reader {
 public:
@@ -168,7 +170,12 @@ private:
         } else if (!readStored(buffer_.get(), available_)) {
             return false;
         }
+#ifdef ESP_PLATFORM
         for (uint32_t i = 0; i < available_; ++i) crc_ = (crc_ >> 8) ^ crcs[(crc_ ^ buffer_[i]) & 0xffu];
+#else
+        // zlib takes and returns the complemented CRC for each block.
+        crc_ = ~uint32_t(crc32(~crc_, buffer_.get(), available_));
+#endif
         return true;
     }
 

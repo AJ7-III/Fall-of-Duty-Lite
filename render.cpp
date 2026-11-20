@@ -13,6 +13,12 @@ namespace fod {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+#ifdef ESP_PLATFORM
+constexpr bool countRenderWork = false;
+#else
+constexpr bool countRenderWork = true;
+#endif
+
 uint32_t microseconds(Clock::time_point start, Clock::time_point end) {
     return uint32_t(std::chrono::duration_cast<std::chrono::microseconds>(end - start).count());
 }
@@ -266,6 +272,7 @@ struct Renderer::Impl {
     std::vector<Primitive> solid, translucent;
     std::vector<std::pair<float, uint32_t>> visible;
     RenderStats stats{};
+    bool measure = false;
     View view{};
     uint16_t* color = nullptr;
     SceneLight light;
@@ -277,6 +284,12 @@ struct Renderer::Impl {
     // Daylight in the space of the mesh being submitted, and the ground light where it stands.
     Vec3 sun{}, up{0, 1, 0};
     unsigned meshLight = 255;
+
+    Clock::time_point timestamp() const { return measure ? Clock::now() : Clock::time_point{}; }
+
+    void recordRasterTime(Clock::time_point start) {
+        if (measure) stats.rasterUs += microseconds(start, Clock::now());
+    }
 
     explicit Impl(const Assets& source, RenderLook look) : assets(source), enhanced(look == RenderLook::Enhanced) {
         // Opaque primitives can flush in submission order. Keep every translucent
@@ -395,7 +408,7 @@ struct Renderer::Impl {
         } else {
             translucent.push_back(value);
         }
-        ++stats.triangles;
+        if (countRenderWork && measure) ++stats.triangles;
     }
 
     template<class Corner, class Submit>
@@ -499,9 +512,8 @@ struct Renderer::Impl {
         const auto& base = topology ? *topology : mesh;
         const size_t vertices = mesh.vertexCount();
         for (size_t i = 0; i < vertices; ++i) {
-            Vec3 position = mesh.position(i);
-            if (motion) position = motion->position(i);
-            else if (next) position += (next->position(i) - position) * fraction;
+            Vec3 position = motion ? motion->position(i) : mesh.position(i);
+            if (next) position += (next->position(i) - (motion ? mesh.position(i) : position)) * fraction;
             const Vec3 world = transform(position);
             posedVertices[i] = {world, space == MeshSpace::View ? world : view.transform(world)};
         }
@@ -591,7 +603,7 @@ struct Renderer::Impl {
         return uint16_t(value | (value >> 16));
     }
 
-    template<Fill fill = Fill::Surface, bool detail = false>
+    template<Fill fill = Fill::Surface, bool detail = false, bool countPixels = false>
     void raster(const Primitive& t, bool opaque, const uint8_t* skyPixels = nullptr) {
         constexpr bool backdrop = fill == Fill::Sky, shadow = fill == Fill::Shadow;
         const auto& [a, b, c] = t.p;
@@ -745,7 +757,7 @@ struct Renderer::Impl {
                         if (depth[at]) continue;
                         const float invZ = 1.0f / z;
                         color[at] = sampleSky(skyPixels, u * invZ, v * invZ, minX + x, y);
-                        ++stats.depthPasses;
+                        if constexpr (countPixels) ++stats.depthPasses;
                         continue;
                     } else {
                         newDepth = enhanced ? encodedDepth(z) : uint16_t(std::clamp(z * depthScale, 0.0f, 65535.0f));
@@ -780,25 +792,31 @@ struct Renderer::Impl {
                     }
                     color[at] = opaque ? pixel : blend(color[at], pixel, material->alpha);
                     if (opaque) depth[at] = newDepth;
-                    ++stats.depthPasses;
+                    if constexpr (countPixels) ++stats.depthPasses;
                 }
             }
         }
     }
 
+    template<bool countPixels>
+    void drawSurfaces(const std::vector<Primitive>& batch, bool opaque) {
+        for (const auto& primitive : batch) {
+            if (enhanced && detailed(primitive)) raster<Fill::Surface, true, countPixels>(primitive, opaque);
+            else raster<Fill::Surface, false, countPixels>(primitive, opaque);
+        }
+    }
+
     void draw(std::vector<Primitive>& batch, bool opaque) {
-        const auto start = Clock::now();
+        const auto start = timestamp();
         if (!opaque) {
             std::sort(batch.begin(), batch.end(), [](const Primitive& a, const Primitive& b) {
                 return a.p[0].depth + a.p[1].depth + a.p[2].depth < b.p[0].depth + b.p[1].depth + b.p[2].depth;
             });
         }
-        for (const auto& primitive : batch) {
-            if (enhanced && detailed(primitive)) raster<Fill::Surface, true>(primitive, opaque);
-            else raster(primitive, opaque);
-        }
+        if (countRenderWork && measure) drawSurfaces<true>(batch, opaque);
+        else drawSurfaces<false>(batch, opaque);
         batch.clear();
-        stats.rasterUs += microseconds(start, Clock::now());
+        recordRasterTime(start);
     }
 
     void drawWorld(const Snapshot& state) {
@@ -815,7 +833,7 @@ struct Renderer::Impl {
             visible.emplace_back(dot(center, center), i);
         }
         std::sort(visible.begin(), visible.end());
-        stats.visibleChunks = uint32_t(visible.size());
+        if (countRenderWork && measure) stats.visibleChunks = uint32_t(visible.size());
         for (const auto& item : visible) {
             const auto& chunk = assets.world.chunks[item.second];
             submitWorld(chunk.first, chunk.count, state);
@@ -936,8 +954,10 @@ struct Renderer::Impl {
         }
         const float run = state.sprint ? 1.0f : 0.0f;
         const float drop = state.lower;
+        const bool sniper = state.weapon == Weapon::Sniper;
+        const float recoilPitch = sniper ? 0.4f : 0.12f;
         shift += Vec3{-0.055f * run, -0.11f * run - 0.31f * drop, -state.recoil};
-        pitch -= 0.34f * run + 0.55f * drop + 0.12f * state.recoil;
+        pitch -= 0.34f * run + 0.55f * drop + recoilPitch * state.recoil;
         yaw += 0.21f * run;
         roll += 0.14f * run;
         const Vec3 pivot = state.weaponPosition;
@@ -945,7 +965,9 @@ struct Renderer::Impl {
         transform.origin = shift + pivot - transform(pivot);
         if (tracked) {
             const auto motion = weaponMotion(state);
-            submit(mesh, state, transform, MeshSpace::View, nullptr, 0, false, nullptr, nullptr, &motion);
+            // Keep the remaining aim motion as the scope lowers into the hip-based clip.
+            const Mesh* aimOffset = sniper && fraction > 0 && aim.vertexCount() == mesh.vertexCount() ? &aim : nullptr;
+            submit(mesh, state, transform, MeshSpace::View, aimOffset, fraction, false, nullptr, nullptr, &motion);
         } else {
             submit(mesh, state, transform, MeshSpace::View, pose, amount);
         }
@@ -962,7 +984,7 @@ struct Renderer::Impl {
 
     void drawSkyCube() {
         if (!enhanced || assets.sky[0].empty()) return;
-        const auto start = Clock::now();
+        const auto start = timestamp();
         // Face axes match the panorama conversion in the exporter.
         static constexpr Vec3 faces[][3] = {
             {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}},
@@ -981,13 +1003,16 @@ struct Renderer::Impl {
             const Vertex second[] = {corners[0], corners[2], corners[3]};
             const auto submit = [&](Vertex a, Vertex b, Vertex c) {
                 Primitive primitive{};
-                if (project(primitive, a, b, c)) raster<Fill::Sky>(primitive, false, assets.sky[face].data());
+                if (!project(primitive, a, b, c)) return;
+                const auto* pixels = assets.sky[face].data();
+                if (countRenderWork && measure) raster<Fill::Sky, false, true>(primitive, false, pixels);
+                else raster<Fill::Sky>(primitive, false, pixels);
             };
             clip(first, submit);
             clip(second, submit);
         }
         view.position = eye;
-        stats.rasterUs += microseconds(start, Clock::now());
+        recordRasterTime(start);
     }
 
     void drawTracer(const Snapshot& state) {
@@ -1044,7 +1069,7 @@ struct Renderer::Impl {
     }
 
     void smoothDiagonals() {
-        const auto start = Clock::now();
+        const auto start = timestamp();
         const int width = view.width;
         edgeRow.resize(width);
         std::copy_n(color, width, edgeRow.begin());
@@ -1060,12 +1085,13 @@ struct Renderer::Impl {
             }
             edgeRow[width - 1] = row[width - 1];
         }
-        stats.rasterUs += microseconds(start, Clock::now());
+        recordRasterTime(start);
     }
 
-    void render(const Snapshot& state, int width, int height, uint16_t* target) {
+    void render(const Snapshot& state, int width, int height, uint16_t* target, bool collectStats) {
         if (!target || width < 5 || height < 10 || int64_t(width) * height > int64_t(depth.size())) return;
-        const auto start = Clock::now();
+        measure = collectStats;
+        const auto start = timestamp();
         stats = {};
         color = target;
         constexpr Camera overview{{-13.8f, 6.6f, -13.8f}, 0.60f, 0.32f, 59 * pi / 180};
@@ -1089,10 +1115,10 @@ struct Renderer::Impl {
         }
         draw(solid, true);
         if (enhanced) {
-            const auto shadows = Clock::now();
+            const auto shadows = timestamp();
             if (!title && state.rival.visible && !assets.rivalFrames.empty()) contactShadow(state.rival.position, 0.62f);
             if (state.dead && state.player.visible && !assets.rivalFrames.empty()) contactShadow(state.player.position, 0.62f);
-            stats.rasterUs += microseconds(shadows, Clock::now());
+            recordRasterTime(shadows);
         }
         drawSkyCube();
         draw(translucent, false);
@@ -1112,14 +1138,18 @@ struct Renderer::Impl {
             draw(translucent, false);
         }
         if (enhanced) smoothDiagonals();
-        const auto elapsed = microseconds(start, Clock::now());
-        stats.setupUs = elapsed - std::min(elapsed, stats.rasterUs);
+        if (measure) {
+            const auto elapsed = microseconds(start, Clock::now());
+            stats.setupUs = elapsed - std::min(elapsed, stats.rasterUs);
+        }
     }
 };
 
 Renderer::Renderer(const Assets& assets, RenderLook look) : impl_(std::make_unique<Impl>(assets, look)) {}
 Renderer::~Renderer() = default;
-void Renderer::render(const Snapshot& state, int width, int height, uint16_t* rgb565) { impl_->render(state, width, height, rgb565); }
+void Renderer::render(const Snapshot& state, int width, int height, uint16_t* rgb565, bool measure) {
+    impl_->render(state, width, height, rgb565, measure);
+}
 const RenderStats& Renderer::stats() const { return impl_->stats; }
 uint64_t Renderer::workingBytes() const {
     uint64_t mips = impl_->mipmaps.capacity() * sizeof(std::vector<Texture>);
@@ -1132,6 +1162,17 @@ uint64_t Renderer::workingBytes() const {
            impl_->posedVertices.capacity() * sizeof(PosedVertex) +
            (impl_->solid.capacity() + impl_->translucent.capacity()) * sizeof(Primitive) +
            impl_->visible.capacity() * sizeof(std::pair<float, uint32_t>);
+}
+
+bool WorldFrame::render(const Snapshot& snapshot, uint32_t matchRevision, int width, int height) {
+    if (snapshot.match != Match::Playing && matchRevision == matchRevision_ && width == width_ && height == height_ &&
+        snapshot.difficulty == difficulty_) return false;
+    renderer_.render(snapshot, width, height, pixels_, false);
+    matchRevision_ = matchRevision;
+    width_ = width;
+    height_ = height;
+    difficulty_ = snapshot.difficulty;
+    return true;
 }
 
 } // namespace fod

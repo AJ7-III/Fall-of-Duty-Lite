@@ -77,6 +77,8 @@ idf.py -B build-lane-400 -p "$FOD_PORT" flash monitor
 
 After the 10-second warm-up, the firmware records a predecessor plus 3,000 scheduled presentations. The serial summary counts repeated sequences as misses and reports consecutive misses, the maximum gap and interval percentiles. It also reports display and I²S underruns. The two CSV files are written to SD after capture finishes. The raw data distinguishes world cost, raster cost, PPA, HUD and submission. Preserve the files under a name containing scene, mode and pack revision before starting another capture.
 
+Add `CONFIG_FOD_REPLAY_FRAME_ONLY=y` to the overlay to measure total frame work with only a timer before rendering and after submission. This mode omits the renderer timers, the PPA and HUD timestamps, and the request-slot lookup. Use it for paired measurements of the live render path. For detailed captures, the report derives the same total by adding the world, PPA, HUD and submission intervals per frame.
+
 ```sh
 python3 bench_report.py /path/to/copied/slots.csv /path/to/copied/stages.csv
 ```

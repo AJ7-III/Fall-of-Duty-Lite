@@ -54,19 +54,24 @@ function stockLoft(name, parent, material, outline) {
 
 function buildStock(parent, rubber) {
   const scene = parent.getScene();
-  const texture = makeCanvasTexture(scene, "liteGraphiteStock", 128, (ctx, size) => {
+  const texture = makeCanvasTexture(scene, "litePaintedStock", 128, (ctx, size) => {
     const image = ctx.createImageData(size, size);
     for (let i = 0; i < size * size; i++) {
       const x = i % size, y = Math.floor(i / size);
       const hash = (Math.imul(x + 37, 133039) ^ Math.imul(y + 71, 28933)) >>> 0;
       const grain = ((hash ^ (hash >>> 11)) % 7) - 3;
       const fiber = .5 * Math.sin(x * .23 + y * .037) + 1.1 * Math.sin(y * .17);
-      image.data.set([78 + grain + fiber, 76 + grain + fiber, 77 + grain + fiber, 255], i * 4);
+      const u = x * 2 * Math.PI / size, v = y * 2 * Math.PI / size;
+      const brush = Math.sin(2 * v + .70 * Math.cos(u + 2 * v)) + .44 * Math.cos(2 * u - 3 * v);
+      const tan = Math.max(0, Math.min(1, (brush - .46) * 2.5));
+      const shade = Math.max(0, -brush - .21) * 15;
+      const wear = grain + fiber - shade;
+      image.data.set([84 + 39 * tan + wear, 98 + 13 * tan + wear, 71 + 3 * tan + wear, 255], i * 4);
     }
     ctx.putImageData(image, 0, 0);
   });
-  const stock = flatMat(scene, "liteM40Composite", { albedo: [1.30, 1.30, 1.28], tex: texture, rough: .87, metal: 0 });
-  const cheekMat = flatMat(scene, "liteM40CheekRest", { albedo: [.26, .26, .26], rough: .92, metal: 0 });
+  const stock = flatMat(scene, "liteM40Composite", { albedo: [1.20, 1.20, 1.17], tex: texture, rough: .87, metal: 0 });
+  const cheekMat = flatMat(scene, "liteM40CheekRest", { albedo: [.19, .22, .18], rough: .92, metal: 0 });
   stockLoft("liteM40Stock", parent, stock, stations);
   loft("liteM40RecoilPad", parent, rubber, [
     [-.491, .026, -.004, .092], [-.486, .031, -.010, .098],
@@ -75,7 +80,33 @@ function buildStock(parent, rubber) {
   stockLoft("liteM40CheekRest", parent, cheekMat, cheek);
 }
 
-export const buildLiteSniper = (scene) => buildSniperViewModel(scene, buildStock);
+export function buildLiteSniper(scene) {
+  const model = buildSniperViewModel(scene, buildStock);
+  // Bake the small lens highlight into the pack's ordinary RGB565 texture.
+  // The lens ribbon's U runs around the glass, with V along its profile.
+  const glass = makeCanvasTexture(scene, "liteScopeGlass", 32, (ctx, size) => {
+    const image = ctx.createImageData(size, size);
+    for (let y = 0; y < size; y++) {
+      const radius = (y + .5) / size;
+      for (let x = 0; x < size; x++) {
+        const angle = (x + .5) * 2 * Math.PI / size;
+        const h = radius * Math.cos(angle), v = radius * Math.sin(angle);
+        const glow = Math.exp(-5 * (h + .19) ** 2 - 19 * (v - .30) ** 2);
+        const glint = Math.exp(-92 * (h - .17) ** 2 - 150 * (v - .44) ** 2);
+        const light = 35 * glow + 39 * glint;
+        image.data.set([13 + light * .60, 23 + light * .95, 26 + light, 255], (y * size + x) * 4);
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  });
+  for (const name of ["sniperLensMat", "sniperLensRearMat"]) {
+    const lens = scene.getMaterialByName(name);
+    lens.diffuseTexture = glass;
+    lens.diffuseColor.set(1, 1, 1);
+    lens.emissiveColor.set(0, 0, 0);
+  }
+  return model;
+}
 
 function clearance(p, outline) {
   if (p.z < outline[0][0] || p.z > outline.at(-1)[0]) return Infinity;

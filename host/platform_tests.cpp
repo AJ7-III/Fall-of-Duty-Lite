@@ -56,6 +56,56 @@ void checkStartGradient(const Assets& assets) {
     }
 }
 
+void checkFrozenWorld(const Assets& assets) {
+    Renderer renderer(assets), reference(assets);
+    std::vector<uint16_t> pixels(400 * 225), expected(pixels.size());
+    WorldFrame frame(renderer, pixels.data());
+    Snapshot snapshot;
+    uint32_t matchRevision = 0;
+    int width = 400, height = 225;
+    renderer.render(snapshot, width, height, pixels.data());
+    check(renderer.stats().depthPasses, "Measured rendering should record pixel work before returning to live mode.");
+    const auto draw = [&](bool rebuild) {
+        check(frame.render(snapshot, matchRevision, width, height) == rebuild, "Wrong world cache invalidation.");
+        reference.render(snapshot, width, height, expected.data());
+        check(pixels == expected, "World cache changed the rendered pixels.");
+        check(!renderer.stats().depthPasses && !renderer.stats().triangles && !renderer.stats().visibleChunks &&
+              !renderer.stats().rasterUs && !renderer.stats().setupUs, "Live rendering collected frame statistics.");
+        check(reference.stats().triangles && reference.stats().depthPasses, "Measured rendering lost its work counters.");
+    };
+
+    draw(true);
+    draw(false);
+    snapshot.match = Match::Playing;
+    snapshot.camera = {{-13.8f, 1.7f, -13.8f}, 0.60f, 0, 59 * pi / 180};
+    ++matchRevision;
+    draw(true);
+    draw(true);
+    snapshot.match = Match::Paused;
+    ++matchRevision;
+    draw(true);
+    draw(false);
+
+    // Resume, move the camera, and pause again before the next presentation.
+    matchRevision += 2;
+    snapshot.camera.yaw += 0.25f;
+    draw(true);
+    draw(false);
+    ++snapshot.difficulty;
+    draw(true);
+    width = 320;
+    height = 180;
+    draw(true);
+    draw(false);
+    snapshot.match = Match::Results;
+    ++matchRevision;
+    draw(true);
+    draw(false);
+    snapshot.match = Match::Start;
+    ++matchRevision;
+    draw(true);
+}
+
 void checkTouchAndReconnect(const Assets& assets) {
     App app(assets);
     Input input;
@@ -467,6 +517,7 @@ int main(int argc, char** argv) {
     checkOrientation(assets);
     checkRadar();
     checkStartGradient(assets);
+    checkFrozenWorld(assets);
     checkTouchAndReconnect(assets);
     checkResumeLatch(assets);
     checkTranslucentPass();

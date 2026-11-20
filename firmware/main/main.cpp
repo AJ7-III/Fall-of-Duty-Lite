@@ -175,10 +175,21 @@ struct Published {
     fod::Snapshot snapshot;
     fod::MenuState menu;
     bool marker = false;
+    uint32_t matchRevision = 0;
 };
 
+#if CONFIG_FOD_REPLAY_FRAME_ONLY
+constexpr bool frameOnly = true;
+#else
+constexpr bool frameOnly = false;
+#endif
+
 struct StageSample {
+#if CONFIG_FOD_REPLAY_FRAME_ONLY
+    uint32_t sequence, frame;
+#else
     uint32_t sequence, slot, setup, raster, world, ppa, hud, submit;
+#endif
 };
 
 struct Live {
@@ -222,8 +233,9 @@ bool sameSettings(const board::SavedSettings& x, const board::SavedSettings& y) 
 }
 
 void publish(Live& live, bool marker) {
-    const Published current{live.app.state(), live.app.settings(), marker};
+    Published current{live.app.state(), live.app.settings(), marker};
     portENTER_CRITICAL(&live.lock);
+    current.matchRevision = live.latest.matchRevision + (current.snapshot.match != live.latest.snapshot.match);
     live.latest = current;
     portEXIT_CRITICAL(&live.lock);
 }
@@ -297,17 +309,22 @@ void exportCapture(const Live& live) {
         ESP_LOGW(tag, "could not write /sd/stages.csv");
         return;
     }
-    std::fputs("sequence,request_slot,setup_us,raster_us,world_us,ppa_us,hud_us,submit_us\n", file);
-    const uint32_t first = live.capture[0].sequence;
+    std::fputs(frameOnly ? "sequence,frame_us\n"
+                         : "sequence,request_slot,setup_us,raster_us,world_us,ppa_us,hud_us,submit_us\n", file);
+    // Sequence zero has no submitted frame and is also the ring's initial value.
+    const uint32_t first = std::max(live.capture[0].sequence, uint32_t{1});
     const uint32_t last = live.capture[benchmarkSlots].sequence;
     for (uint32_t sequence = first; sequence <= last; ++sequence) {
         const auto& stage = live.stages[sequence % benchmarkSamples];
         if (stage.sequence != sequence) continue;
-        std::fprintf(file, "%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
-                     static_cast<unsigned long>(stage.sequence), static_cast<unsigned long>(stage.slot),
-                     static_cast<unsigned long>(stage.setup), static_cast<unsigned long>(stage.raster),
-                     static_cast<unsigned long>(stage.world), static_cast<unsigned long>(stage.ppa),
-                     static_cast<unsigned long>(stage.hud), static_cast<unsigned long>(stage.submit));
+#if CONFIG_FOD_REPLAY_FRAME_ONLY
+        std::fprintf(file, "%" PRIu32 ",%" PRIu32 "\n", stage.sequence, stage.frame);
+#else
+        std::fprintf(file, "%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 ",%" PRIu32
+                     ",%" PRIu32 ",%" PRIu32 ",%" PRIu32 "\n",
+                     stage.sequence, stage.slot, stage.setup, stage.raster, stage.world, stage.ppa,
+                     stage.hud, stage.submit);
+#endif
     }
     if (std::fclose(file) != 0) ESP_LOGW(tag, "incomplete stages.csv");
 }
@@ -344,6 +361,7 @@ void renderTask(void* context) {
     }
     ESP_LOGI(tag, "renderer working bytes=%llu color bytes=%u", static_cast<unsigned long long>(renderer->workingBytes()),
              400 * 225 * static_cast<unsigned>(sizeof(uint16_t)));
+    fod::WorldFrame worldFrame(*renderer, source);
     board::logMemory("renderer-ready");
     board::setPresenter();
     uint32_t sequence = 0;
@@ -369,11 +387,13 @@ void renderTask(void* context) {
         portEXIT_CRITICAL(&live.lock);
         const int width = published.menu.width();
         const int height = published.menu.height();
-        const int64_t start = board::timeUs();
-        renderer->render(published.snapshot, width, height, source);
-        const int64_t world = board::timeUs();
+        const bool detail = reportReady && !frameOnly;
+        const int64_t start = reportReady ? board::timeUs() : 0;
+        if (live.benchmark) renderer->render(published.snapshot, width, height, source, detail);
+        else worldFrame.render(published.snapshot, published.matchRevision, width, height);
+        [[maybe_unused]] const int64_t world = detail ? board::timeUs() : 0;
         const auto err = board::scaleWorld(frame, source, width, height);
-        const int64_t ppa = board::timeUs();
+        [[maybe_unused]] const int64_t ppa = detail ? board::timeUs() : 0;
         if (err != ESP_OK) {
             reportError("PPA", err);
             board::discard(frame);
@@ -386,20 +406,24 @@ void renderTask(void* context) {
 #if CONFIG_FOD_LATENCY_GPIO >= 0
         board::rect(frame, 390, 230, 20, 20, published.marker ? 0xffff : 0);
 #endif
-        const int64_t hud = board::timeUs();
+        [[maybe_unused]] const int64_t hud = detail ? board::timeUs() : 0;
         ++sequence;
-        const auto slot = board::displayStatus().slots;
+        [[maybe_unused]] const auto slot = detail ? board::displayStatus().slots : 0;
         if (board::present(frame, sequence) != ESP_OK) {
             board::discard(frame);
             continue;
         }
         if (reportReady) {
+            const int64_t submitted = board::timeUs();
+            auto& stage = live.stages[sequence % benchmarkSamples];
+#if CONFIG_FOD_REPLAY_FRAME_ONLY
+            stage = {sequence, static_cast<uint32_t>(submitted - start)};
+#else
             const auto& timing = renderer->stats();
-            live.stages[sequence % benchmarkSamples] = {
-                sequence, slot, timing.setupUs, timing.rasterUs, static_cast<uint32_t>(world - start),
-                static_cast<uint32_t>(ppa - world), static_cast<uint32_t>(hud - ppa),
-                static_cast<uint32_t>(board::timeUs() - hud)
-            };
+            stage = {sequence, slot, timing.setupUs, timing.rasterUs, static_cast<uint32_t>(world - start),
+                     static_cast<uint32_t>(ppa - world), static_cast<uint32_t>(hud - ppa),
+                     static_cast<uint32_t>(submitted - hud)};
+#endif
         }
     }
 }

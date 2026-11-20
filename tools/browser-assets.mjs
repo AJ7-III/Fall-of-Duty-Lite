@@ -10,11 +10,12 @@ import { PlayerController } from "../reference/browser/src/player/PlayerControll
 import { CameraRig } from "../reference/browser/src/player/CameraRig.ts";
 import { BotNav } from "../reference/browser/src/bots/BotNav.ts";
 import { ViewModelRig } from "../reference/browser/src/rendering/ViewModelRig.ts";
+import { BoltActionSniper } from "../reference/browser/src/weapons/BoltActionSniper.ts";
 import { WeaponManager } from "../reference/browser/src/weapons/WeaponManager.ts";
 import { Apache } from "../reference/browser/src/killstreaks/Apache.ts";
 import { Killstreaks } from "../reference/browser/src/killstreaks/Killstreaks.ts";
 import { AudioSynth } from "../reference/browser/src/rendering/AudioSynth.ts";
-import { buildFieldInfantry, buildViewArms, registerInfantryMaterials } from "./lite-infantry.mjs";
+import { buildFieldInfantry, buildViewArms, registerInfantryFaces, registerInfantryMaterials } from "./lite-infantry.mjs";
 import { buildLiteSniper, sampleBoltClearance } from "./lite-sniper-stock.mjs";
 import { finishTexture, textureLift } from "./texture-treatment.mjs";
 import duelHitboxes from "./rival-hitboxes.json";
@@ -48,6 +49,17 @@ function liteTextureTone(name) {
   return null;
 }
 
+const weaponAlbedo = {
+  mp44MetalMat: [2.28, 2.32, 2.24],
+  mp44DarkMat: [.18, .20, .20],
+  mp44WornEdgeMat: [.37, .41, .41],
+  mp44WoodMat: [1.49, 1.33, 1.16],
+  sniperMetalMat: [.25, .29, .30],
+  sniperScopeMat: [.16, .19, .19],
+  uspSlideMat: [.24, .28, .29],
+  uspSteelMat: [.39, .43, .45],
+};
+
 // Bake the browser's material color into each tile. We store sample rows in
 // texture V order (as returned by WebGL), compatible with the software sampler.
 class Palette {
@@ -63,7 +75,9 @@ class Palette {
     if (this.idByMaterial.has(mat)) return this.idByMaterial.get(mat);
     const id = this.materials.length;
     this.idByMaterial.set(mat, id);
-    const albedo = mat?.albedoColor ?? mat?.diffuseColor ?? { r: 0.45, g: 0.45, b: 0.45 };
+    const finish = weaponAlbedo[mat?.name];
+    const albedo = finish ? { r: finish[0], g: finish[1], b: finish[2] }
+      : mat?.albedoColor ?? mat?.diffuseColor ?? { r: 0.45, g: 0.45, b: 0.45 };
     const emissive = mat?.emissiveColor ?? { r: 0, g: 0, b: 0 };
     const color = mat?.name === "lampHeadMat"
       ? to565(1.0, 0.76, 0.42)
@@ -511,21 +525,24 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
     let boltMargin = Infinity, boltChecks = 0;
     const viewGeometry = async (weapon) => {
       const root = rig.shown.root;
-      const work = weapon.id === "m40a3" && (weapon.state === "cycling" || weapon.state === "reloading") ? rig.cycleLift : 0;
+      const work = weapon.id === "m40a3" ? rig.cycleLift : 0;
+      const carry = weapon.id === "m40a3" && !weapon.isAiming ? 1 - work : 0;
       const position = root.position.clone(), rotation = root.rotation.clone();
-      // Bring the action clear of the eyepiece while it is being worked.
-      root.position.x -= .10 * work;
-      root.position.y -= .017 * work;
-      root.position.z += .071 * work;
-      root.rotation.y -= .16 * work;
-      root.rotation.z += .24 * work;
+      // Frame the firing hand above the ammo display in the hip pose.
+      root.position.x -= .042 * carry;
+      root.position.y += .027 * carry;
+      root.position.z += .012 * carry;
+      // Keep the working hand visible beside Lite's larger eyepiece.
+      root.position.x -= .055 * work;
+      root.position.z += .045 * work;
+      root.rotation.y -= .09 * work;
+      root.rotation.z += .12 * work;
       try {
         const geometry = await meshData(root.getChildMeshes(), palette, { captureDisabled: true });
         return appendMesh(geometry, buildViewArms(weapon, rig.shown, infantry.player, geometry));
       } finally {
         root.position.copyFrom(position);
         root.rotation.copyFrom(rotation);
-        root.computeWorldMatrix(true);
       }
     };
     const reset = (weapon) => {
@@ -551,13 +568,28 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
       scene.render();
       viewModelsAds.push(await viewGeometry(weapon));
     }
-    // Playback seconds at grasp, withdrawal, reinsertion, charging and close.
-    // Sniper rounds use a two-round track so the second feed can repeat.
+    // Capture the reference rig at the phase boundaries and between them.
+    // The second feed starts and ends at the same press pose so it can loop.
+    const { RELOAD_OPEN: open, RELOAD_PER_ROUND: feed, RELOAD_CLOSE: close } = BoltActionSniper;
+    const phase = (start, duration, fractions) => fractions.map((fraction) => start + duration * fraction);
+    const feedSamples = [0, .19, .38, .55, .72, .80, .88];
+    const repeatStart = open + feed, closeStart = open + 2 * feed;
+    const sniperReload = [
+      ...phase(0, open, [0, .17, .35, .52, .70, .85]),
+      ...phase(open, feed, feedSamples),
+      ...phase(repeatStart, feed, feedSamples),
+      ...phase(closeStart, close, [0, .14, .28, .415, .55, .675, .8, .9, 1]),
+    ];
+    const cycle = weapons.weapons[1].config.boltCycleDuration;
+    const sniperBolt = [
+      0, ...phase(.30, cycle - .60, [0, .09, .18, .28, .38, .47, .56, .65, .74, .87, 1]),
+      cycle - .20, cycle - .10, cycle,
+    ];
     const clips = [
       [0, false, false, [0, .20, .39, .52, .62, .77, .92, 1.10, 1.26]],
-      [1, false, false, [0, .15, .30, .41, .53, .65, .79, .91, 1.04, 1.17, 1.33, 1.47, 1.62]],
+      [1, false, false, sniperReload],
       [2, false, false, [0, .15, .31, .42, .55, .75, .94, 1.16]],
-      [1, false, true, [0, .18, .38, .56, .74, .90, 1]],
+      [1, false, true, sniperBolt],
       [0, true, false, [0, .20, .39, .52, .63, .92, 1.10, 1.23, 1.36, 1.51, 1.62]],
       [2, true, false, [0, .15, .31, .42, .55, .75, .94, 1.16]],
     ];
@@ -571,8 +603,8 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
       const duration = bolt ? weapon.config.boltCycleDuration : weapon.reloadTotal;
       let elapsed = 0;
       const track = [];
-      for (const sample of samples) {
-        const target = bolt ? sample * duration : sample;
+      let repeatPose;
+      for (const target of samples) {
         do {
           const step = Math.min(1 / 60, target - elapsed);
           elapsed += step;
@@ -584,7 +616,12 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
             boltChecks++;
           }
         } while (elapsed < target - 1e-6);
-        track.push({ seconds: target, mesh: await viewGeometry(weapon) });
+        // Match idle on both ends, including the rig's damped carry motion.
+        const resting = id === 1 && (target === 0 || Math.abs(target - duration) < 1e-6);
+        const mesh = resting ? viewModels[id] : id === 1 && !bolt && target === closeStart
+          ? repeatPose : await viewGeometry(weapon);
+        if (id === 1 && !bolt && target === repeatStart) repeatPose = mesh;
+        track.push({ seconds: target, mesh });
       }
       tracks.push(track);
     }
@@ -594,6 +631,9 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
     console.log(`Lite sniper bolt: ${(boltMargin * 1000).toFixed(2)} mm minimum sampled margin across ${boltChecks} poses`);
     console.log(`Exported weapons and Apache (${helicopter.triangles.length / 5} triangles)`);
 
+    const { shot, surfaceNames, ...worldMesh } = world;
+    addGrassTufts(worldMesh, palette, grass?.thinInstanceGetWorldMatrices() ?? []);
+    registerInfantryFaces(palette, infantry, to565, base64);
     const rivalFrames = [];
     const hanzFrames = [];
     const rivalHitboxes = [];
@@ -615,9 +655,7 @@ export async function captureAssets({ seed, maxTexture, walkFrames, runFrames })
     const voices = await readVoices();
     const sky = readSky(scene);
     const obstacles = PlayerController.getObstacles().map((o) => [o.cx, o.cz, o.hw, o.hd, o.minY, o.maxY, o.yaw, o.cos, o.sin]);
-    const { shot, surfaceNames, ...worldMesh } = world;
     const playerBody = partition(buildFieldInfantry("idle", 0, infantry.player, "player"), 5, false);
-    addGrassTufts(worldMesh, palette, grass?.thinInstanceGetWorldMatrices() ?? []);
     return {
       meshes: [partition(worldMesh, 5, true), ...viewModels, helicopter, ...viewModelsAds, ...rivalFrames],
       materials: palette.materials,

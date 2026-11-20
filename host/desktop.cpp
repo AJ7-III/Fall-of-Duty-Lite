@@ -118,6 +118,8 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
     app.settings().compact = compact;
     Renderer renderer(assets, look);
     std::vector<uint16_t> world(400 * 225), framebuffer(800 * 480);
+    WorldFrame worldFrame(renderer, world.data());
+    uint32_t matchRevision = 0;
     Sdl sdl;
     SDL_SetMainReady();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) < 0 || !sdl.surface()) {
@@ -242,6 +244,7 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
             app.tick(input);
             if (!sdl.audio) app.audio.mix(silence.data(), silence.size() / 2);
             if (old != app.state().match) {
+                ++matchRevision;
                 elapsed = 0;
                 SDL_SetRelativeMouseMode(app.state().match == Match::Playing ? SDL_TRUE : SDL_FALSE);
             }
@@ -252,7 +255,7 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
         if (frameElapsed >= 1.0 / 30) {
             frameElapsed = std::fmod(frameElapsed, 1.0 / 30);
             const auto& menu = app.settings();
-            renderer.render(app.state(), menu.width(), menu.height(), world.data());
+            worldFrame.render(app.state(), matchRevision, menu.width(), menu.height());
             scaleWorld(world.data(), menu.width(), menu.height(), framebuffer.data(), false, look == RenderLook::Enhanced);
             drawHud(assets, app.state(), menu, framebuffer.data(), false, sdl.audio ? app.audio.speaking() : Speaker::None);
             SDL_UpdateTexture(sdl.texture, nullptr, framebuffer.data(), 800 * sizeof(uint16_t));

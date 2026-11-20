@@ -24,6 +24,11 @@ config FOD_REPLAY_JOURNAL
     depends on !FOD_BOARD_DIAGNOSTIC
     default n
 
+config FOD_REPLAY_FRAME_ONLY
+    bool "Measure only total frame work during replay capture"
+    depends on !FOD_BOARD_DIAGNOSTIC && !FOD_REPLAY_JOURNAL && FOD_REPLAY_SCENE != ""
+    default n
+
 config FOD_REPLAY_COMPACT
     bool "Use 320x180 for the SD replay"
     depends on !FOD_BOARD_DIAGNOSTIC

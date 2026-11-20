@@ -6,9 +6,10 @@ import json
 import math
 
 
-def read_rows(path):
+def read_csv(path):
     with open(path, newline="", encoding="utf-8") as file:
-        return [{key: float(value) for key, value in row.items()} for row in csv.DictReader(file)]
+        reader = csv.DictReader(file)
+        return reader.fieldnames or [], [{key: float(value) for key, value in row.items()} for row in reader]
 
 
 def distributions(values):
@@ -20,6 +21,23 @@ def distributions(values):
         **{f"p{p}": ordered[math.ceil(len(ordered) * p / 100) - 1] for p in (50, 95, 99)},
         "worst": ordered[-1],
     }
+
+
+def frame_summary(stages, columns, selected):
+    pipeline = ("world_us", "ppa_us", "hud_us", "submit_us")
+    has_total = "frame_us" in columns
+    if "sequence" not in columns or (not has_total and not set(pipeline).issubset(columns)):
+        raise ValueError("stages CSV requires sequence and either frame_us or all four pipeline timings")
+    stages = [row for row in stages if row["sequence"] in selected]
+    summary = {
+        name: distributions([row[name] for row in stages])
+        for name in ("setup_us", "raster_us", *pipeline)
+        if name in columns
+    }
+    # The four detailed intervals cover the same timestamps as frame_us.
+    times = [row["frame_us"] for row in stages] if has_total else [sum(row[name] for name in pipeline) for row in stages]
+    summary["frame_us"] = distributions(times)
+    return summary
 
 
 def slot_summary(slots):
@@ -68,17 +86,18 @@ def main():
     parser.add_argument("--latency", help="CSV of paired optical edges using report_us,photon_us columns")
     args = parser.parse_args()
 
-    slots = read_rows(args.slots)
+    _, slots = read_csv(args.slots)
     report = slot_summary(slots)
     selected = {row["selected_sequence"] for row in slots}
-    stages = [row for row in read_rows(args.stages) if row["sequence"] in selected]
-    report["selected_frame_stages_us"] = {
-        name: distributions([row[name] for row in stages])
-        for name in ("setup_us", "raster_us", "world_us", "ppa_us", "hud_us", "submit_us")
-    }
+    columns, stages = read_csv(args.stages)
+    try:
+        report["selected_frame_stages_us"] = frame_summary(stages, columns, selected)
+    except ValueError as error:
+        parser.error(f"{args.stages}: {error}")
     report["audio_underruns"] = args.audio_underruns
     if args.latency:
-        latency = [row["photon_us"] - row["report_us"] for row in read_rows(args.latency)]
+        _, edges = read_csv(args.latency)
+        latency = [row["photon_us"] - row["report_us"] for row in edges]
         if not latency or min(latency) < 0:
             raise ValueError("expected at least one causal report and optical edge pair")
         report["optical_latency_us"] = distributions(latency)

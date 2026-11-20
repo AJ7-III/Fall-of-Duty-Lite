@@ -155,7 +155,7 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
         const auto mixed = Clock::now();
         if (out.benchmark || (out.image && frame == frames - 1)) {
             const auto& state = imageCaptured ? imageState : app.state();
-            render.render(state, width, height, color.data());
+            render.render(state, width, height, color.data(), out.benchmark);
             const auto rendered = Clock::now();
             // Benchmarks keep the plain scaler. A capture shows the filtered picture the handheld presents.
             scaleWorld(color.data(), width, height, framebuffer.data(), false, !out.benchmark && out.look == RenderLook::Enhanced);
