@@ -2,6 +2,7 @@
 #include "assets.hpp"
 #include "light.hpp"
 #include "render.hpp"
+#include "trace.hpp"
 
 #include <algorithm>
 #include <array>
@@ -106,13 +107,28 @@ void checkFrozenWorld(const Assets& assets) {
     draw(true);
 }
 
+void checkComposedMenu() {
+    MenuState menu;
+    const MenuFrameKey idle(1, Match::Start, menu, Speaker::None);
+    check(idle == MenuFrameKey(1, Match::Start, menu, Speaker::Hanz), "Hidden speech should not redraw the menu.");
+    check(!(idle == MenuFrameKey(2, Match::Paused, menu, Speaker::None)), "A new match state should redraw.");
+    check(!(idle == MenuFrameKey(1, Match::Start, menu, Speaker::None, true)), "Controller prompt should redraw.");
+    check(!(idle == MenuFrameKey(1, Match::Start, menu, Speaker::None, false, true)), "Latency marker should redraw.");
+    menu.compact = true;
+    check(!(idle == MenuFrameKey(1, Match::Start, menu, Speaker::None)), "Changing resolution should redraw.");
+    const MenuFrameKey results(2, Match::Results, menu, Speaker::None);
+    check(!(results == MenuFrameKey(2, Match::Results, menu, Speaker::Hanz)), "Visible speech should redraw.");
+    menu.selection = RivalRow;
+    check(!(results == MenuFrameKey(2, Match::Results, menu, Speaker::None)), "Moving menu selection should redraw.");
+}
+
 void checkTouchAndReconnect(const Assets& assets) {
     App app(assets);
     Input input;
     input.touchX = startX + 16;
     input.touchY = setupY + 16;
     app.tick(input);
-    check(app.settings().setup && app.state().match == Match::Start, "Touch Duel Setup should open settings.");
+    check(app.settings().setup && app.state().match == Match::Start, "Touch Match Setup should open settings.");
     input.touchX = 620;
     input.touchY = menuY + RenderRow * menuRowHeight + 2;
     app.tick(input);
@@ -150,15 +166,139 @@ void checkTouchAndReconnect(const Assets& assets) {
     input.held = Fire;
     app.tick(input);
     check(app.state().match == Match::Paused, "A reconnect should require explicit resume.");
-    input.pressed = Confirm;
+    input.touchX = menuX + 5;
+    input.touchY = menuY + 5;
     app.tick(input);
-    check(app.state().match == Match::Playing, "Confirm should resume.");
+    check(app.state().match == Match::Playing, "A click should resume after the disconnect event clears.");
+    input.touchX = input.touchY = -1;
     input.pressed = Fire;
     app.tick(input);
     check(app.state().clip == 30, "A held trigger should stay blocked after reconnect.");
     app.tick({});
     app.tick(input);
     check(app.state().clip == 29, "A new trigger press should fire after release.");
+}
+
+void checkFreeForAllMenu(const Assets& assets) {
+    App app(assets);
+    Input input;
+    input.touchX = startX + 16;
+    input.touchY = setupY + 16;
+    app.tick(input);
+    input.touchX = menuX + menuWidth - 8;
+    input.touchY = menuY + RivalRow * menuRowHeight + 2;
+    app.tick(input);
+    check(app.settings().opponent == Opponent::FreeForAll, "Touch should select Free-for-all.");
+    app.tick(input);
+    check(app.settings().opponent == Opponent::IPwndUrMom, "Opponent selection should wrap after Free-for-all.");
+    input.touchX = menuX + 8;
+    app.tick(input);
+    check(app.settings().opponent == Opponent::FreeForAll, "Opponent selection should wrap backwards.");
+    input = {};
+    input.pressed = Back;
+    app.tick(input);
+    input.pressed = Confirm;
+    app.tick(input);
+    check(app.state().match == Match::Playing && app.state().freeForAll, "Start should launch Free-for-all.");
+    input.pressed = Pause;
+    app.tick(input);
+    input = {};
+    input.touchX = menuX + menuWidth - 8;
+    input.touchY = menuY + RivalRow * menuRowHeight + 2;
+    app.tick(input);
+    check(app.state().freeForAll && app.settings().opponent == Opponent::FreeForAll,
+          "Pause should preserve the active lineup.");
+    input.touchY = menuY + ExitRow * menuRowHeight + 2;
+    app.tick(input);
+    check(app.state().match == Match::Results, "End Match should show the Free-for-all results.");
+    input.touchY = menuY + RivalRow * menuRowHeight + 2;
+    app.tick(input);
+    input.touchY = menuY + 2;
+    app.tick(input);
+    check(app.state().match == Match::Playing && !app.state().freeForAll && !app.state().alternateRival,
+          "The results picker should allow a rematch in a different mode.");
+}
+
+void checkFreeForAllRender(const Assets& assets) {
+    Renderer renderer(assets);
+    Snapshot snap;
+    snap.match = Match::Playing;
+    snap.freeForAll = true;
+    snap.camera = {{-14.3f, 1.7f, -12.5f}, 0, 0, 70 * pi / 180};
+    snap.rival.position = {-14.65f, 0, -8.5f};
+    snap.secondRival.position = {-13.6f, 0, -8.5f};
+    snap.rival.yaw = snap.secondRival.yaw = pi;
+    for (int width : {320, 400}) {
+        const int height = width * 9 / 16;
+        std::vector<uint16_t> two(width * height), one(width * height);
+        snap.secondRival.visible = true;
+        renderer.render(snap, width, height, two.data());
+        snap.secondRival.visible = false;
+        renderer.render(snap, width, height, one.data());
+        check(two != one, "Free-for-all should render the second rival at both resolutions.");
+    }
+
+    std::vector<uint16_t> withoutContact(800 * 480), withContact(800 * 480);
+    snap.player.position = {-14.3f, 0, -12.5f};
+    snap.playerYaw = 0;
+    snap.secondRival.visible = true;
+    drawHud(assets, snap, {}, withoutContact.data(), false);
+    snap.secondRadarContact = true;
+    drawHud(assets, snap, {}, withContact.data(), false);
+    check(withContact != withoutContact, "The second rival should have a distinct radar contact.");
+}
+
+void checkFreeForAllKillNotice(const Assets& assets) {
+    Snapshot snap;
+    snap.freeForAll = true;
+    std::vector<uint16_t> without(800 * 480), with(without.size());
+    const auto noticeDrawn = [&](Match match, int y) {
+        snap.match = match;
+        snap.killNotice = {};
+        std::fill(without.begin(), without.end(), 0);
+        std::fill(with.begin(), with.end(), 0);
+        drawHud(assets, snap, {}, without.data(), false);
+        snap.killNotice = {2.5f, 1, 0};
+        drawHud(assets, snap, {}, with.data(), false);
+        return !std::equal(without.begin() + y * 800, without.begin() + (y + 20) * 800, with.begin() + y * 800);
+    };
+    check(noticeDrawn(Match::Playing, 54), "Show the Free-for-all kill notice below the live scoreboard.");
+    check(noticeDrawn(Match::Results, 412), "Keep the deciding kill visible on the results screen.");
+    snap.device = Device::Laptop;
+    check(!noticeDrawn(Match::Playing, 54), "Keep the laptop controls clear of the kill notice.");
+}
+
+void checkFreeForAllTrace(const Assets& assets, const char* path) {
+    ReplayTrace trace;
+    std::string error;
+    check(trace.load(path, error), "The Free-for-all benchmark trace should load.");
+    App app(assets);
+    Renderer renderer(assets);
+    for (int width : {320, 400}) {
+        trace.begin(app);
+        check(app.state().freeForAll, "The stress trace should launch Free-for-all.");
+        const int height = width * 9 / 16;
+        std::vector<uint16_t> full(width * height), hidden(full.size());
+        bool overlap = false;
+        while (trace.step(app)) {
+            const auto& state = app.state();
+            if (!state.apacheActive || state.apachePosition.x <= 18 || state.tick % 2 || state.dead ||
+                state.rival.health <= 0 || state.secondRival.health <= 0) continue;
+            renderer.render(state, width, height, full.data(), false);
+            auto sample = state;
+            sample.apacheActive = false;
+            renderer.render(sample, width, height, hidden.data(), false);
+            overlap = full != hidden;
+            for (Actor Snapshot::*rival : {&Snapshot::rival, &Snapshot::secondRival}) {
+                sample = state;
+                (sample.*rival).visible = false;
+                renderer.render(sample, width, height, hidden.data(), false);
+                overlap &= full != hidden;
+            }
+            if (overlap) break;
+        }
+        check(overlap, "The stress trace should render both living rivals and the incoming Apache together.");
+    }
 }
 
 void checkRadar() {
@@ -462,7 +602,7 @@ void checkSpeech() {
     mixer.setVolume(100);
     std::array<int16_t, 6> output{};
     mixer.play(Sound::VoiceStart);
-    check(mixer.speaking() == Speaker::None, "Queued speech must not claim the speaker icon.");
+    check(mixer.speaking() == Speaker::None, "A speech request must wait for playback to claim the speaker icon.");
     mixer.mix(output.data(), 1);
     check(output[0] == 898 && output[1] == 898, "Speech should play the stored predictor at 90% gain.");
     check(mixer.speaking() == Speaker::IPwndUrMom, "The first line should identify its actual voice bank.");
@@ -471,23 +611,32 @@ void checkSpeech() {
     check(output[0] == 0 && output[1] == 0, "Paused speech should leave both channels silent.");
     check(mixer.speaking() == Speaker::None, "Paused speech must hide the speaker icon.");
     mixer.play(Sound::VoiceAlternateKill);
-    mixer.play(Sound::VoiceStart);
-    mixer.pauseSpeech(false);
-    mixer.mix(output.data(), 3);
-    check(output[0] == 899 && output[1] == 899 && output[2] == 909 && output[3] == 909,
-          "Resumed speech must decode the next two nibbles in order.");
-    const auto first = output[4];
-    check(first >= 3593 && first <= 5390 && output[5] == first, "Queued speech should start after the active line.");
-    check(mixer.speaking() == Speaker::Hanz, "Queued speech should claim the icon only when it plays.");
     mixer.mix(output.data(), 1);
-    check(output[0] == 0 && output[1] == 0, "Only one additional line should queue.");
-    check(mixer.speaking() == Speaker::None, "Silence after a line must clear the icon.");
+    mixer.pauseSpeech(false);
+    mixer.play(Sound::VoiceAlternateKill);
+    mixer.mix(output.data(), 3);
+    const std::array<int16_t, 6> resumed{899, 899, 909, 909, 0, 0};
+    check(output == resumed, "Resumed speech should finish alone, with no other rival queued behind it.");
+    mixer.play(Sound::VoiceAlternateKill);
+    mixer.mix(output.data(), 1);
+    check(output[0] == 0 && output[1] == 0 && mixer.speaking() == Speaker::None,
+          "The quiet gap should suppress rival taunts and clear the speaker icon.");
 
-    std::array<int16_t, 3> heard{first, 0, 0};
-    for (size_t i = 1; i < heard.size(); ++i) {
+    std::vector<int16_t> quiet(audioHz * 3);
+    const auto clearGap = [&] {
+        mixer.mix(quiet.data(), quiet.size() / 2);
+        check(std::all_of(quiet.begin(), quiet.end(), [](int16_t sample) { return sample == 0; }),
+              "Expired taunts must stay silent after the gap ends.");
+    };
+    clearGap();
+    std::array<int16_t, 3> heard{};
+    for (auto& line : heard) {
         mixer.play(Sound::VoiceAlternateKill);
         mixer.mix(output.data(), 1);
-        heard[i] = output[0];
+        line = output[0];
+        check(line >= 3593 && line <= 5390 && mixer.speaking() == Speaker::Hanz,
+              "A fresh taunt may play and claim the correct speaker after the gap.");
+        clearGap();
     }
     check(heard[0] != heard[1] && heard[1] != heard[2] && heard[0] != heard[2],
           "Every variant should play once per shuffle.");
@@ -504,10 +653,71 @@ void checkSpeech() {
     mixer.mix(output.data(), 3);
     check(mixer.speaking() == Speaker::None, "Zero master volume must leave the speaker icon hidden.");
 }
+
+void checkSpeechVariety() {
+    Assets assets;
+    assets.voices[0].push_back({{}, 1, 1000, 0});
+    assets.voices[3].push_back({{}, 1, 5000, 0});
+    bool heardFirst = false, heardSecond = false;
+    size_t earliest = audioHz * 2, latest = 0;
+    constexpr size_t block = audioHz / 200;
+    std::array<int16_t, 2 * block> pcm{};
+    for (uint32_t seed : {1u, 0x4323u, 0xbcd1u, 0x1e9f1c21u}) {
+        Mixer mixer(assets, seed);
+        mixer.setVolume(100);
+        mixer.play(Sound::VoiceStart);
+        mixer.play(Sound::VoiceAlternateStart);
+        mixer.mix(pcm.data(), 1);
+        check(pcm[0] == 898 || pcm[0] == 4492, "Simultaneous requests should play exactly one voice.");
+        heardFirst |= mixer.speaking() == Speaker::IPwndUrMom;
+        heardSecond |= mixer.speaking() == Speaker::Hanz;
+        size_t elapsed = 0;
+        while (elapsed < audioHz * 2) {
+            mixer.play(Sound::VoiceStart);
+            mixer.mix(pcm.data(), block);
+            if (pcm[0]) break;
+            elapsed += block;
+        }
+        earliest = std::min(earliest, elapsed);
+        latest = std::max(latest, elapsed);
+    }
+    check(heardFirst && heardSecond, "Simultaneous requests should not always favor the first rival.");
+    check(earliest >= audioHz * 3 / 4 && latest <= audioHz * 3 / 2 && earliest < latest,
+          "Speech should leave a different quiet gap across seeds.");
+}
+
+void checkAudioControlsWithFullQueue() {
+    Assets assets;
+    assets.audio.resize(size_t(Sound::Count));
+    assets.audio[size_t(Sound::Rotor)].samples = {1000, 1000};
+    assets.audio[size_t(Sound::VoiceStart)].samples.assign(6, 4000);
+    Mixer mixer(assets);
+    std::array<int16_t, 2> pcm{};
+    mixer.loop(Sound::Rotor, 1);
+    mixer.play(Sound::VoiceStart);
+    mixer.mix(pcm.data(), 1);
+    check(pcm[0] != 0, "The rotor and voice should initially be audible.");
+    const auto fillQueue = [&] {
+        for (int i = 0; i < 140; ++i) mixer.loop(Sound::Rotor, 1);
+    };
+    fillQueue();
+    mixer.stop(Sound::Rotor);
+    mixer.pauseSpeech(true);
+    mixer.mix(pcm.data(), 1);
+    check(mixer.dropped() && pcm[0] == 0, "A full queue must still stop the rotor and pause speech.");
+    mixer.pauseSpeech(false);
+    mixer.mix(pcm.data(), 1);
+    check(pcm[0] != 0 && mixer.speaking() == Speaker::IPwndUrMom, "Speech should resume with the rotor still stopped.");
+    fillQueue();
+    mixer.stopSpeech();
+    mixer.stop(Sound::Rotor);
+    mixer.mix(pcm.data(), 1);
+    check(pcm[0] == 0 && mixer.speaking() == Speaker::None, "Muting must clear speech when the queue is full.");
+}
 } // namespace
 
 int main(int argc, char** argv) {
-    check(argc == 2, "Usage: fod_platform_tests PACK");
+    check(argc == 3, "Usage: fod_platform_tests PACK FFA_TRACE");
     Assets assets;
     std::string error;
     if (!assets.load(argv[1], error)) {
@@ -518,7 +728,12 @@ int main(int argc, char** argv) {
     checkRadar();
     checkStartGradient(assets);
     checkFrozenWorld(assets);
+    checkComposedMenu();
     checkTouchAndReconnect(assets);
+    checkFreeForAllMenu(assets);
+    checkFreeForAllRender(assets);
+    checkFreeForAllKillNotice(assets);
+    checkFreeForAllTrace(assets, argv[2]);
     checkResumeLatch(assets);
     checkTranslucentPass();
     checkDepthPrecision();
@@ -528,5 +743,7 @@ int main(int argc, char** argv) {
     checkMixer(assets);
     checkSpeakerHud();
     checkSpeech();
+    checkSpeechVariety();
+    checkAudioControlsWithFullQueue();
     std::puts("Viewport mapping, menus, radar, trigger latches, translucency, PCM mixing and ADPCM speech passed.");
 }

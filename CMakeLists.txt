@@ -31,5 +31,14 @@ if(BUILD_TESTING)
     add_test(NAME native_tests COMMAND fod_tests "${FOD_TEST_PACK}")
     add_executable(fod_platform_tests host/platform_tests.cpp)
     target_link_libraries(fod_platform_tests PRIVATE fod_core)
-    add_test(NAME platform_tests COMMAND fod_platform_tests "${FOD_TEST_PACK}")
+    add_test(NAME platform_tests COMMAND fod_platform_tests "${FOD_TEST_PACK}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/reference/fixtures/ffa-apache.fodtrace")
+    find_package(Python3 3.9 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME replay_parity COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-evidence.py"
+            --host "$<TARGET_FILE:fod_host>" --pack "${CMAKE_CURRENT_SOURCE_DIR}/assets/fall-of-duty.fodp"
+            --reference "${CMAKE_CURRENT_SOURCE_DIR}/reference/fixtures"
+            --out "${CMAKE_CURRENT_BINARY_DIR}/replay-parity" --skip-bench)
+    endif()
 endif()

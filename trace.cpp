@@ -10,7 +10,13 @@ bool ReplayTrace::load(const char* path, std::string& error) {
     const std::unique_ptr<FILE, decltype(&std::fclose)> file(std::fopen(path, "r"), &std::fclose);
     if (!file) { error = "TRACE NOT FOUND"; return false; }
     char line[512]{};
-    if (!std::fgets(line, sizeof(line), file.get()) || std::strncmp(line, "FODTRACE 1", 10)) {
+    if (!std::fgets(line, sizeof(line), file.get())) {
+        error = "TRACE SCHEMA";
+        return false;
+    }
+    line[std::strcspn(line, "\r\n")] = '\0';
+    const bool freeForAll = std::strcmp(line, "FODTRACE 2") == 0;
+    if (!freeForAll && std::strcmp(line, "FODTRACE 1") != 0) {
         error = "TRACE SCHEMA";
         return false;
     }
@@ -23,7 +29,7 @@ bool ReplayTrace::load(const char* path, std::string& error) {
                     &next.fixture_.pitch, &next.fixture_.rival.x, &next.fixture_.rival.y, &next.fixture_.rival.z,
                     &next.fixture_.rivalYaw, &weapon, &next.fixture_.clip, &next.fixture_.playerScore,
                     &next.fixture_.rivalScore, &next.fixture_.streak, &deathTick) < 17 ||
-        next.difficulty_ < 1 || next.difficulty_ > 10 || weapon > 2 || flags > 15) {
+        next.difficulty_ < 1 || next.difficulty_ > 10 || weapon > 2 || flags > (freeForAll ? 7u : 15u)) {
         error = "TRACE INITIAL STATE";
         return false;
     }
@@ -45,9 +51,22 @@ bool ReplayTrace::load(const char* path, std::string& error) {
     next.fixture_.freezeRival = flags & 1;
     next.fixture_.airstrikeReady = flags & 2;
     next.fixture_.apacheReady = flags & 4;
-    next.alternate_ = flags & 8;
+    next.opponent_ = freeForAll ? Opponent::FreeForAll : flags & 8 ? Opponent::Hanz : Opponent::IPwndUrMom;
 
     size_t row = 2;
+    if (freeForAll) {
+        ++row;
+        auto& fixture = next.fixture_;
+        char extra;
+        if (!std::fgets(line, sizeof(line), file.get()) ||
+            std::sscanf(line, "B %f %f %f %f %d %c", &fixture.secondRival.x, &fixture.secondRival.y,
+                        &fixture.secondRival.z, &fixture.secondRivalYaw, &fixture.secondRivalScore, &extra) != 5 ||
+            !inYard(fixture.secondRival) || !std::isfinite(fixture.secondRivalYaw) ||
+            fixture.secondRivalScore < 0 || fixture.secondRivalScore > 9) {
+            error = "TRACE SECOND RIVAL";
+            return false;
+        }
+    }
     const auto invalid = [&] {
         error = "TRACE RECORD " + std::to_string(row);
         return false;
@@ -67,7 +86,14 @@ bool ReplayTrace::load(const char* path, std::string& error) {
             input.held = held;
             input.pressed = pressed;
             next.inputs_.push_back(input);
-        } else if (line[0] == 'R') {
+        } else if (freeForAll && line[0] == 'W') {
+            unsigned count;
+            char extra;
+            if (std::sscanf(line, "W %u %c", &count, &extra) != 1 || !count || count > 12000 - next.inputs_.size()) {
+                return invalid();
+            }
+            next.inputs_.insert(next.inputs_.end(), count, Input{});
+        } else if (!freeForAll && line[0] == 'R') {
             Draw draw;
             unsigned tick = 0;
             if (next.draws_.size() >= 30000 ||
@@ -105,7 +131,7 @@ void ReplayTrace::begin(App& app) {
     at_ = firstDraw_ = missingDraws_ = 0;
     for (auto& draw : draws_) draw.used = false;
     app.game.setRandomHook(draws_.empty() ? nullptr : &supply, this);
-    app.game.start(seed_, difficulty_, alternate_);
+    app.game.start(seed_, difficulty_, opponent_);
     app.game.setupFixture(fixture_);
     app.audio.setVolume(app.settings().volume);
     app.audio.stopSpeech();
@@ -130,17 +156,25 @@ void writeTraceTick(FILE* out, const App& app) {
                  "{\"tick\":%lu,\"real\":%.9f,\"scaled\":%.9f,\"scale\":%.9f,\"position\":[%.6f,%.6f,%.6f],"
                  "\"rival\":[%.6f,%.6f,%.6f],\"camera\":[%.6f,%.6f,%.6f],\"yaw\":%.7f,\"pitch\":%.7f,\"eye\":%.7f,\"hp\":%.5f,\"rivalHp\":%.5f,"
                  "\"gun\":%d,\"gunState\":%d,\"clip\":%d,\"reserve\":%d,\"score\":[%d,%d],\"dead\":%d,"
-                 "\"glass\":\"%016llx\",\"device\":%d,\"apache\":%d,\"events\":[",
+                 "\"glass\":\"%016llx\",\"device\":%d,\"apache\":%d,",
                  static_cast<unsigned long>(s.tick), s.realTime, s.scaledDelta, s.timeScale, s.player.position.x,
                  s.player.position.y, s.player.position.z, s.rival.position.x, s.rival.position.y, s.rival.position.z,
                  s.camera.position.x, s.camera.position.y, s.camera.position.z, s.playerYaw, s.playerPitch, s.eyeHeight, s.player.health, s.rival.health, int(s.weapon),
                  int(s.weaponState), s.clip, s.reserve, s.playerScore, s.rivalScore, s.dead,
                  static_cast<unsigned long long>(s.brokenGlass), int(s.device), s.apacheActive);
+    if (s.freeForAll) {
+        const auto& second = s.secondRival;
+        std::fprintf(out, "\"secondRival\":[%.6f,%.6f,%.6f],\"secondRivalHp\":%.5f,\"secondRivalScore\":%d,",
+                     second.position.x, second.position.y, second.position.z, second.health, s.secondRivalScore);
+    }
+    std::fputs("\"events\":[", out);
     bool comma = false;
     for (size_t i = 0; i < app.game.eventCount(); ++i) {
         const auto& e = app.game.events()[i];
         if (e.kind == EventKind::Sound) continue;
-        std::fprintf(out, "%s[%d,%lu,%d]", comma ? "," : "", int(e.kind), static_cast<unsigned long>(e.surface), e.value);
+        std::fprintf(out, "%s[%d,%lu,%d", comma ? "," : "", int(e.kind), static_cast<unsigned long>(e.surface), e.value);
+        if (s.freeForAll) std::fprintf(out, ",%d,%d", int(e.rival), int(e.attacker));
+        std::fputc(']', out);
         comma = true;
     }
     std::fputs("]}\n", out);

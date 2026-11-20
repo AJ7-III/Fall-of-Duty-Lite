@@ -18,7 +18,7 @@ enum class EventKind : uint8_t {
     WorldHit, GlassHit, GlassBreak, RivalHit, RivalKill, PlayerHit, PlayerDeath,
     PlayerRespawn, RivalRespawn, BotFire, Uav, AirstrikeReady, LaptopOpen,
     LaptopClose, StrikeMark, StrikeImpact, ApacheReady, ApacheLaunch, ApacheAttack,
-    MatchEnd, Sound
+    MatchEnd, Sound, BotKill
 };
 
 struct Event {
@@ -30,6 +30,8 @@ struct Event {
     Sound sound = Sound::Impact;
     float volume = 1;
     bool positional = false;
+    // Rival slots are 0 and 1. The player and uncredited deaths use -1.
+    int8_t rival = -1, attacker = -1;
 };
 
 struct Camera {
@@ -50,6 +52,17 @@ struct Jet {
     Vec3 position{};
     float yaw = 0;
     bool visible = false;
+};
+
+struct Tracer {
+    Vec3 start{}, end{};
+    float time = 0;
+};
+
+struct KillNotice {
+    float remaining = 0;
+    // Match events use -1 for the player and 0 and 1 for the rivals.
+    int8_t attacker = -1, victim = -1;
 };
 
 struct Snapshot {
@@ -76,6 +89,13 @@ struct Snapshot {
     bool lethalMarker = false, headshot = false;
     bool emptyReload = false;
     bool dead = false, grounded = true, crouch = false, prone = false, sprint = false, alternateRival = false;
+    Actor secondRival{};
+    std::array<Tracer, 2> rivalTracers{};
+    KillNotice killNotice{};
+    int secondRivalScore = 0;
+    bool freeForAll = false, secondRadarContact = false;
+
+    int leadingRivalScore() const { return rivalScore > secondRivalScore ? rivalScore : secondRivalScore; }
 };
 
 struct Fixture {
@@ -86,11 +106,15 @@ struct Fixture {
     uint32_t killPlayerAtTick = 0;
     Weapon weapon = Weapon::Mp44;
     bool freezeRival = false, airstrikeReady = false, apacheReady = false;
+    Vec3 secondRival{-13.5f, 0, 13.5f};
+    float secondRivalYaw = 3 * pi / 4;
+    int secondRivalScore = 0;
+    bool freezeSecondRival = false;
 };
 
 class Game {
 public:
-    explicit Game(const Assets& assets);
+    explicit Game(const Assets& assets, uint32_t voiceSeed = 0);
     ~Game();
     Game(const Game&) = delete;
     Game& operator=(const Game&) = delete;
@@ -98,6 +122,7 @@ public:
     const Event* events() const;
     size_t eventCount() const;
     void start(uint32_t seed, int difficulty, bool alternateRival = false);
+    void start(uint32_t seed, int difficulty, Opponent opponent);
     void pause();
     // Use the trigger state sampled when the platform accepts Resume.
     void resume(bool triggerHeld = true);

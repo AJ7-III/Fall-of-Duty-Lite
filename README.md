@@ -1,12 +1,12 @@
 # Fall of Duty Lite
 
-**3.92 MB (3,917,627 bytes)** for the current microSD game pack. [Pack manifest](assets/fall-of-duty.fodp.json)
+**3.92 MB (3,917,641 bytes)** for the current microSD game pack. [Pack manifest](assets/fall-of-duty.fodp.json)
 
-Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten duel in Ship Box, a rain-soaked container yard. Pick one of two rivals and a difficulty from 1 to 10. Difficulty defaults to level 5. The game renders at 400×225 or 320×180 and presents at 800×480.
+Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten match in Ship Box, a rain-soaked container yard. Duel either rival or face both in a three-way free-for-all. Difficulty ranges from 1 to 10 and defaults to level 5. The game renders at 400×225 or 320×180 and presents at 800×480.
 
 The pack is **6.6% smaller than the Doom v1.9 shareware WAD**. [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
 
-[Download v1.0.0 handheld package](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0) · [Handheld setup](INSTALL.md) · [Play on desktop](#play-on-desktop) · [Board build and qualification](BOARD.md) · [Evidence and benchmarks](EVIDENCE.md)
+[Download v1.1.0 handheld package](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.1.0) · [Handheld setup](INSTALL.md) · [Play on desktop](#play-on-desktop) · [Board build and qualification](BOARD.md) · [Evidence and benchmarks](EVIDENCE.md)
 
 ![A Ship Box duel with the MP44, Hanz across the yard, and an active UAV on the minimap](docs/images/gameplay.png)
 
@@ -22,13 +22,11 @@ The pack is **6.6% smaller than the Doom v1.9 shareware WAD**. [Doom WAD size](h
 
 ## Handheld download and hardware
 
-The published v1.0.0 Guition archive is **4.17 MB (4,173,709 bytes)**. [GitHub release](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0)
+The v1.1.0 Guition archive is about **4.47 MB**. [GitHub release](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.1.0)
 
-- [Fall-of-Duty-Lite-Guition-ESP32-P4.zip](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip)
-- [Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256)
+- [Fall-of-Duty-Lite-Guition-ESP32-P4.zip](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.1.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip)
+- [Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.1.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256)
 - [Latest releases](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/latest)
-
-The Guition firmware and SD archive built from this checkout is **4.46 MB (4,460,477 bytes)**. [Build and packaging instructions](#build-and-package-handheld-firmware)
 
 The archive bundles the bootloader, partition table, application binary, schema 7 SD pack, reference replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`. Keep the firmware and SD pack from the same archive together because schema 7 packs require firmware with schema 7 support.
 
@@ -41,8 +39,10 @@ The archive bundles the bootloader, partition table, application binary, schema 
 
 Follow the [handheld installation guide](INSTALL.md) to verify `SHA256SUMS`, copy the contents of `sd/` to the root of a FAT32 microSD card, confirm the chip and flash ID with `esptool`, and flash `@flash_args`. Plug in the speaker and DualShock 4, boot, and pick **Start Duel** with Cross or touch.
 
+For a three-way match, open **Match Setup**, cycle **Rival** to **Free-for-all**, then return to the title screen and choose **Start FFA**. The rivals can score against each other, and the kill feed shows who scored. Only your own kills advance your killstreak.
+
 > [!NOTE]
-> The v1.0.0 handheld package is cross-built with ESP-IDF v5.5.3 and checked for flash layout and image checksums. Physical Guition JC4880P443C_I_W qualification is still pending. Display scanout, touch corners, USB controller handling, audio under scanout, optical latency, and full first-to-ten play on hardware remain to be verified using [BOARD.md](BOARD.md).
+> The v1.1.0 handheld package is cross-built with ESP-IDF v5.5.3 and checked for flash layout and image checksums. Physical Guition JC4880P443C_I_W qualification is still pending. Display scanout, touch corners, USB controller handling, audio under scanout, optical latency, and full first-to-ten play on hardware remain to be verified using [BOARD.md](BOARD.md).
 
 ## Play on desktop
 
@@ -75,7 +75,7 @@ SDL gamepads use the same layout as the handheld DualShock 4. On the Guition, to
 | Deploy banked streak or close laptop | `Up` arrow or `4` | `D-pad Up` |
 | Confirm or start duel | `Enter` or click menu | `Cross` / `A` |
 | Navigate menus | Arrow keys | `D-pad` |
-| Back from Duel Setup | `Esc` or `P` | `Circle` / `B` |
+| Back from Match Setup | `Esc` or `P` | `Circle` / `B` |
 | Pause or resume | `Esc` or `P` | `Options` / `Start` |
 
 ## Screenshots
@@ -98,24 +98,25 @@ Host verification and cross-build checks are recorded in [EVIDENCE.md](EVIDENCE.
 
 | Area | Status | Summary |
 | --- | --- | --- |
-| Native test suite | Verified on desktop | `native_tests` and `platform_tests` pass in Release and sanitizer builds and finish first-to-ten duels against both rivals |
-| Replay parity | Verified on desktop | Eight [reference fixtures](reference/fixtures) cover 3,076 steps. The current renderer and pack produce the same gameplay journals as the original at both render sizes. |
+| Native test suite | Verified on desktop | Release and sanitizer builds complete duels against both rivals and cover all three free-for-all win paths, respawns, streaks, radar, and both render sizes. |
+| Replay parity | Verified on desktop | Eight browser reference traces and a native Free-for-all stress trace produce matching journals at both resolutions. The browser comparison enforces tick counts and rejects unexpected gameplay differences. |
 | Asset memory | Verified on desktop | The loader reports 9,826,953 resident asset bytes and an estimated 9,908,873-byte loading peak (12 MiB limit). |
 | Desktop frame timings | Measured on desktop | Projection reuse reduced geometry setup p95 by 29–33% and whole-frame p95 by 1.6–14.6%, while the later runtime geometry pass lowered resident memory with an inconclusive frame-time spread between 2.3% faster and 0.1% slower |
 | Baked daylight | Measured on desktop | The bake adds 36 ms to renderer start and 207,214 bytes of working memory. Median frame work rose 8.6–10.5% on the benchmark replays. Handheld timings are pending. |
-| Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 878,800-byte application image. The local package passed flash layout and checksum checks. |
+| Firmware | Cross-build validated | The ESP-IDF v5.5.3 application image leaves 42% of the app partition free. The package passed flash layout and checksum checks. |
 | Guition hardware | Qualification pending | See the [on-device test procedure](BOARD.md#replay-and-measurement) for scanout, input, audio, latency, and full hardware duels. |
 
 The Apache comparison has a known browser-to-native difference at tick 564 in the dead rival’s vertical root position. [See the replay evidence.](EVIDENCE.md#replay-fixtures)
 
 ## Replay, benchmarks, and testing
 
-The repository includes eight [reference fixtures](reference/fixtures) covering long-lane combat, glass breakage, movement, weapon cycles, the airstrike laptop, the Apache fly-in, death timing, and match point. Run these commands from the repository root with the checked-in asset pack.
+The repository includes eight browser [reference fixtures](reference/fixtures) covering long-lane combat, glass breakage, movement, weapon cycles, the airstrike laptop, the Apache fly-in, death timing, and match point. The native `ffa-apache` trace exercises both live rivals during an Apache fly-in. CTest runs replay parity when Python 3.9 or later is available. Run these commands from the repository root with the checked-in asset pack.
 
 ```sh
 ctest --test-dir build/host --output-on-failure
 build/host/fod_host --bench reference/fixtures/long-lane.fodtrace --mode both
 build/host/fod_host --bench reference/fixtures/apache.fodtrace --mode both
+build/host/fod_host --bench reference/fixtures/ffa-apache.fodtrace --mode both
 python3 tools/run-evidence.py \
   --host build/host/fod_host --pack assets/fall-of-duty.fodp \
   --reference reference/fixtures --out out/evidence

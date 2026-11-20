@@ -53,12 +53,21 @@ def main():
         result["resolutionJournalsIdentical"] = journal.read_bytes() == compact.read_bytes()
         if not result["resolutionJournalsIdentical"]:
             raise RuntimeError(f"Resolution changed gameplay in {scene}")
-        report = args.out / f"{scene}.comparison.json"
-        subprocess.run([sys.executable, str(base / "compare-replay.py"), str(browser), str(journal),
-                        "--manifest", str(manifest), "--out", str(report)], check=True)
-        comparison = json.loads(report.read_text())
-        result["firstBrowserDivergenceTick"] = comparison["firstDivergenceTick"]
-        print(f"{scene}: {result['ticks']} ticks, first browser divergence at {result['firstBrowserDivergenceTick']}", flush=True)
+        if result["missingDraws"] or result["unusedDraws"]:
+            raise RuntimeError(f"Replay random draws changed in {scene}")
+        if trace.read_text().splitlines()[0] == "FODTRACE 2":
+            ticks = [json.loads(line) for line in journal.read_text().splitlines()]
+            if ([sample["tick"] for sample in ticks] != list(range(1, result["inputTicks"] + 1))
+                    or any("secondRival" not in sample for sample in ticks)):
+                raise RuntimeError(f"Free-for-all journal is incomplete in {scene}")
+        else:
+            report = args.out / f"{scene}.comparison.json"
+            subprocess.run([sys.executable, str(base / "compare-replay.py"), str(browser), str(journal),
+                            "--manifest", str(manifest), "--strict", "--out", str(report)], check=True)
+            comparison = json.loads(report.read_text())
+            result["firstBrowserDivergenceTick"] = comparison["firstDivergenceTick"]
+            result["knownApacheRivalHeightTicks"] = comparison["knownApacheRivalHeightTicks"]
+        print(f"{scene}: {result['ticks']} ticks, replay checks passed", flush=True)
         for mark in sorted(args.reference.glob(f"{scene}-t*.png")):
             suffix = mark.stem.rsplit("-t", 1)[1]
             if not suffix.isdecimal():
@@ -67,7 +76,7 @@ def main():
             for mode in (400, 320):
                 output = args.out / f"{mark.stem}.{mode}.ppm"
                 simulate(["--trace", trace, "--image-tick", tick, "--image", output, "--mode", mode])
-        if scene in {"long-lane", "apache"} and not args.skip_bench:
+        if scene in {"long-lane", "apache", "ffa-apache"} and not args.skip_bench:
             output = simulate(["--bench", trace, "--frames", args.frames, "--warmup", args.warmup, "--mode", "both"])
             result["hostTiming"] = [json.loads(line) for line in output.splitlines()]
         summary["scenes"][scene] = result

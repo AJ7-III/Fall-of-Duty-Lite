@@ -28,11 +28,11 @@ struct SavedSettings {
     uint8_t fast = 0;
     uint8_t voice = 1;
     uint8_t volume = 70;
-    uint8_t alternate = fod::defaultAlternateRival;
+    uint8_t opponent = uint8_t(fod::defaultOpponent);
     char callsign[20] = "PLAYER";
 };
 SavedSettings readSettings();
-void writeSettings(const SavedSettings& settings);
+esp_err_t writeSettings(const SavedSettings& settings);
 
 struct Frame {
     uint16_t* pixels = nullptr;

@@ -39,7 +39,7 @@ struct BotTarget {
 };
 
 struct BotRound {
-    Vec3 muzzle{}, end{};
+    Vec3 muzzle{}, direction{};
     Sound sound = Sound::Mp44;
     float damage = 0;
     bool fired = false;
@@ -211,8 +211,8 @@ private:
 
 class Bot {
 public:
-    Bot(const Assets& assets, const World& world, Random& random) : nav_(assets), world_(world), random_(random) {
-        path_.reserve(assets.navNodes.size());
+    Bot(Navigation& nav, const World& world, Random& random) : nav_(nav), world_(world), random_(random) {
+        path_.reserve(nav_.size());
     }
 
     Actor actor{};
@@ -248,7 +248,17 @@ public:
         intel(fix, {}, now, past, true, .45);
     }
 
-    BotRound update(const BotTarget& target, const game_data::Difficulty& tuning, double now, double dt) {
+    void retarget() {
+        auto& b = brain_;
+        b.visible = b.rayClear = b.hasIntel = b.freshIntel = b.hasSuspicion = b.holding = b.reached = false;
+        b.lastSeen = b.intelAt = -forever;
+        b.detection = b.threat = 0;
+        b.burst = b.pathIndex = 0;
+        b.destination = -1;
+        path_.clear();
+    }
+
+    BotRound update(const BotTarget& target, const game_data::Difficulty& tuning, double now, double dt, Vec3 separation = {}) {
         radar = std::max(0., radar - dt);
         if (dead || freeze) return {};
         auto& b = brain_;
@@ -263,7 +273,7 @@ public:
             think(target, tuning, now);
         }
         BotRound round = combat(target, tuning, now, dt);
-        motor(target, tuning, now, dt);
+        motor(target, tuning, now, dt, separation);
         return round;
     }
 
@@ -286,7 +296,7 @@ private:
         float walkCycle = 0, runCycle = 0;
     };
 
-    Navigation nav_;
+    Navigation& nav_;
     const World& world_;
     Random& random_;
     Brain brain_{};
@@ -776,16 +786,12 @@ private:
         const Vec3 origin = atHeight(actor.position, 1.34f + float(.27 * b.shoulder) - .015f * c - .82f * s) +
             forward(actor.yaw, 0) * (.17f - .015f * s + .82f * c) +
             Vec3{std::cos(actor.yaw), 0, -std::sin(actor.yaw)} * .065f;
-        const float surface = world_.ray(origin, dir, 60);
-        const float player = target.dead ? infinity : cylinder(origin, dir, target.position, .42f, target.eye + .15f);
-        const bool hit = player < surface;
-        const Vec3 end = origin + dir * (hit ? player : std::min(60.f, surface));
         b.errPitch -= .35 * deg;
         b.errYaw += random_.between("bot.shot.recoil", -.18, .18) * deg;
-        return {origin, end, w.sound, hit ? float(w.damage * d.damage) : 0, true};
+        return {origin, dir, w.sound, float(w.damage * d.damage), true};
     }
 
-    void motor(const BotTarget& t, const game_data::Difficulty& d, double now, double dt) {
+    void motor(const BotTarget& t, const game_data::Difficulty& d, double now, double dt, Vec3 separation) {
         auto& b = brain_;
         float intended = 0, moveYaw = actor.yaw;
         const bool planted = d.plantFeet && b.visible && b.burst > 0 && !b.sprint;
@@ -814,6 +820,7 @@ private:
             b.moving ? moveYaw : b.idleYaw + std::sin((now - b.idleAt) * .55) * 1.2;
         actor.yaw += float(angleDelta(actor.yaw, look) * (1 - std::exp(-(fight ? 11 : 7) * dt)));
         const Vec3 previous = actor.position;
+        velocity += separation;
         world_.move(actor.position, velocity, float(dt), 1.85f, .4f);
         const Vec3 moved = actor.position - previous;
         actor.speed = intended > 0 ? planar(moved) / float(std::max(dt, 1e-6)) : 0;

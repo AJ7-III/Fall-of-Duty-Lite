@@ -7,17 +7,16 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
-#include <optional>
 
 namespace fod {
 
 class Mixer {
 public:
-    explicit Mixer(const Assets& assets);
+    explicit Mixer(const Assets& assets, uint32_t voiceSeed = 0);
     void setVolume(int percent);
     void play(Sound sound, float gain = 1, float pan = 0);
     void loop(Sound sound, float gain, float pan = 0);
-    void stop(Sound sound) { loop(sound, 0); }
+    void stop(Sound sound);
     void stopSpeech();
     void pauseSpeech(bool paused);
     // Exactly one producer (simulation) and one consumer (PCM/DMA thread).
@@ -26,12 +25,11 @@ public:
     Speaker speaking() const { return speaking_.load(std::memory_order_relaxed); }
 
 private:
-    enum class Action : uint8_t { Sound, StopSpeech, PauseSpeech, ResumeSpeech };
     struct Command {
         Sound sound = Sound::Mp44;
         float gain = 0, pan = 0;
         bool loop = false;
-        Action action = Action::Sound;
+        uint32_t generation = 0;
     };
     struct Voice {
         Command command{};
@@ -51,18 +49,23 @@ private:
         AdpcmState decoder;
     };
     void push(Command command);
-    void apply(Command command);
+    void applyEffect(Command command);
     void startSpeech(Command command);
     int speechSample();
+    uint32_t voiceDraw();
 
     const Assets& assets_;
     std::array<Command, 128> queue_{};
     std::array<Voice, 24> voices_{};
     std::array<Deck, voiceBankCount> decks_{};
     Speech speech_{};
-    std::optional<Command> queuedSpeech_;
-    uint32_t voiceSeed_ = 0x29ea2831;
-    bool speechPaused_ = false;
+    size_t speechGapFrames_ = 0;
+    uint32_t voiceSeed_;
+    uint32_t activeSpeechGeneration_ = 0;
+    // Stops invalidate older commands even if the effects queue is full.
+    std::atomic<uint32_t> speechGeneration_{0};
+    std::array<std::atomic<uint32_t>, size_t(Sound::VoiceStart)> loopGenerations_;
+    std::atomic<bool> speechPaused_{false};
     std::atomic<uint32_t> write_{0}, read_{0}, dropped_{0};
     std::atomic<int> volume_{70};
     std::atomic<Speaker> speaking_{Speaker::None};

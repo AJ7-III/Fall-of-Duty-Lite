@@ -7,10 +7,12 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -210,7 +212,7 @@ board::SavedSettings fromMenu(const fod::MenuState& menu) {
         .fast = menu.compact,
         .voice = menu.voice,
         .volume = static_cast<uint8_t>(menu.volume),
-        .alternate = menu.alternateRival,
+        .opponent = static_cast<uint8_t>(menu.opponent),
     };
     static_assert(sizeof(saved.callsign) >= std::tuple_size_v<decltype(menu.callsign)>);
     std::copy(menu.callsign.begin(), menu.callsign.end(), saved.callsign);
@@ -222,14 +224,14 @@ void toMenu(const board::SavedSettings& saved, fod::MenuState& menu) {
     menu.compact = saved.fast;
     menu.voice = saved.voice;
     menu.volume = saved.volume;
-    menu.alternateRival = saved.alternate;
+    menu.opponent = static_cast<fod::Opponent>(saved.opponent);
     std::copy_n(saved.callsign, menu.callsign.size() - 1, menu.callsign.begin());
     menu.callsign.back() = '\0';
 }
 
 bool sameSettings(const board::SavedSettings& x, const board::SavedSettings& y) {
     return x.difficulty == y.difficulty && x.fast == y.fast && x.voice == y.voice && x.volume == y.volume &&
-           x.alternate == y.alternate && std::strcmp(x.callsign, y.callsign) == 0;
+           x.opponent == y.opponent && std::strcmp(x.callsign, y.callsign) == 0;
 }
 
 void publish(Live& live, bool marker) {
@@ -362,6 +364,7 @@ void renderTask(void* context) {
     ESP_LOGI(tag, "renderer working bytes=%llu color bytes=%u", static_cast<unsigned long long>(renderer->workingBytes()),
              400 * 225 * static_cast<unsigned>(sizeof(uint16_t)));
     fod::WorldFrame worldFrame(*renderer, source);
+    std::optional<fod::MenuFrameKey> lastMenu;
     board::logMemory("renderer-ready");
     board::setPresenter();
     uint32_t sequence = 0;
@@ -380,11 +383,20 @@ void renderTask(void* context) {
             board::logMemory("replay-end");
             exportCapture(live);
         }
-        auto frame = board::acquireFrame();
-        if (!frame) continue;
         portENTER_CRITICAL(&live.lock);
         const auto published = live.latest;
         portEXIT_CRITICAL(&live.lock);
+        const bool menu = !live.benchmark && published.snapshot.match != fod::Match::Playing;
+        const auto speaker = live.app.audio.speaking();
+        const bool controllerPrompt = menu && !board::hasController();
+        const bool marker = CONFIG_FOD_LATENCY_GPIO >= 0 && published.marker;
+        std::optional<fod::MenuFrameKey> menuKey;
+        if (menu) {
+            menuKey.emplace(published.matchRevision, published.snapshot.match, published.menu, speaker, controllerPrompt, marker);
+            if (menuKey == lastMenu) continue;
+        }
+        auto frame = board::acquireFrame();
+        if (!frame) continue;
         const int width = published.menu.width();
         const int height = published.menu.height();
         const bool detail = reportReady && !frameOnly;
@@ -399,8 +411,8 @@ void renderTask(void* context) {
             board::discard(frame);
             continue;
         }
-        fod::drawHud(live.assets, published.snapshot, published.menu, frame.pixels, true, live.app.audio.speaking());
-        if (!board::hasController() && !live.benchmark && published.snapshot.match != fod::Match::Playing) {
+        fod::drawHud(live.assets, published.snapshot, published.menu, frame.pixels, true, speaker);
+        if (controllerPrompt) {
             board::text(frame, 10, 460, "CONNECT DUALSHOCK 4 TO PLAY", 0xffff, 2);
         }
 #if CONFIG_FOD_LATENCY_GPIO >= 0
@@ -413,6 +425,7 @@ void renderTask(void* context) {
             board::discard(frame);
             continue;
         }
+        lastMenu = menuKey;
         if (reportReady) {
             const int64_t submitted = board::timeUs();
             auto& stage = live.stages[sequence % benchmarkSamples];
@@ -494,8 +507,9 @@ void runSimulation(Live& live, fod::ReplayTrace* replay) {
             nextSave = now + 1'000'000;
             const auto settings = fromMenu(app.settings());
             if (!sameSettings(saved, settings)) {
-                board::writeSettings(settings);
-                saved = settings;
+                const auto err = board::writeSettings(settings);
+                if (err == ESP_OK) saved = settings;
+                else reportError("Settings save", err);
             }
         }
     }
@@ -504,11 +518,11 @@ void runSimulation(Live& live, fod::ReplayTrace* replay) {
 void gameplay() {
     fod::Assets assets;
     loadPack(assets);
-    fod::App app(assets);
+    const char* name = CONFIG_FOD_REPLAY_SCENE;
+    fod::App app(assets, *name ? 0u : esp_random());
     toMenu(board::readSettings(), app.settings());
     fod::ReplayTrace trace;
     fod::ReplayTrace* replay = nullptr;
-    const char* name = CONFIG_FOD_REPLAY_SCENE;
     if (*name) {
         if (std::strlen(name) > 48 ||
             std::strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::strlen(name)) {

@@ -325,13 +325,51 @@ function collisionPose(clip, phase) {
   return a.map((box, i) => box.map((value, j) => value + (b[i][j] - value) * weight));
 }
 
+function canWalkLink(from, to) {
+  const position = new Vector3(BotNav.xs[from], 0, BotNav.zs[from]);
+  const next = new Vector3(), velocity = new Vector3();
+  for (let tick = 0; tick < 120; ++tick) {
+    const dx = BotNav.xs[to] - position.x, dz = BotNav.zs[to] - position.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance < 0.1 && position.y < 0.1) return true;
+    const speed = Math.min(2.4 / Math.max(distance, 1e-6), 60);
+    velocity.x = dx * speed;
+    velocity.z = dz * speed;
+    PlayerController.moveAndCollide(position, velocity, 1 / 60, 1.85, 0.4, next, -15);
+    position.copyFrom(next);
+  }
+  return false;
+}
+
 function readNavigation() {
   const navNodes = [];
   const navEdges = [];
+  const routes = BotNav.edges.map((edges, i) => edges.map((to, j) => [to, BotNav.edgeCosts[i][j]]));
+  const walkable = BotNav.walkable.slice();
+  // Test short links out of an isolated pocket with the native bot's body
+  // radius and an actual collision step, including sliding along a wall.
+  for (let from = 0; from < routes.length; ++from) {
+    if (!walkable[from] || routes[from].length) continue;
+    const x = BotNav.xs[from], z = BotNav.zs[from];
+    let nearest = -1, distance = 2.41;
+    for (let to = 0; to < routes.length; ++to) {
+      if (!walkable[to] || !BotNav.edges[to].length || routes[to].length >= 8) continue;
+      const gap = Math.hypot(BotNav.xs[to] - x, BotNav.zs[to] - z);
+      if (gap < distance && canWalkLink(from, to) && canWalkLink(to, from)) {
+        nearest = to;
+        distance = gap;
+      }
+    }
+    if (nearest < 0) {
+      walkable[from] = 0;
+    } else {
+      routes[from].push([nearest, distance]);
+      routes[nearest].push([from, distance]);
+    }
+  }
   for (let i = 0; i < BotNav.count; i++) {
-    const edges = BotNav.edges[i] ?? [];
-    navNodes.push([BotNav.xs[i], 0, BotNav.zs[i], navEdges.length, edges.length, BotNav.cover[i], BotNav.walkable[i]]);
-    for (let j = 0; j < edges.length; j++) navEdges.push([edges[j], BotNav.edgeCosts[i][j]]);
+    navNodes.push([BotNav.xs[i], 0, BotNav.zs[i], navEdges.length, routes[i].length, walkable[i] && BotNav.cover[i], walkable[i]]);
+    for (const edge of routes[i]) navEdges.push(edge);
   }
   return { navNodes, navEdges };
 }

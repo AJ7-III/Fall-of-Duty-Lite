@@ -2,6 +2,9 @@
 
 #include "game_bot.hpp"
 
+#include <iterator>
+#include <optional>
+
 namespace fod {
 namespace {
 
@@ -16,6 +19,25 @@ constexpr double fallStart[]{.50, .98, .62};
 constexpr double gaspAt[]{.30, .32, .26};
 constexpr float standEye = 1.7f, crouchEye = .95f, proneEye = .42f;
 constexpr float footstepGain = .35f;
+constexpr int playerSlot = -1;
+constexpr int matchTarget = 10;
+constexpr int maxDifficulty = std::size(game_data::levels[0]);
+
+constexpr auto freeForAllHanzLevels = [] {
+    std::array<game_data::Difficulty, maxDifficulty> levels{};
+    for (int i = 0; i < maxDifficulty; ++i) {
+        const auto& base = game_data::levels[0][i];
+        auto& hanz = levels[i];
+        hanz = game_data::levels[1][i];
+        // Let his reactions and tactics distinguish Hanz in Free-for-all.
+        hanz.health = base.health;
+        hanz.damage = base.damage;
+        hanz.aimError = base.aimError;
+        hanz.aimSpeed = base.aimSpeed;
+        hanz.spread = base.spread;
+    }
+    return levels;
+}();
 
 struct ReloadCue {
     double time = 0;
@@ -46,13 +68,25 @@ struct Apache {
     Vec3 pos{}, vel{};
     double until = 0, angle = 0, yaw = 0, pitch = 0, roll = 0, timer = 0, burstAt = 0, retargetAt = 0;
     int rounds = 0;
-    bool target = false;
+    int target = playerSlot;
 };
 struct Death {
     double elapsed = 0;
     float yaw = 0, distance = 0, height = 0, liveDistance = 0;
     Camera origin{};
     uint8_t variant = 0;
+};
+
+struct Rival {
+    Rival(Navigation& navigation, const World& world, Random& random) : bot(navigation, world, random) {}
+
+    Bot bot;
+    Death death{};
+    double respawn = 0, footstep = 0, lastShot = -forever, lastHit = -forever, retargetAt = 0;
+    int target = playerSlot, attacker = playerSlot;
+    Cause killCause = Cause::Weapon;
+    float killZone = 1;
+    bool counted = false;
 };
 
 game_data::AimFrame interpolateAim(int id, double frame) {
@@ -81,7 +115,8 @@ Vec3 intoActor(Vec3 point, float yaw) {
 } // namespace
 
 struct Game::Impl {
-    explicit Impl(const Assets& a) : assets(a), world(a), bot(a, world, random) {
+    Impl(const Assets& a, uint32_t voiceSeed) : assets(a), world(a), navigation(a), first(navigation, world, random) {
+        voiceRandom.state = voiceSeed ? voiceSeed : 0x516ad3cdu;
         snapshot.rival.position = playerSpawns[1];
         snapshot.player.position = playerSpawns[0];
         refill(true);
@@ -90,8 +125,11 @@ struct Game::Impl {
 
     const Assets& assets;
     World world;
-    Random random, voiceRandom;
-    Bot bot;
+    // The simulation steps rivals sequentially. Each keeps its own completed route.
+    Navigation navigation;
+    Random random, voiceRandom, secondRandom;
+    Rival first;
+    std::optional<Rival> second;
     Snapshot snapshot{};
     std::array<Event, 96> eventBuffer{};
     size_t eventCount = 0;
@@ -105,27 +143,41 @@ struct Game::Impl {
     Airstrike strike{};
     Apache apache{};
     bool lookLocked = false, stanceWasDown = false, stanceHeld = false, crouchToggle = false;
-    bool playerFired = false, blockFire = false, rivalCounted = false;
+    bool playerFired = false, blockFire = false;
     uint32_t fixtureDeathTick = 0;
-    unsigned voiceGates[2]{};
-    double stanceTime = 0, invulnerableUntil = 0, hurtAt = -forever, respawn = 0, rivalRespawn = 0;
+    double stanceTime = 0, invulnerableUntil = 0, hurtAt = -forever, respawn = 0;
     Vec3 bob{}, sway{};
-    double swayTime = 0, bobTime = 0, scopeTime = 0, footstep = 0, rivalFootstep = 0;
+    double swayTime = 0, bobTime = 0, scopeTime = 0, footstep = 0;
     double recoilPitch = 0, recoilYaw = 0, recoilKick = 0;
-    Death death{}, rivalDeath{};
-    Cause killCause = Cause::Weapon;
-    float killZone = 1;
+    Death death{};
 
-    const game_data::Difficulty& difficulty() const {
-        return game_data::levels[snapshot.alternateRival ? 1 : 0][snapshot.difficulty - 1];
+    int rivalCount() const { return second ? 2 : 1; }
+    const Rival& rival(int slot) const { return slot == 0 ? first : *second; }
+    Rival& rival(int slot) { return slot == 0 ? first : *second; }
+    Random& rivalRandom(int slot) { return slot == 0 ? random : secondRandom; }
+    int& rivalScore(int slot) { return slot == 0 ? snapshot.rivalScore : snapshot.secondRivalScore; }
+
+    bool isHanz(int slot) const { return slot == 1 || snapshot.alternateRival; }
+    const game_data::Difficulty& difficulty(int slot) const {
+        const int level = snapshot.difficulty - 1;
+        if (second && slot == 1) return freeForAllHanzLevels[level];
+        return game_data::levels[isHanz(slot) ? 1 : 0][level];
     }
 
     int weapon() const { return int(snapshot.weapon); }
     Gun& gun() { return guns[weapon()]; }
 
-    void emit(EventKind kind, int value = 0, Vec3 position = {}, uint32_t surface = 0) {
+    void emit(EventKind kind, int value = 0, Vec3 position = {}, uint32_t surface = 0,
+              int slot = playerSlot, int attacker = playerSlot) {
+        if (second && (kind == EventKind::RivalKill || kind == EventKind::BotKill ||
+                       (kind == EventKind::PlayerDeath && attacker != playerSlot))) {
+            snapshot.killNotice = {2.5f, int8_t(attacker), int8_t(slot)};
+        }
         if (eventCount >= eventBuffer.size()) return;
-        eventBuffer[eventCount++] = {kind, snapshot.tick, surface, value, position};
+        auto& event = eventBuffer[eventCount++];
+        event = {kind, snapshot.tick, surface, value, position};
+        event.rival = int8_t(slot);
+        event.attacker = int8_t(attacker);
     }
 
     void sound(Sound id, float volume = 1, bool positional = false, Vec3 position = {}) {
@@ -133,18 +185,10 @@ struct Game::Impl {
         eventBuffer[eventCount++] = {EventKind::Sound, snapshot.tick, 0, 0, position, id, volume, positional};
     }
 
-    void taunt(bool rivalWon) {
-        const int channel = rivalWon ? 1 : 0;
-        // Browser voice gates play once in each pair of events per channel.
-        // Use a cosmetic random stream so playback never changes gameplay.
-        if (!voiceGates[channel]) {
-            voiceGates[channel] = voiceRandom.draw("voice") < .5 ? 0b101 : 0b110;
-        }
-        const bool play = voiceGates[channel] & 1;
-        voiceGates[channel] >>= 1;
-        if (voiceGates[channel] == 1) voiceGates[channel] = 0;
-        if (!play) return;
-        const bool alternate = snapshot.alternateRival;
+    void taunt(int slot, bool rivalWon) {
+        // Each taunt is independently eligible, from the cosmetic RNG only.
+        if (voiceRandom.draw("voice") >= .5) return;
+        const bool alternate = isHanz(slot);
         const Sound line = rivalWon
             ? (alternate ? Sound::VoiceAlternateVictory : Sound::VoiceVictory)
             : (alternate ? Sound::VoiceAlternateKill : Sound::VoiceKill);
@@ -216,48 +260,69 @@ struct Game::Impl {
         return {s.player.position, s.playerVelocity, s.eyeHeight, s.dead, s.sprint, s.prone, s.crouch, playerFired};
     }
 
-    void setDifficulty(int level) { snapshot.difficulty = std::clamp(level, 1, 10); }
+    BotTarget combatTarget(int slot, double dt = 0) const {
+        if (slot == playerSlot) return target();
+        const auto& r = rival(slot);
+        return {r.bot.actor.position, r.bot.velocity, botEye, r.bot.dead, r.bot.actor.speed > 4.8f,
+                false, false, r.lastShot >= snapshot.scaledTime - dt};
+    }
 
-    void start(uint32_t seed, int level, bool alternate) {
+    void setDifficulty(int level) { snapshot.difficulty = std::clamp(level, 1, maxDifficulty); }
+
+    void start(uint32_t seed, int level, Opponent opponent) {
         snapshot = {};
         snapshot.match = Match::Playing;
-        snapshot.alternateRival = alternate;
+        snapshot.alternateRival = opponent == Opponent::Hanz;
+        snapshot.freeForAll = opponent == Opponent::FreeForAll;
+        if (snapshot.freeForAll) {
+            if (!second) second.emplace(navigation, world, secondRandom);
+        } else {
+            second.reset();
+        }
         setDifficulty(level);
         random.state = seed ? seed : 1;
-        voiceRandom.state = random.state ^ 0x516ad3cdu;
-        if (!voiceRandom.state) voiceRandom.state = 1;
-        voiceGates[0] = voiceGates[1] = 0;
+        secondRandom.state = random.state ^ 0x82f63b78u;
+        if (!secondRandom.state) secondRandom.state = 1;
         random.tick = 0;
         eventCount = 0;
         paneHits.fill(0);
         refill(true);
         resetPlayer(playerSpawns[0], pi / 4);
-        bot.freeze = false;
-        resetRival(playerSpawns[1], -3 * pi / 4, true);
+        for (int slot = 0; slot < rivalCount(); ++slot) {
+            auto& r = rival(slot);
+            r.bot.freeze = false;
+            resetRival(slot, playerSpawns[slot + 1], slot == 0 ? -3 * pi / 4 : 3 * pi / 4, true);
+        }
         laptop = transmitter = Phase::Away;
         laptopTime = transmitterTime = 0;
         uavUntil = -1;
         strike = {};
         apache = {};
-        death = rivalDeath = {};
+        death = {};
         respawn = 0;
         fixtureDeathTick = 0;
         blockFire = false;
-        sound(alternate ? Sound::VoiceAlternateStart : Sound::VoiceStart, .602f);
+        const int speaker = second && voiceRandom.draw("voice.start") >= .5 ? 1 : 0;
+        sound(isHanz(speaker) ? Sound::VoiceAlternateStart : Sound::VoiceStart, .602f);
         viewWeapon();
         viewWorld();
     }
 
-    void resetRival(Vec3 pos, float yaw, bool newMatch) {
-        bot.reset(pos, yaw, difficulty(), snapshot.scaledTime, newMatch);
-        rivalCounted = false;
-        rivalFootstep = rivalRespawn = 0;
-        killCause = Cause::Weapon;
-        killZone = 1;
+    void resetRival(int slot, Vec3 pos, float yaw, bool newMatch) {
+        auto& r = rival(slot);
+        r.bot.reset(pos, yaw, difficulty(slot), snapshot.scaledTime, newMatch);
+        r.death = {};
+        r.counted = false;
+        r.footstep = r.respawn = r.retargetAt = 0;
+        r.lastShot = r.lastHit = -forever;
+        r.target = r.attacker = playerSlot;
+        r.killCause = Cause::Weapon;
+        r.killZone = 1;
     }
 
-    Vec3 chooseSpawn(bool forRival) {
+    Vec3 chooseDuelSpawn(bool forRival) {
         const auto& s = snapshot;
+        const auto& bot = first.bot;
         const Vec3 other = forRival ? s.player.position : bot.actor.position;
         const Vec3 eye = atHeight(other, forRival ? s.eyeHeight : botEye);
         double best = -forever;
@@ -280,13 +345,38 @@ struct Game::Impl {
         return chosen;
     }
 
+    Vec3 chooseSpawn(int slot) {
+        if (!second) return chooseDuelSpawn(slot != playerSlot);
+        double best = -forever;
+        Vec3 chosen{};
+        for (const auto& spawn : playerSpawns) {
+            float nearest = 30;
+            bool seen = false;
+            for (int other = playerSlot; other < rivalCount(); ++other) {
+                if (other == slot) continue;
+                const auto enemy = combatTarget(other);
+                if (enemy.dead) continue;
+                nearest = std::min(nearest, planar(spawn - enemy.position));
+                seen |= !world.blocked(atHeight(spawn, botEye), atHeight(enemy.position, enemy.eye));
+            }
+            auto& rng = slot == playerSlot ? random : rivalRandom(slot);
+            const double jitter = slot == playerSlot ? rng.draw("player.spawn.corner") * 2 : rng.draw("bot.spawn.corner") * 11;
+            const double value = nearest + (seen ? 0 : 24) + jitter - (nearest < 1 ? 100 : 0);
+            if (value > best) {
+                chosen = spawn;
+                best = value;
+            }
+        }
+        return chosen;
+    }
+
     void playerStep(const Input& input, double dt) {
         auto& s = snapshot;
         s.damage *= float(std::exp(-1.6 * dt));
         if (s.dead) {
             respawn -= dt;
             if (respawn > 0) return;
-            const Vec3 pos = chooseSpawn(false);
+            const Vec3 pos = chooseSpawn(playerSlot);
             resetPlayer(pos, std::atan2(-pos.x, -pos.z));
             refill(false);
             s.timeScale = 1;
@@ -446,14 +536,19 @@ struct Game::Impl {
         }
     }
 
-    void hitRival(float amount, Cause cause, float zone, Vec3 point) {
+    void hitRival(int slot, float amount, Cause cause, float zone, Vec3 point, int attacker = playerSlot) {
+        auto& r = rival(slot);
+        auto& bot = r.bot;
         if (bot.dead) return;
         bot.actor.health -= amount;
         bot.pendingAlert = true;
-        killCause = cause;
-        killZone = zone;
-        emit(EventKind::RivalHit, int(std::lround(zone * 100)), point);
-        if (cause == Cause::Weapon) {
+        r.killCause = cause;
+        r.killZone = zone;
+        r.attacker = attacker;
+        r.lastHit = snapshot.scaledTime;
+        r.retargetAt = 0;
+        emit(EventKind::RivalHit, int(std::lround(zone * 100)), point, 0, slot, attacker);
+        if (cause == Cause::Weapon && attacker == playerSlot) {
             snapshot.lethalMarker = bot.actor.health <= 0;
             snapshot.hitMarker = snapshot.lethalMarker ? .33f : .15f;
             sound(Sound::Hit, .65f);
@@ -464,13 +559,13 @@ struct Game::Impl {
             bot.actor.health = 0;
             bot.actor.speed = 0;
             bot.velocity = {};
-            rivalDeath = {};
-            rivalDeath.variant = uint8_t(random.draw("rival.death.variant") * 3);
-            bot.actor.fallVariant = rivalDeath.variant;
+            r.death = {};
+            r.death.variant = uint8_t(rivalRandom(slot).draw("rival.death.variant") * 3);
+            bot.actor.fallVariant = r.death.variant;
         }
     }
 
-    float rivalSurface(Vec3 origin, Vec3 dir, float before, float& zone) const {
+    float rivalSurface(const Bot& bot, Vec3 origin, Vec3 dir, float before, float& zone) const {
         if (bot.dead) return infinity;
         const auto& a = bot.actor;
         const Vec3 p = intoActor(origin - a.position, a.yaw);
@@ -552,11 +647,18 @@ struct Game::Impl {
         s.muzzle = 1;
 
         const auto hit = world.shot(p, d, s.brokenGlass);
-        float zone = 1;
-        const float rival = rivalSurface(p, d, hit.distance, zone);
-        const Vec3 point = p + d * (rival < infinity ? rival : hit.hit ? hit.distance : 100.f);
-        if (rival < infinity) {
-            hitRival(config.damage * zone, Cause::Weapon, zone, point);
+        float zone = 1, distance = hit.distance;
+        int victim = playerSlot;
+        for (int slot = 0; slot < rivalCount(); ++slot) {
+            const float body = rivalSurface(rival(slot).bot, p, d, distance, zone);
+            if (body < distance) {
+                distance = body;
+                victim = slot;
+            }
+        }
+        const Vec3 point = p + d * (victim != playerSlot || hit.hit ? distance : 100.f);
+        if (victim != playerSlot) {
+            hitRival(victim, config.damage * zone, Cause::Weapon, zone, point);
         } else if (hit.hit && hit.glass >= 0 && hit.glass < int(paneHits.size())) {
             const int count = ++paneHits[hit.glass];
             const int needed = hit.glass < int(assets.glassHits.size()) ? assets.glassHits[hit.glass] : 1;
@@ -650,7 +752,7 @@ struct Game::Impl {
         if (state.mode == WeaponState::Idle && input.edge(Reload)) startReload(state);
     }
 
-    void damagePlayer(float amount, Vec3 from, Cause cause) {
+    void damagePlayer(float amount, Vec3 from, Cause cause, int attacker = 0) {
         auto& s = snapshot;
         if (s.dead || s.scaledTime < invulnerableUntil) return;
         s.player.health = std::max(0.f, s.player.health - amount);
@@ -665,15 +767,16 @@ struct Game::Impl {
         s.streak = 0;
         s.player.visible = true;
         s.player.speed = 0;
-        ++s.rivalScore;
+        if (!second || cause != Cause::Airstrike) ++rivalScore(attacker);
         respawn = 3.2;
         if (laptop == Phase::Raising || laptop == Phase::Out) closeLaptop();
         if (transmitter != Phase::Away) {
             if (apache.phase == Flight::Off) s.apacheReady = true;
             transmitter = Phase::Away;
         }
-        emit(EventKind::PlayerDeath, int(cause), s.player.position);
-        if (cause != Cause::Airstrike) taunt(true);
+        emit(EventKind::PlayerDeath, int(cause), s.player.position, 0, playerSlot,
+             cause == Cause::Airstrike ? playerSlot : attacker);
+        if (cause != Cause::Airstrike) taunt(attacker, true);
     }
 
     float seatClear(float yaw, float distance, float height) const {
@@ -798,10 +901,12 @@ struct Game::Impl {
         const float playerDistance = planar(s.player.position - point);
         applyRecoil(std::min(2.6, 7 / (1 + playerDistance * .7)), 4, std::min(.055, .16 / (1 + playerDistance * .5)));
         const Vec3 eye = atHeight(point, 1.1f);
-        if (!bot.dead) {
+        for (int slot = 0; slot < rivalCount(); ++slot) {
+            const auto& bot = rival(slot).bot;
+            if (bot.dead) continue;
             const float d = planar(bot.actor.position - point);
             if (d <= 5.6f && !world.blocked(eye, atHeight(bot.actor.position, 1.3f))) {
-                hitRival(165 * (1 - d / 6.8f), Cause::Airstrike, 1, bot.actor.position);
+                hitRival(slot, 165 * (1 - d / 6.8f), Cause::Airstrike, 1, bot.actor.position);
             }
         }
         if (!s.dead && playerDistance <= 5.6f && !world.blocked(eye, atHeight(s.player.position, s.eyeHeight))) {
@@ -822,7 +927,8 @@ struct Game::Impl {
         sound(Sound::Airstrike, .4f);
     }
 
-    void apacheRound(Vec3 gunPos) {
+    void apacheRound(Vec3 gunPos, int slot) {
+        const auto& bot = rival(slot).bot;
         const Vec3 target = atHeight(bot.actor.position, 1.1f);
         Vec3 dir = target - gunPos;
         dir.x += float(random.between("apache.shot.x", -.4, .4));
@@ -836,7 +942,7 @@ struct Game::Impl {
         emit(EventKind::ApacheAttack, hit ? 1 : 0, point);
         sound(Sound::Mp44, .7f, true, gunPos);
         tracer(gunPos, point);
-        if (hit) hitRival(9, Cause::Apache, 1, point);
+        if (hit) hitRival(slot, 9, Cause::Apache, 1, point);
     }
 
     Vec3 apacheGun() const {
@@ -848,20 +954,42 @@ struct Game::Impl {
         return apache.pos + intoActor(localGun, float(-apache.yaw));
     }
 
+    int apacheTarget() const {
+        if (!second) return first.bot.dead ? playerSlot : 0;
+        const Vec3 gun = apacheGun();
+        float best = infinity;
+        int target = playerSlot;
+        for (int slot = 0; slot < rivalCount(); ++slot) {
+            const auto& bot = rival(slot).bot;
+            if (bot.dead) continue;
+            const Vec3 aim = atHeight(bot.actor.position, 1.2f);
+            const float score = length(aim - gun) * (world.blocked(gun, aim) ? 2.5f : 1.f);
+            if (score < best) {
+                best = score;
+                target = slot;
+            }
+        }
+        return target;
+    }
+
     void updateApache(double now, double dt) {
         auto& a = apache;
         if (a.phase == Flight::Off) return;
-        if (a.phase == Flight::Hunt && (now >= a.retargetAt || (a.target && bot.dead))) {
-            a.target = !bot.dead;
+        if (a.phase == Flight::Hunt && (now >= a.retargetAt || (a.target != playerSlot && rival(a.target).bot.dead))) {
+            const int target = apacheTarget();
+            if (second && a.target != target) a.rounds = 0;
+            a.target = target;
             a.retargetAt = now + .7;
         }
+        const auto* bot = a.target != playerSlot ? &rival(a.target).bot : nullptr;
+        const bool tracking = bot && !bot->dead;
         Vec3 desired{0, 12.5f + float(std::sin(now * .8) * .5), 0};
         if (a.phase == Flight::Leave) {
             desired = {46, 24, -46};
-        } else if (a.target && !bot.dead) {
+        } else if (tracking) {
             a.angle += .32 * dt;
-            desired.x = bot.actor.position.x + float(std::sin(a.angle) * 8.5);
-            desired.z = bot.actor.position.z + float(std::cos(a.angle) * 8.5);
+            desired.x = bot->actor.position.x + float(std::sin(a.angle) * 8.5);
+            desired.z = bot->actor.position.z + float(std::cos(a.angle) * 8.5);
         } else {
             a.angle += .22 * dt;
             desired.x = float(std::sin(a.angle) * 11);
@@ -877,8 +1005,8 @@ struct Game::Impl {
             a.retargetAt = 0;
         }
         double wantedYaw = a.yaw;
-        if (a.phase == Flight::Hunt && a.target && !bot.dead) {
-            const Vec3 target = bot.actor.position - a.pos;
+        if (a.phase == Flight::Hunt && tracking) {
+            const Vec3 target = bot->actor.position - a.pos;
             wantedYaw = std::atan2(target.x, target.z);
         } else if (dot(a.vel, a.vel) > .5f) {
             wantedYaw = std::atan2(a.vel.x, a.vel.z);
@@ -890,15 +1018,15 @@ struct Game::Impl {
         a.pitch += (std::clamp(fwdSpeed * .022, -.22, .22) - a.pitch) * tilt;
         a.roll += (std::clamp(-yawDelta * .5, -.3, .3) - a.roll) * tilt;
         a.timer -= dt;
-        if (a.phase == Flight::Hunt && a.target && !bot.dead) {
+        if (a.phase == Flight::Hunt && tracking) {
             const Vec3 gun = apacheGun();
             if (a.rounds > 0) {
                 if (a.timer <= 0) {
-                    apacheRound(gun);
+                    apacheRound(gun, a.target);
                     a.timer = .07;
                     if (--a.rounds == 0) a.burstAt = now + .9 + random.draw("apache.burst.cooldown") * .6;
                 }
-            } else if (now >= a.burstAt && !world.blocked(gun, atHeight(bot.actor.position, 1.2f))) {
+            } else if (now >= a.burstAt && !world.blocked(gun, atHeight(bot->actor.position, 1.2f))) {
                 a.rounds = 10;
             }
         } else {
@@ -906,7 +1034,7 @@ struct Game::Impl {
         }
         if (a.phase == Flight::Hunt && now >= a.until) {
             a.phase = Flight::Leave;
-            a.target = false;
+            a.target = playerSlot;
         }
         if (a.phase == Flight::Leave && (std::abs(a.pos.x) > 44 || std::abs(a.pos.z) > 44)) a.phase = Flight::Off;
     }
@@ -979,17 +1107,24 @@ struct Game::Impl {
         updateApache(now, dt);
     }
 
-    void registerKill() {
+    void registerKill(int slot) {
         auto& s = snapshot;
-        rivalCounted = true;
-        rivalRespawn = 5;
+        auto& r = rival(slot);
+        r.counted = true;
+        r.respawn = 5;
+        if (r.attacker != playerSlot) {
+            ++rivalScore(r.attacker);
+            emit(EventKind::BotKill, 0, r.bot.actor.position, 0, slot, r.attacker);
+            taunt(r.attacker, true);
+            return;
+        }
         ++s.playerScore;
         ++s.streak;
         s.killConfirm = 1.4f;
-        s.headshot = killZone >= 2;
-        emit(EventKind::RivalKill, int(killCause) * 10 + (s.headshot ? 1 : 0), bot.actor.position);
+        s.headshot = r.killZone >= 2;
+        emit(EventKind::RivalKill, int(r.killCause) * 10 + (s.headshot ? 1 : 0), r.bot.actor.position, 0, slot);
         sound(s.headshot ? Sound::HeadshotConfirm : Sound::KillConfirm, 1.05f);
-        taunt(false);
+        taunt(slot, false);
         if (s.streak == 3) {
             uavUntil = s.scaledTime + 30;
             emit(EventKind::Uav);
@@ -1009,37 +1144,105 @@ struct Game::Impl {
         snapshot.tracer = 1;
     }
 
-    void botStep(double dt) {
+    void retargetRival(int slot) {
+        auto& r = rival(slot);
         const auto now = snapshot.scaledTime;
-        if (bot.dead && !rivalCounted) registerKill();
-        const BotRound round = bot.update(target(), difficulty(), now, dt);
-        if (round.fired) {
-            emit(EventKind::BotFire, int(round.sound), round.muzzle);
-            sound(round.sound, .88f, true, round.muzzle);
-            tracer(round.muzzle, round.end);
-            if (round.damage > 0) damagePlayer(round.damage, bot.actor.position, Cause::Weapon);
+        if (now < r.retargetAt && !combatTarget(r.target).dead) return;
+        r.retargetAt = now + .5;
+        const int other = 1 - slot;
+        int next = r.target;
+        if (now - r.lastHit < 1.5 && !combatTarget(r.attacker).dead) {
+            next = r.attacker;
+        } else {
+            const Vec3 eye = atHeight(r.bot.actor.position, botEye);
+            float best = infinity;
+            for (int candidate : {playerSlot, other}) {
+                const auto enemy = combatTarget(candidate);
+                if (enemy.dead) continue;
+                const bool blocked = world.blocked(eye, atHeight(enemy.position, enemy.eye));
+                const float score = planar(enemy.position - eye) * (blocked ? 2.5f : 1.f) *
+                    (candidate == r.target ? .75f : 1.f);
+                if (score < best) {
+                    best = score;
+                    next = candidate;
+                }
+            }
         }
+        if (next != r.target) {
+            r.target = next;
+            r.bot.retarget();
+        }
+    }
+
+    Vec3 rivalSeparation(double dt) const {
+        if (!second || first.bot.dead || second->bot.dead || dt < .0001) return {};
+        Vec3 offset = second->bot.actor.position - first.bot.actor.position;
+        if (std::abs(offset.y) >= 1.7f) return {};
+        offset.y = 0;
+        const float distance = planar(offset);
+        if (distance >= .9f) return {};
+        const Vec3 direction = distance > .001f ? offset / distance : Vec3{1, 0, 0};
+        return direction * float((.9f - distance) / (2 * dt));
+    }
+
+    void resolveBotShot(int slot, const BotRound& round) {
+        auto& r = rival(slot);
+        r.lastShot = snapshot.scaledTime;
+        emit(EventKind::BotFire, int(round.sound), round.muzzle, 0, slot);
+        sound(round.sound, .88f, true, round.muzzle);
+
+        constexpr float range = 60;
+        float distance = std::min(range, world.ray(round.muzzle, round.direction, range));
+        int victim = slot;
+        for (int other = playerSlot; other < rivalCount(); ++other) {
+            if (other == slot) continue;
+            const auto fighter = combatTarget(other);
+            if (fighter.dead) continue;
+            const float body = cylinder(round.muzzle, round.direction, fighter.position, .42f, fighter.eye + .15f);
+            if (body < distance) {
+                distance = body;
+                victim = other;
+            }
+        }
+        const Vec3 end = round.muzzle + round.direction * distance;
+        if (second) snapshot.rivalTracers[slot] = {round.muzzle, end, 1};
+        else tracer(round.muzzle, end);
+        if (victim == playerSlot) {
+            damagePlayer(round.damage, r.bot.actor.position, Cause::Weapon, slot);
+        } else if (victim != slot) {
+            hitRival(victim, round.damage, Cause::Weapon, 1, end, slot);
+            if (rival(victim).bot.dead) registerKill(victim);
+        }
+    }
+
+    void botStep(int slot, double dt, Vec3 separation) {
+        auto& r = rival(slot);
+        auto& bot = r.bot;
+        const auto now = snapshot.scaledTime;
+        if (second && !bot.dead && !bot.freeze) retargetRival(slot);
+        const BotRound round = bot.update(combatTarget(r.target, dt), difficulty(slot), now, dt, separation);
+        if (round.fired) resolveBotShot(slot, round);
         if (bot.dead) {
-            playFall(rivalDeath, bot.actor, dt, false);
-            rivalRespawn -= dt;
-            if (rivalRespawn <= 0) {
-                const Vec3 pos = chooseSpawn(true);
-                resetRival(pos, std::atan2(-pos.x, -pos.z), false);
-                const double skill = difficulty().aggression;
-                if (!snapshot.dead && random.draw("bot.spawn.remember") < .45 + skill * .55) {
+            playFall(r.death, bot.actor, dt, false);
+            r.respawn -= dt;
+            if (r.respawn <= 0) {
+                const Vec3 pos = chooseSpawn(slot);
+                resetRival(slot, pos, std::atan2(-pos.x, -pos.z), false);
+                const double skill = difficulty(slot).aggression;
+                if (!snapshot.dead && rivalRandom(slot).draw("bot.spawn.remember") < .45 + skill * .55) {
                     bot.spawnIntuition(target(), 2.5 + (1 - skill) * 9, now);
                 }
-                emit(EventKind::RivalRespawn, 0, pos);
+                emit(EventKind::RivalRespawn, 0, pos, 0, slot);
             }
         } else if (bot.actor.speed > .35f) {
             const float speed = bot.actor.speed;
-            rivalFootstep -= dt;
-            if (rivalFootstep <= 0) {
+            r.footstep -= dt;
+            if (r.footstep <= 0) {
                 sound(Sound::Footstep, footstepGain * .4f, true, bot.actor.position);
-                rivalFootstep += speed > 4.8f ? .34 : .45;
+                r.footstep += speed > 4.8f ? .34 : .45;
             }
         } else {
-            rivalFootstep = 0;
+            r.footstep = 0;
         }
         updateActorFrame(bot.actor);
     }
@@ -1061,12 +1264,17 @@ struct Game::Impl {
 
     void viewWorld() {
         auto& s = snapshot;
+        const auto& bot = first.bot;
         s.rival = bot.actor;
         s.apachePosition = apache.pos;
         s.apacheYaw = float(apache.yaw);
         s.apacheActive = apache.phase != Flight::Off;
         s.uavSeconds = float(std::max(0., uavUntil - s.scaledTime));
         s.radarContact = !bot.dead && (bot.radar > 0 || s.uavSeconds > 0);
+        if (second) {
+            s.secondRival = second->bot.actor;
+            s.secondRadarContact = !second->bot.dead && (second->bot.radar > 0 || s.uavSeconds > 0);
+        }
         s.strikeInbound = s.scaledTime < strike.latestBomb;
         for (int i = 0; i < 3; ++i) {
             const double age = s.scaledTime - strike.launches[i];
@@ -1116,6 +1324,10 @@ struct Game::Impl {
             swap == Phase::Raising ? float(std::max(0., 1 - switchTimer / .3)) : 0.f;
     }
 
+    bool matchPointReached() const {
+        return snapshot.playerScore >= matchTarget || snapshot.leadingRivalScore() >= matchTarget;
+    }
+
     void finish() {
         auto& s = snapshot;
         s.match = Match::Results;
@@ -1124,8 +1336,9 @@ struct Game::Impl {
         apache.phase = Flight::Off;
         s.scope = 0;
         lookLocked = false;
-        const int result = s.playerScore >= 10 ? 1 : s.rivalScore >= 10 ? -1 :
-            (s.playerScore > s.rivalScore) - (s.playerScore < s.rivalScore);
+        const int leadingRival = s.leadingRivalScore();
+        const int result = s.playerScore >= matchTarget ? 1 : leadingRival >= matchTarget ? -1 :
+            (s.playerScore > leadingRival) - (s.playerScore < leadingRival);
         emit(EventKind::MatchEnd, result);
     }
 
@@ -1150,6 +1363,10 @@ struct Game::Impl {
         s.scaledDelta = dt;
         s.muzzle = std::max(0.f, s.muzzle - float(dt * 17));
         s.tracer = std::max(0.f, s.tracer - float(dt * 18));
+        if (second) {
+            for (auto& shot : s.rivalTracers) shot.time = std::max(0.f, shot.time - float(dt * 18));
+            s.killNotice.remaining = std::max(0.f, s.killNotice.remaining - float(wallDelta));
+        }
         s.hitMarker = std::max(0.f, s.hitMarker - float(wallDelta));
         s.killConfirm = std::max(0.f, s.killConfirm - float(wallDelta));
         if (blockFire) {
@@ -1160,26 +1377,38 @@ struct Game::Impl {
         playerStep(input, dt);
         devices(input, dt);
         weapons(input, dt);
-        botStep(dt);
-        if (s.tick == fixtureDeathTick) damagePlayer(1000, bot.actor.position, Cause::Weapon);
+        // Credit player shots and streaks before any rival gets to fire this tick.
+        for (int slot = 0; slot < rivalCount() && (!second || !matchPointReached()); ++slot) {
+            if (rival(slot).bot.dead && !rival(slot).counted) registerKill(slot);
+        }
+        const Vec3 separation = rivalSeparation(dt);
+        for (int slot = 0; slot < rivalCount() && (!second || !matchPointReached()); ++slot) {
+            botStep(slot, dt, slot == 0 ? separation * -1.f : separation);
+        }
+        if (s.tick == fixtureDeathTick && (!second || !matchPointReached())) {
+            damagePlayer(1000, first.bot.actor.position, Cause::Weapon);
+        }
         if (s.dead) {
             if (death.elapsed == 0) beginDeath();
             deathCamera(dt);
         } else {
             death = {};
         }
-        if (s.playerScore >= 10 || s.rivalScore >= 10) finish();
+        if (matchPointReached()) finish();
         viewWeapon();
         viewWorld();
     }
 };
 
-Game::Game(const Assets& assets) : impl_(new Impl(assets)) {}
+Game::Game(const Assets& assets, uint32_t voiceSeed) : impl_(new Impl(assets, voiceSeed)) {}
 Game::~Game() = default;
 const Snapshot& Game::state() const { return impl_->snapshot; }
 const Event* Game::events() const { return impl_->eventBuffer.data(); }
 size_t Game::eventCount() const { return impl_->eventCount; }
-void Game::start(uint32_t seed, int difficulty, bool alternateRival) { impl_->start(seed, difficulty, alternateRival); }
+void Game::start(uint32_t seed, int difficulty, bool alternateRival) {
+    start(seed, difficulty, alternateRival ? Opponent::Hanz : Opponent::IPwndUrMom);
+}
+void Game::start(uint32_t seed, int difficulty, Opponent opponent) { impl_->start(seed, difficulty, opponent); }
 void Game::pause() { impl_->pause(); }
 void Game::resume(bool triggerHeld) {
     if (impl_->snapshot.match != Match::Paused) return;
@@ -1203,8 +1432,13 @@ void Game::setRandomHook(RandomHook hook, void* data) {
 void Game::setupFixture(const Fixture& fixture) {
     auto& g = *impl_;
     g.resetPlayer(fixture.player, fixture.yaw);
-    g.resetRival(fixture.rival, fixture.rivalYaw, true);
-    g.bot.freeze = fixture.freezeRival;
+    g.resetRival(0, fixture.rival, fixture.rivalYaw, true);
+    g.first.bot.freeze = fixture.freezeRival;
+    if (g.second) {
+        g.resetRival(1, fixture.secondRival, fixture.secondRivalYaw, true);
+        g.second->bot.freeze = fixture.freezeSecondRival;
+        g.snapshot.secondRivalScore = fixture.secondRivalScore;
+    }
     g.fixtureDeathTick = fixture.killPlayerAtTick;
     if (g.fixtureDeathTick) g.invulnerableUntil = 0;
     auto& s = g.snapshot;

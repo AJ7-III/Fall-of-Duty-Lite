@@ -5,7 +5,8 @@
 
 namespace fod {
 
-App::App(const Assets& assets) : game(assets), audio(assets) {}
+App::App(const Assets& assets, uint32_t voiceSeed)
+    : game(assets, voiceSeed), audio(assets, voiceSeed ? voiceSeed ^ 0x29ea2831u : 0u) {}
 
 void App::stopRotor() {
     if (!rotor_) return;
@@ -54,7 +55,10 @@ void App::change(int direction) {
         game.setDifficulty(menu_.difficulty);
         break;
     case RivalRow:
-        if (state().match != Match::Paused) menu_.alternateRival = !menu_.alternateRival;
+        if (state().match != Match::Paused) {
+            constexpr int count = int(Opponent::FreeForAll) + 1;
+            menu_.opponent = Opponent((int(menu_.opponent) + count + direction) % count);
+        }
         break;
     case VoiceRow:
         menu_.voice = !menu_.voice;
@@ -79,7 +83,7 @@ void App::startOrResume(const Input& input) {
     if (state().match == Match::Paused) game.resume(input.down(Fire));
     else {
         audio.stopSpeech();
-        game.start(seed_++, menu_.difficulty, menu_.alternateRival);
+        game.start(seed_++, menu_.difficulty, menu_.opponent);
         routeAudio();
     }
     constexpr uint32_t actions = Fire | Reload | Stance | Swap | Streak | Jump;

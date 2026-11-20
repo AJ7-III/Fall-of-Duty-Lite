@@ -375,6 +375,157 @@ void testStreakRewards(const Assets& assets) {
     }
 }
 
+void testFreeForAll(const Assets& assets) {
+    Game g(assets);
+    for (int winner : {0, 1}) {
+        g.start(31, 10, Opponent::FreeForAll);
+        CHECK(g.state().freeForAll && !g.state().alternateRival);
+        CHECK(g.state().rival.health == 120 && g.state().secondRival.health == g.state().rival.health);
+        auto f = Fixture{};
+        f.player = {13.5f, 0, 13.5f};
+        f.rival = {-14.3f, 0, -7.5f};
+        f.rivalYaw = pi;
+        f.secondRival = {-14.3f, 0, -12.5f};
+        f.secondRivalYaw = 0;
+        f.freezeRival = winner == 1;
+        f.freezeSecondRival = winner == 0;
+        f.rivalScore = winner == 0 ? 9 : 0;
+        f.secondRivalScore = winner == 1 ? 9 : 0;
+        g.setupFixture(f);
+        for (int i = 0; i < 1800 && g.state().match == Match::Playing; ++i) g.step({});
+        const auto* kill = event(g, EventKind::BotKill);
+        const auto* end = event(g, EventKind::MatchEnd);
+        CHECK(kill && kill->attacker == winner && kill->rival == 1 - winner);
+        const auto& notice = g.state().killNotice;
+        CHECK(notice.attacker == winner && notice.victim == 1 - winner && notice.remaining > 0);
+        CHECK(end && end->value == -1 && g.state().match == Match::Results);
+        CHECK(g.state().rivalScore == (winner == 0 ? 10 : 0));
+        CHECK(g.state().secondRivalScore == (winner == 1 ? 10 : 0));
+        CHECK(g.state().playerScore == 0 && g.state().streak == 0 && !event(g, EventKind::RivalKill));
+    }
+
+    g.setRandomHook(centerDraw, nullptr);
+    auto f = quiet();
+    f.freezeSecondRival = true;
+    f.player = {-14.3f, 0, -12.5f};
+    f.rival = {-14.3f, 0, -3.5f};
+    f.secondRival = {-14.3f, 0, -7.5f};
+    f.rivalYaw = f.secondRivalYaw = pi;
+    f.yaw = 0;
+    f.pitch = .08f;
+    f.weapon = Weapon::Sniper;
+    f.playerScore = f.streak = 2;
+    g.start(28, 3, Opponent::FreeForAll);
+    g.setupFixture(f);
+    ticks(g, 60, buttons(Aim));
+    g.step(buttons(Fire | Aim, Fire));
+    const auto* kill = event(g, EventKind::RivalKill);
+    CHECK(kill && kill->rival == 1 && g.state().playerScore == 3 && g.state().streak == 3);
+    CHECK(g.state().killNotice.attacker == -1 && g.state().killNotice.victim == 1);
+    CHECK(g.state().killNotice.remaining > 0);
+    CHECK(g.state().secondRival.health == 0 && g.state().rival.health > 0);
+    CHECK(g.state().radarContact && !g.state().secondRadarContact && g.state().uavSeconds > 29);
+    ticks(g, 310);
+    CHECK(g.state().secondRival.health > 0 && g.state().secondRadarContact);
+    CHECK(g.state().killNotice.remaining == 0);
+
+    f.playerScore = 9;
+    g.start(28, 3, Opponent::FreeForAll);
+    g.setupFixture(f);
+    ticks(g, 60, buttons(Aim));
+    g.step(buttons(Fire | Aim, Fire));
+    CHECK(g.state().match == Match::Results && g.state().playerScore == 10);
+    CHECK(event(g, EventKind::MatchEnd) && event(g, EventKind::MatchEnd)->value == 1);
+    g.start(28, 3, Opponent::Hanz);
+    CHECK(!g.state().freeForAll && g.state().alternateRival && !g.state().secondRadarContact);
+    CHECK(g.state().secondRivalScore == 0 && g.state().playerScore == 0);
+    CHECK(g.state().killNotice.remaining == 0);
+}
+
+void testFreeForAllCrossfire(const Assets& assets) {
+    Game g(assets);
+    g.start(1, 10, Opponent::FreeForAll);
+    Fixture lane;
+    lane.rival = {-14.3f, 0, -3.5f};
+    lane.rivalYaw = pi;
+    lane.secondRival = {-14.3f, 0, -8.05f};
+    lane.freezeSecondRival = true;
+    lane.player = {-14.3f, 0, -8.5f};
+    lane.killPlayerAtTick = 1000; // Disable spawn protection without reaching the fixture death.
+    g.setupFixture(lane);
+
+    // The active rival aims at the player through the other live rival.
+    const auto& s = g.state();
+    for (int i = 0; i < 300 && s.player.health == 100 && s.secondRival.health > 0; ++i) g.step({});
+    const auto* kill = event(g, EventKind::BotKill);
+    CHECK(s.player.health == 100 && s.secondRival.health == 0 && s.rivalScore == 1);
+    CHECK(kill && kill->attacker == 0 && kill->rival == 1);
+
+    // A fallen rival no longer stops the next shots along the same lane.
+    for (int i = 0; i < 180 && !s.dead; ++i) g.step({});
+    CHECK(s.dead && s.rivalScore == 2);
+    CHECK(s.killNotice.attacker == 0 && s.killNotice.victim == -1 && s.killNotice.remaining > 0);
+}
+
+void testFreeForAllStreaks(const Assets& assets) {
+    Game g(assets);
+    g.setRandomHook(centerDraw, nullptr);
+    auto f = quiet();
+    f.freezeSecondRival = true;
+    f.player = {13.5f, 0, 13.5f};
+    f.rival = {-14.3f, 0, -7.5f};
+    f.secondRival = {-14.3f, 0, -6.25f};
+    f.airstrikeReady = true;
+    g.start(55, 3, Opponent::FreeForAll);
+    g.setupFixture(f);
+    g.step(buttons(Streak, Streak));
+    ticks(g, 20);
+    Input mark = buttons(Fire, Fire);
+    mark.lookX = -.467f;
+    mark.lookY = .24f;
+    g.step(mark);
+    CHECK(count(g, EventKind::StrikeMark) == 1);
+    ticks(g, 350);
+    CHECK(g.state().playerScore == 2 && g.state().rival.health == 0 && g.state().secondRival.health == 0);
+
+    f.airstrikeReady = false;
+    f.apacheReady = true;
+    f.rival = {-14.3f, 0, -12.5f};
+    f.secondRival = {0, 0, .3f};
+    g.start(55, 3, Opponent::FreeForAll);
+    g.setupFixture(f);
+    g.step(buttons(Streak, Streak));
+    const float hanzHealth = g.state().secondRival.health;
+    for (int i = 0; i < 1600 && g.state().secondRival.health == hanzHealth; ++i) g.step({});
+    CHECK(g.state().apacheActive && g.state().secondRival.health < hanzHealth);
+    const auto* hit = event(g, EventKind::RivalHit);
+    CHECK(hit && hit->rival == 1);
+}
+
+void testNavigationEscape(const Assets& assets) {
+    Navigation nav(assets);
+    const Vec3 pocket{4.2f, 0, -15}, lane{6.6f, 0, -15};
+    const int from = nav.nearest(pocket), to = nav.nearest(lane);
+    CHECK(from >= 0 && to >= 0 && from != to);
+    CHECK(planar(nav.node(from).position - pocket) < .01f);
+    std::vector<int> path;
+    CHECK(nav.path(from, to, path) && nav.path(to, from, path));
+
+    Game game(assets);
+    Fixture setup;
+    setup.player = {-13.5f, 0, 13.5f};
+    setup.rival = pocket;
+    setup.rivalYaw = pi;
+    game.start(31, 5);
+    game.setupFixture(setup);
+    float farther = 0;
+    for (int i = 0; i < 600; ++i) {
+        game.step({});
+        farther = std::max(farther, planar(game.state().rival.position - pocket));
+    }
+    CHECK(farther > 2.0f);
+}
+
 void testDuel(const Assets& assets, bool hanz) {
     Game g(assets);
     g.start(449, 3, hanz);
@@ -478,6 +629,10 @@ int main(int argc, char** argv) {
     testDeath(assets);
     testStreakRewards(assets);
     testStreakDevices(assets);
+    testFreeForAll(assets);
+    testFreeForAllCrossfire(assets);
+    testFreeForAllStreaks(assets);
+    testNavigationEscape(assets);
     testDuel(assets, false);
     testDuel(assets, true);
     return 0;

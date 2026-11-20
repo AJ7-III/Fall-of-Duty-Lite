@@ -167,7 +167,12 @@ SavedSettings readSettings() {
     nvs_get_u8(handle, "fast", &settings.fast);
     nvs_get_u8(handle, "voice", &settings.voice);
     nvs_get_u8(handle, "volume", &settings.volume);
-    nvs_get_u8(handle, "alternate", &settings.alternate);
+    if (nvs_get_u8(handle, "opponent", &settings.opponent) != ESP_OK ||
+        settings.opponent > uint8_t(fod::Opponent::FreeForAll)) {
+        uint8_t alternate = fod::defaultOpponent == fod::Opponent::Hanz;
+        nvs_get_u8(handle, "alternate", &alternate);
+        settings.opponent = uint8_t(alternate ? fod::Opponent::Hanz : fod::Opponent::IPwndUrMom);
+    }
     size_t len = sizeof(settings.callsign);
     nvs_get_str(handle, "callsign", settings.callsign, &len);
     nvs_close(handle);
@@ -176,19 +181,20 @@ SavedSettings readSettings() {
     return settings;
 }
 
-void writeSettings(const SavedSettings& settings) {
+esp_err_t writeSettings(const SavedSettings& settings) {
     nvs_handle_t handle;
-    if (!nvsReady || nvs_open("fod", NVS_READWRITE, &handle) != ESP_OK) return;
-    nvs_set_i32(handle, "difficulty", settings.difficulty);
-    nvs_set_u8(handle, "fast", settings.fast);
-    nvs_set_u8(handle, "voice", settings.voice);
-    nvs_set_u8(handle, "volume", settings.volume);
-    nvs_set_u8(handle, "alternate", settings.alternate);
-    nvs_set_str(handle, "callsign", settings.callsign);
-    if (const auto err = nvs_commit(handle); err != ESP_OK) {
-        ESP_LOGW(tag, "settings commit failed (%s)", esp_err_to_name(err));
-    }
+    if (!nvsReady) return ESP_ERR_INVALID_STATE;
+    auto err = nvs_open("fod", NVS_READWRITE, &handle);
+    if (err != ESP_OK) return err;
+    err = nvs_set_i32(handle, "difficulty", settings.difficulty);
+    if (err == ESP_OK) err = nvs_set_u8(handle, "fast", settings.fast);
+    if (err == ESP_OK) err = nvs_set_u8(handle, "voice", settings.voice);
+    if (err == ESP_OK) err = nvs_set_u8(handle, "volume", settings.volume);
+    if (err == ESP_OK) err = nvs_set_u8(handle, "opponent", settings.opponent);
+    if (err == ESP_OK) err = nvs_set_str(handle, "callsign", settings.callsign);
+    if (err == ESP_OK) err = nvs_commit(handle);
     nvs_close(handle);
+    return err;
 }
 
 } // namespace board

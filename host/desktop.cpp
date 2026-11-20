@@ -9,6 +9,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
+#include <random>
+#include <utility>
 
 namespace {
 using namespace fod;
@@ -114,11 +117,12 @@ struct Sdl {
 
 int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
     using namespace fod;
-    App app(assets);
+    App app(assets, std::random_device{}());
     app.settings().compact = compact;
     Renderer renderer(assets, look);
     std::vector<uint16_t> world(400 * 225), framebuffer(800 * 480);
     WorldFrame worldFrame(renderer, world.data());
+    std::optional<MenuFrameKey> lastMenu;
     uint32_t matchRevision = 0;
     Sdl sdl;
     SDL_SetMainReady();
@@ -143,7 +147,7 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
     uint32_t keys = 0, pad = 0, edges = 0;
     int mouseX = 0, mouseY = 0;
     int16_t touchX = -1, touchY = -1;
-    bool focused = true, unplugged = false, running = true;
+    bool focused = true, controllerLost = false, running = true;
     auto previous = Clock::now();
     double elapsed = 0, frameElapsed = 1;
     std::array<int16_t, 2 * audioHz / 60> silence{};
@@ -172,14 +176,14 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
                 }
                 break;
             case SDL_CONTROLLERDEVICEADDED:
-                if (sdl.openController(event.cdevice.which)) unplugged = false;
+                sdl.openController(event.cdevice.which);
                 break;
             case SDL_CONTROLLERDEVICEREMOVED:
                 if (sdl.controller && event.cdevice.which == sdl.controllerId) {
                     SDL_GameControllerClose(sdl.controller);
                     sdl.controller = nullptr;
                     sdl.controllerId = -1;
-                    unplugged = true;
+                    controllerLost = true;
                     pad = edges = 0;
                 }
                 break;
@@ -201,6 +205,11 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
                     keys = edges = 0;
                     mouseX = mouseY = 0;
                 } else if (event.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) focused = true;
+                if (event.window.event == SDL_WINDOWEVENT_EXPOSED || event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED ||
+                    event.window.event == SDL_WINDOWEVENT_RESTORED || event.window.event == SDL_WINDOWEVENT_SHOWN) lastMenu.reset();
+                break;
+            case SDL_RENDER_TARGETS_RESET: case SDL_RENDER_DEVICE_RESET:
+                lastMenu.reset();
                 break;
             default: break;
             }
@@ -238,8 +247,8 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
             input.pressed = edges;
             input.touchX = touchX;
             input.touchY = touchY;
-            input.disconnected = !focused || unplugged;
-            if (unplugged && focused && (edges & Confirm)) unplugged = input.disconnected = false;
+            // Pause once on loss, then allow keyboard and mouse menu input.
+            input.disconnected = std::exchange(controllerLost, false) || !focused;
             const auto old = app.state().match;
             app.tick(input);
             if (!sdl.audio) app.audio.mix(silence.data(), silence.size() / 2);
@@ -255,13 +264,19 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
         if (frameElapsed >= 1.0 / 30) {
             frameElapsed = std::fmod(frameElapsed, 1.0 / 30);
             const auto& menu = app.settings();
+            const auto speaker = sdl.audio ? app.audio.speaking() : Speaker::None;
+            std::optional<MenuFrameKey> menuKey;
+            if (app.state().match != Match::Playing) {
+                menuKey.emplace(matchRevision, app.state().match, menu, speaker);
+                if (menuKey == lastMenu) continue;
+            }
             worldFrame.render(app.state(), matchRevision, menu.width(), menu.height());
             scaleWorld(world.data(), menu.width(), menu.height(), framebuffer.data(), false, look == RenderLook::Enhanced);
-            drawHud(assets, app.state(), menu, framebuffer.data(), false, sdl.audio ? app.audio.speaking() : Speaker::None);
-            SDL_UpdateTexture(sdl.texture, nullptr, framebuffer.data(), 800 * sizeof(uint16_t));
-            SDL_RenderClear(sdl.renderer);
-            SDL_RenderCopy(sdl.renderer, sdl.texture, nullptr, nullptr);
+            drawHud(assets, app.state(), menu, framebuffer.data(), false, speaker);
+            if (SDL_UpdateTexture(sdl.texture, nullptr, framebuffer.data(), 800 * sizeof(uint16_t)) < 0 ||
+                SDL_RenderClear(sdl.renderer) < 0 || SDL_RenderCopy(sdl.renderer, sdl.texture, nullptr, nullptr) < 0) continue;
             SDL_RenderPresent(sdl.renderer);
+            lastMenu = menuKey;
         } else {
             SDL_Delay(1);
         }

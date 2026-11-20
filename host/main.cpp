@@ -189,9 +189,9 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
         std::puts("}}");
     } else if (trace) {
         const auto& state = app.state();
-        std::printf("{\"ticks\":%u,\"clip\":%d,\"reserve\":%d,\"score\":[%d,%d],"
+        std::printf("{\"ticks\":%u,\"inputTicks\":%zu,\"clip\":%d,\"reserve\":%d,\"score\":[%d,%d],"
                     "\"missingDraws\":%u,\"unusedDraws\":%zu}\n",
-                    unsigned(state.tick), state.clip, state.reserve, state.playerScore, state.rivalScore,
+                    unsigned(state.tick), trace->length(), state.clip, state.reserve, state.playerScore, state.rivalScore,
                     trace->missingDraws(), trace->unusedDraws());
     }
     return 0;

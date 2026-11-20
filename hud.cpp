@@ -171,14 +171,16 @@ void map(const Painter& p, const Assets& assets, const Snapshot& snap, int x, in
                          rgb(light / 2, light, light * 3 / 4));
         }
     }
-    if (snap.radarContact && snap.rival.visible) {
-        const auto contact = project(snap.rival.position.x, snap.rival.position.z);
+    const auto drawContact = [&](const Actor& rival, uint16_t color) {
+        const auto contact = project(rival.position.x, rival.position.z);
         const int radius = scanning ? 3 + int(1.5 + 1.5 * std::sin(snap.scaledTime * 5.5)) : 2;
         for (int row = -radius; row <= radius; ++row) {
             const int span = int(std::sqrt(float(radius * radius - row * row)));
-            clipped.rect(contact.x - span, contact.y + row, span * 2 + 1, 1, alert);
+            clipped.rect(contact.x - span, contact.y + row, span * 2 + 1, 1, color);
         }
-    }
+    };
+    if (snap.radarContact && snap.rival.visible) drawContact(snap.rival, alert);
+    if (snap.freeForAll && snap.secondRadarContact && snap.secondRival.visible) drawContact(snap.secondRival, gold);
     if (!laptop && snap.apacheActive) {
         const auto contact = project(snap.apachePosition.x, snap.apachePosition.z);
         clipped.text(contact.x - 2, contact.y - 4, "H", accent, 1);
@@ -265,6 +267,54 @@ const char* difficultyName(int level) {
     return "TERMINATOR";
 }
 
+const char* opponentName(Opponent opponent) {
+    switch (opponent) {
+    case Opponent::Hanz: return "HANZ";
+    case Opponent::FreeForAll: return "FREE-FOR-ALL";
+    case Opponent::IPwndUrMom: return "IPWNDURMOM";
+    }
+    return "IPWNDURMOM";
+}
+
+std::string_view fighterName(const MenuState& menu, int slot) {
+    if (slot < 0) return menu.callsign.data();
+    return opponentName(slot == 0 ? Opponent::IPwndUrMom : Opponent::Hanz);
+}
+
+uint16_t fighterColor(int slot) {
+    if (slot < 0) return playerColor;
+    return slot == 0 ? alert : gold;
+}
+
+void freeForAllScore(const Painter& p, const Snapshot& s, const MenuState& menu, int x, int y, int width) {
+    const int column = width / 3;
+    p.rect(x, y, width, 37, ink);
+    const int scores[]{s.playerScore, s.rivalScore, s.secondRivalScore};
+    for (int i = 0; i < 3; ++i) {
+        const int center = x + column * i + column / 2;
+        const auto name = fighterName(menu, i - 1);
+        const auto color = i == 0 && s.killConfirm > 0 && s.headshot ? gold : fighterColor(i - 1);
+        if (i) p.rect(x + column * i, y + 5, 1, 27, lineColor);
+        p.text(center - int(name.size()) * 3, y + 4, name, muted, 1);
+        char points[12];
+        const int length = std::snprintf(points, sizeof(points), "%02d", scores[i]);
+        p.text(center - length * 6, y + 17, points, color);
+    }
+}
+
+void drawKillNotice(const Painter& p, const KillNotice& notice, const MenuState& menu, int y) {
+    const auto attacker = fighterName(menu, notice.attacker), victim = fighterName(menu, notice.victim);
+    constexpr std::string_view action = " TOOK OUT ";
+    constexpr int advance = 12;
+    const int width = int(attacker.size() + action.size() + victim.size()) * advance;
+    const int x = 400 - width / 2;
+    p.rect(x - 8, y, width + 16, 20, ink);
+    p.text(x, y + 3, attacker, fighterColor(notice.attacker));
+    const int actionX = x + int(attacker.size()) * advance;
+    p.text(actionX, y + 3, action, paper);
+    p.text(actionX + int(action.size()) * advance, y + 3, victim, fighterColor(notice.victim));
+}
+
 void startScreen(const Painter& p, const MenuState& menu) {
     p.shadeTitle();
     p.text(startX, 55, "SHIP BOX / OFFLINE DUEL", gold);
@@ -275,18 +325,18 @@ void startScreen(const Painter& p, const MenuState& menu) {
     const bool playFocused = menu.selection == PlayRow;
     p.rect(startX, startY, startWidth, startHeight, gold);
     if (playFocused) p.rect(startX - 7, startY, 3, startHeight, paper);
-    p.text(startX + 18, startY + 20, "START DUEL", ink, 3);
+    p.text(startX + 18, startY + 20, menu.opponent == Opponent::FreeForAll ? "START FFA" : "START DUEL", ink, 3);
     p.text(startX + startWidth - 36, startY + 20, ">", ink, 3);
 
     p.rect(startX, setupY, startWidth, setupHeight, panel);
     p.rect(startX, setupY + setupHeight - 1, startWidth, 1, playFocused ? lineColor : gold);
     if (!playFocused) p.rect(startX - 7, setupY, 3, setupHeight, gold);
-    p.text(startX + 18, setupY + 17, "DUEL SETUP", paper);
+    p.text(startX + 18, setupY + 17, "MATCH SETUP", paper);
     p.text(startX + startWidth - 30, setupY + 17, ">", playFocused ? muted : gold);
 
     char matchup[40];
     std::snprintf(matchup, sizeof(matchup), "%s %d  /  %s", difficultyName(menu.difficulty),
-                  menu.difficulty, menu.alternateRival ? "HANZ" : "IPWNDURMOM");
+                  menu.difficulty, opponentName(menu.opponent));
     p.text(startX, 417, matchup, muted);
 }
 
@@ -295,19 +345,21 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu) {
         startScreen(p, menu);
         return;
     }
-    const char* title = s.match == Match::Start ? "DUEL SETUP" : s.match == Match::Paused ? "PAUSED" :
-                        s.playerScore >= 10 ? "VICTORY" : s.rivalScore >= 10 ? "DEFEAT" : "MATCH ENDED";
+    const char* title = s.match == Match::Start ? "MATCH SETUP" : s.match == Match::Paused ? "PAUSED" :
+                        s.playerScore >= 10 ? "VICTORY" : s.leadingRivalScore() >= 10 ? "DEFEAT" : "MATCH ENDED";
     p.rect(menuX - 8, 46, menuWidth + 16, 387, ink);
     p.rect(menuX - 8, 46, menuWidth + 16, 4, accent);
     p.text(menuX + 10, 66, title, paper, 5);
-    char score[64];
-    if (s.match == Match::Results) {
+    if (s.freeForAll && s.match != Match::Start) {
+        freeForAllScore(p, s, menu, menuX + 12, 106, 420);
+    } else if (s.match == Match::Results) {
+        char score[64];
         std::snprintf(score, sizeof(score), "%s %02d / %02d %s", menu.callsign.data(), s.playerScore, s.rivalScore,
                       s.alternateRival ? "HANZ" : "IPWNDURMOM");
+        p.text(menuX + 12, 118, score, muted);
     } else {
-        std::snprintf(score, sizeof(score), "SHIP BOX / FIRST TO TEN");
+        p.text(menuX + 12, 118, "SHIP BOX / FIRST TO TEN", muted);
     }
-    p.text(menuX + 12, 118, score, muted);
     if (menu.editing) {
         p.rect(menuX, menuY, menuWidth, 266, panel);
         p.text(menuX + 14, menuY + 13, "CALLSIGN", muted);
@@ -334,7 +386,7 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu) {
     char difficulty[26], volume[12];
     std::snprintf(difficulty, sizeof(difficulty), "%s %d", difficultyName(menu.difficulty), menu.difficulty);
     std::snprintf(volume, sizeof(volume), "%d%%", menu.volume);
-    const char* values[MenuRows]{"", difficulty, menu.alternateRival ? "HANZ" : "IPWNDURMOM", menu.voice ? "ON" : "OFF",
+    const char* values[MenuRows]{"", difficulty, opponentName(menu.opponent), menu.voice ? "ON" : "OFF",
                                 volume, menu.compact ? "320 X 180" : "400 X 225", menu.callsign.data(), ""};
     for (int row = 0; row < count; ++row) {
         const int py = menuY + row * menuRowHeight;
@@ -372,7 +424,10 @@ void drawHud(const Assets& assets, const Snapshot& s, const MenuState& menu, uin
     const bool speaking = menu.voice && menu.volume > 0 && speaker != Speaker::None;
     if (s.match != Match::Playing) {
         menus(p, s, menu);
-        if (speaking && s.match == Match::Results) comms(p, speaker, 138);
+        if (s.match == Match::Results) {
+            if (speaking) comms(p, speaker, 138);
+            if (s.freeForAll && s.killNotice.remaining > 0) drawKillNotice(p, s.killNotice, menu, 412);
+        }
         return;
     }
     scope(p, s);
@@ -386,8 +441,14 @@ void drawHud(const Assets& assets, const Snapshot& s, const MenuState& menu, uin
     char score[18], ammo[18];
     std::snprintf(score, sizeof(score), "%02d  -  %02d", s.playerScore, s.rivalScore);
     std::snprintf(ammo, sizeof(ammo), "%02d / %02d", s.clip, s.reserve);
-    p.rect(330, 15, 140, 30, ink);
-    p.text(353, 23, score, paper);
+    const bool showKillNotice = s.freeForAll && s.killNotice.remaining > 0 && s.device != Device::Laptop;
+    if (s.freeForAll) {
+        freeForAllScore(p, s, menu, 232, 15, 336);
+        if (showKillNotice) drawKillNotice(p, s.killNotice, menu, 54);
+    } else {
+        p.rect(330, 15, 140, 30, ink);
+        p.text(353, 23, score, paper);
+    }
     p.rect(738, 15, 62, 15, ink);
     p.text(746, 20, "PAUSE", muted, 1);
     if (!s.dead) {
@@ -431,12 +492,15 @@ void drawHud(const Assets& assets, const Snapshot& s, const MenuState& menu, uin
     }
     if (s.killConfirm > 0) {
         const auto color = s.headshot ? gold : playerColor;
-        p.rect(329, 15, 47, 30, lineColor);
-        p.text(353, 23, std::string_view(score, 2), color);
-        p.rect(267, 54, 266, 39, ink);
-        p.rect(267, 54, 266, 2, color);
+        if (!s.freeForAll) {
+            p.rect(329, 15, 47, 30, lineColor);
+            p.text(353, 23, std::string_view(score, 2), color);
+        }
+        const int y = showKillNotice ? 76 : 54;
+        p.rect(267, y, 266, 39, ink);
+        p.rect(267, y, 266, 2, color);
         const std::string_view label = s.headshot ? "HEADSHOT KILL" : "ENEMY DOWN";
-        p.text(400 - int(label.size()) * 9, 64, label, color, 3);
+        p.text(400 - int(label.size()) * 9, y + 10, label, color, 3);
     }
 }
 

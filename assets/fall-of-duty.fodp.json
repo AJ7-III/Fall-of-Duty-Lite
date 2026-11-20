@@ -1,7 +1,7 @@
 {
   "format": "FODPACK",
-  "sourceRevision": "9c76761e9d7075790725dca37766e95a4ac4222f",
-  "sourceDirty": false,
+  "sourceRevision": "d51ab91098444897e71b29dfce1ac9cbab7add05",
+  "sourceDirty": true,
   "inputLockSha256": "8625be2922221e3150f09ce4150ba33fb64aebc3d500331dfde73306e9f109b7",
   "babylon": "9.36.0",
   "playwright": "1.65.0",
@@ -622,7 +622,7 @@
   "shotTriangleCount": 37854,
   "obstacles": 52,
   "navNodes": 676,
-  "navEdges": 2392,
+  "navEdges": 2394,
   "hitboxFrames": 13,
   "glass": [
     3,
@@ -915,7 +915,7 @@
     true
   ],
   "uniqueShotVertices": 20293,
-  "storedBytes": 3917627,
+  "storedBytes": 3917641,
   "sections": [
     {
       "name": "materials",
@@ -954,10 +954,10 @@
     },
     {
       "name": "bot navigation",
-      "storedBytes": 7704,
-      "unpackedBytes": 34016,
-      "decodedPayloadBytes": 35360,
-      "crc32": "008ad6c1"
+      "storedBytes": 7718,
+      "unpackedBytes": 34032,
+      "decodedPayloadBytes": 35376,
+      "crc32": "019bd979"
     },
     {
       "name": "glass pane strength",
@@ -969,9 +969,9 @@
     {
       "name": "audio",
       "storedBytes": 252012,
+      "unpackedBytes": 426320,
       "decodedPayloadBytes": 426244,
-      "crc32": "74209698",
-      "unpackedBytes": 426320
+      "crc32": "74209698"
     },
     {
       "name": "posed rival hitboxes",
@@ -1016,5 +1016,5 @@
       "crc32": "82663211"
     }
   ],
-  "sha256": "a49bf56434c8157be23b1d21bf93d08303b680636bbb0307d381d650e4be6348"
+  "sha256": "5d762a4a7636a564e1246680a995b6ace08f066ab460083b1151dfe93588c23c"
 }

@@ -316,7 +316,7 @@ struct Renderer::Impl {
             maxWeaponAlpha = std::max(maxWeaponAlpha, alphaCount(weapon));
             vertices = std::max(vertices, weapon.vertices.size());
         }
-        const size_t worldAlpha = alphaCount(source.world) + 2 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
+        const size_t worldAlpha = alphaCount(source.world) + 3 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
         translucent.reserve(2 * std::max(worldAlpha, maxWeaponAlpha)); // One near-plane split per triangle.
         posedVertices.resize(vertices);
         visible.reserve(source.world.chunks.size());
@@ -840,9 +840,9 @@ struct Renderer::Impl {
         }
     }
 
-    void drawActor(const Actor& actor, const Snapshot& state, bool player) {
+    void drawActor(const Actor& actor, const Snapshot& state, bool player, bool alternate = false) {
         if (!actor.visible || assets.rivalFrames.empty()) return;
-        const auto& frames = !player && state.alternateRival && !assets.hanzFrames.empty() ? assets.hanzFrames : assets.rivalFrames;
+        const auto& frames = alternate && !assets.hanzFrames.empty() ? assets.hanzFrames : assets.rivalFrames;
         const bool separatePlayer = player && !assets.playerBody.vertices.empty();
         const auto& mesh = separatePlayer ? assets.playerBody : frames[std::min<size_t>(actor.frame, frames.size() - 1)];
         const auto& next = separatePlayer ? mesh : frames[std::min<size_t>(actor.nextFrame, frames.size() - 1)];
@@ -1015,10 +1015,10 @@ struct Renderer::Impl {
         recordRasterTime(start);
     }
 
-    void drawTracer(const Snapshot& state) {
-        if (state.tracer <= 0) return;
-        Vertex a{view.transform(state.tracerStart), 0, 0};
-        Vertex b{view.transform(state.tracerEnd), 0, 0};
+    void drawTracer(const Tracer& shot) {
+        if (shot.time <= 0) return;
+        Vertex a{view.transform(shot.start), 0, 0};
+        Vertex b{view.transform(shot.end), 0, 0};
         if (a.position.z < view.near && b.position.z < view.near) return;
         if (a.position.z < view.near) a = cut(a, b, view.near);
         if (b.position.z < view.near) b = cut(b, a, view.near);
@@ -1103,7 +1103,10 @@ struct Renderer::Impl {
         std::fill_n(depth.data(), width * height, 0);
         sky(camera);
         drawWorld(state);
-        if (!title) drawActor(state.rival, state, false);
+        if (!title) {
+            drawActor(state.rival, state, false, state.alternateRival);
+            if (state.freeForAll) drawActor(state.secondRival, state, false, true);
+        }
         if (state.dead) drawActor(state.player, state, true);
         meshLight = 255;
         if (state.apacheActive) {
@@ -1117,12 +1120,18 @@ struct Renderer::Impl {
         if (enhanced) {
             const auto shadows = timestamp();
             if (!title && state.rival.visible && !assets.rivalFrames.empty()) contactShadow(state.rival.position, 0.62f);
+            if (!title && state.freeForAll && state.secondRival.visible && !assets.rivalFrames.empty()) {
+                contactShadow(state.secondRival.position, 0.62f);
+            }
             if (state.dead && state.player.visible && !assets.rivalFrames.empty()) contactShadow(state.player.position, 0.62f);
             recordRasterTime(shadows);
         }
         drawSkyCube();
         draw(translucent, false);
-        drawTracer(state);
+        drawTracer({state.tracerStart, state.tracerEnd, state.tracer});
+        if (state.freeForAll) {
+            for (const auto& shot : state.rivalTracers) drawTracer(shot);
+        }
         weather(state);
         if (!title && !state.dead && state.device == Device::None && state.scope < 0.6f &&
             !assets.weapon[size_t(state.weapon)].triangles.empty()) {

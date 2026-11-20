@@ -66,7 +66,7 @@ When a late submission is waiting for scanout, the producer waits for the next s
 
 ## Replay and measurement
 
-Copy the desired `.fodtrace` files to the SD root with the pack. To run a looped trace at 400×225, create a Kconfig overlay and flash that build. Use `apache` for the other scene and set `CONFIG_FOD_REPLAY_COMPACT=y` for 320×180. Use a fresh build directory and a new overlay for each combination. The default renderer includes baked daylight, the new sky, improved depth precision and texture mipmaps. Add `CONFIG_FOD_CLASSIC_VISUALS=y` to an overlay for the prior render path and the same two selectable resolutions.
+Copy the desired `.fodtrace` files to the SD root with the pack. Run `long-lane`, `apache`, and `ffa-apache` at both sizes. The Free-for-all trace puts both active rivals in view during the Apache fly-in. To run a looped trace at 400×225, create a Kconfig overlay and flash that build. Set `CONFIG_FOD_REPLAY_COMPACT=y` for 320×180. Use a fresh build directory and a new overlay for each combination. The default renderer includes baked daylight, the new sky, improved depth precision and texture mipmaps. Add `CONFIG_FOD_CLASSIC_VISUALS=y` to an overlay for the prior render path and the same two selectable resolutions.
 
 ```sh
 printf '%s\n' 'CONFIG_FOD_REPLAY_SCENE="long-lane"' > /tmp/fod-lane-400.defaults
@@ -76,6 +76,8 @@ idf.py -B build-lane-400 -p "$FOD_PORT" flash monitor
 ```
 
 After the 10-second warm-up, the firmware records a predecessor plus 3,000 scheduled presentations. The serial summary counts repeated sequences as misses and reports consecutive misses, the maximum gap and interval percentiles. It also reports display and I²S underruns. The two CSV files are written to SD after capture finishes. The raw data distinguishes world cost, raster cost, PPA, HUD and submission. Preserve the files under a name containing scene, mode and pack revision before starting another capture.
+
+Compare missed presentation slots, the `worst_sim_us` and `sim_overruns` log fields, and audio underruns across scene and resolution. The replay path submits on every slot. The live menu can hold a composed frame until the settings, speaker, or controller prompt changes.
 
 Add `CONFIG_FOD_REPLAY_FRAME_ONLY=y` to the overlay to measure total frame work with only a timer before rendering and after submission. This mode omits the renderer timers, the PPA and HUD timestamps, and the request-slot lookup. Use it for paired measurements of the live render path. For detailed captures, the report derives the same total by adding the world, PPA, HUD and submission intervals per frame.
 
@@ -89,4 +91,4 @@ For parity replay, add `CONFIG_FOD_REPLAY_JOURNAL=y` with the desired scene in a
 
 ## Qualification status
 
-No Guition appeared in the local USB registry or serial inventory. No hardware result is recorded. The remaining checks are panel orientation and optical frame ownership, all four touch corners, USB report and reconnect behavior, audio and SD recovery under scanout, four scene and resolution performance captures, optical latency, and full packaged first-to-ten play on both passing modes. Record measured PSRAM and internal memory at boot, pack load, peak action and after ten completed rematches. Record the time from pack load to `renderer-ready`, which includes the daylight bake. The default mode is 400×225 pending these measurements.
+No Guition appeared in the local USB registry or serial inventory. No hardware result is recorded. The remaining checks are panel orientation and optical frame ownership, all four touch corners, USB report and reconnect behavior, audio and SD recovery under scanout, six scene and resolution performance captures, optical latency, and full packaged first-to-ten play on both passing modes. Record measured PSRAM and internal memory at boot, pack load, peak action and after ten completed rematches. Record the time from pack load to `renderer-ready`, which includes the daylight bake. The default mode is 400×225 pending these measurements.

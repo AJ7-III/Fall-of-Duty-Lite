@@ -8,10 +8,36 @@ namespace fod {
 struct MenuState {
     std::array<char, 17> callsign{'P', 'L', 'A', 'Y', 'E', 'R', '\0'};
     int selection = 0, difficulty = defaultDifficulty, volume = 70, callsignCursor = 0;
-    bool compact = false, voice = true, alternateRival = defaultAlternateRival, editing = false, setup = false;
+    Opponent opponent = defaultOpponent;
+    bool compact = false, voice = true, editing = false, setup = false;
 
     int width() const { return compact ? 320 : 400; }
     int height() const { return compact ? 180 : 225; }
+
+    bool operator==(const MenuState& other) const {
+        return callsign == other.callsign && selection == other.selection && difficulty == other.difficulty &&
+               volume == other.volume && callsignCursor == other.callsignCursor && opponent == other.opponent &&
+               compact == other.compact && voice == other.voice && editing == other.editing && setup == other.setup;
+    }
+};
+
+// The composed menu can stay on screen until the match, settings, or overlays change.
+struct MenuFrameKey {
+    MenuFrameKey(uint32_t revision, Match match, const MenuState& settings, Speaker audible,
+                 bool controllerPrompt = false, bool marker = false)
+        : revision(revision), settings(settings),
+          speaker(match == Match::Results && settings.voice && settings.volume > 0 ? audible : Speaker::None),
+          controllerPrompt(controllerPrompt), marker(marker) {}
+
+    bool operator==(const MenuFrameKey& other) const {
+        return revision == other.revision && settings == other.settings && speaker == other.speaker &&
+               controllerPrompt == other.controllerPrompt && marker == other.marker;
+    }
+
+    uint32_t revision;
+    MenuState settings;
+    Speaker speaker;
+    bool controllerPrompt, marker;
 };
 
 enum MenuRow { PlayRow, DifficultyRow, RivalRow, VoiceRow, VolumeRow, RenderRow, CallsignRow, ExitRow, MenuRows };
@@ -24,7 +50,7 @@ constexpr char callsignKeys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-<";
 
 class App {
 public:
-    explicit App(const Assets& assets);
+    explicit App(const Assets& assets, uint32_t voiceSeed = 0);
     void tick(Input input);
     void routeAudio();
     const Snapshot& state() const { return game.state(); }

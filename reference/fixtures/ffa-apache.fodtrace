@@ -1,0 +1,6 @@
+FODTRACE 2
+S 31 5 4 -14.3 0 -12.5 0.42 0 -14.65 0 -8.5 3.141592653589793 0 -1 0 0 0 0
+B -13.6 0 -8.5 3.141592653589793 0
+# Deploy the Apache, with two live rivals in the container lane.
+T 0 0 0 0 0 128
+W 359
