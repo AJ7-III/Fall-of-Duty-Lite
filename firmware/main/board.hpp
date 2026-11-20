@@ -33,6 +33,9 @@ struct SavedSettings {
 };
 SavedSettings readSettings();
 esp_err_t writeSettings(const SavedSettings& settings);
+// One-shot arena request that survives the restart used to switch arenas; taking it clears it.
+esp_err_t requestLaunch(uint8_t launch);
+uint8_t takeLaunch();
 
 struct Frame {
     uint16_t* pixels = nullptr;

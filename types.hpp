@@ -51,10 +51,16 @@ struct Input {
 enum class Sound : uint8_t {
     Mp44, Sniper, Pistol, Reload, Bolt, Dry, Footstep, Impact, Glass, Hit,
     Death, Uav, Laptop, Airstrike, Rotor, Rain, KillConfirm, HeadshotConfirm, VoiceStart, VoiceKill,
-    VoiceVictory, VoiceAlternateStart, VoiceAlternateKill, VoiceAlternateVictory, Count
+    VoiceVictory, VoiceAlternateStart, VoiceAlternateKill, VoiceAlternateVictory,
+    PlasmaFire, AlienDown, ConcussionRing, RadioChirp, CivilianSaved, DroneFire,
+    Heartbeat, AlienHorn, InvasionHum, AlienRoar, Count
 };
 
-enum class Speaker : uint8_t { None, IPwndUrMom, Hanz };
+constexpr bool isVoiceSound(Sound sound) {
+    return sound >= Sound::VoiceStart && sound <= Sound::VoiceAlternateVictory;
+}
+
+enum class Speaker : uint8_t { None, IPwndUrMom, Hanz, Commander };
 enum class Opponent : uint8_t { IPwndUrMom, Hanz, FreeForAll };
 constexpr int defaultDifficulty = 5;
 constexpr auto defaultOpponent = Opponent::Hanz;

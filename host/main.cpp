@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "assets.hpp"
+#include "briar_house.hpp"
 #include "render.hpp"
 #include "trace.hpp"
 
@@ -8,6 +9,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 
 namespace {
 using namespace fod;
@@ -16,16 +18,25 @@ using Clock = std::chrono::steady_clock;
 struct Options {
     const char *pack = "assets/fall-of-duty.fodp", *trace = nullptr, *journal = nullptr, *image = nullptr;
     int frames = 3000, warmup = 300, imageTick = 0;
-    int width = 400;
+    int width = 0;
+    int duelWidth = 0;
+    std::optional<float> stickSensitivity;
+    Arena arena = Arena::ShipBox;
+    BriarHouseMode briarMode = BriarHouseMode::Standard;
     RenderLook look = RenderLook::Enhanced;
-    bool benchmark = false, inspect = false, both = false;
+    bool benchmark = false, inspect = false, both = false, localDuel = false;
 };
 
 void help() {
-    std::puts("fod_host [--pack PATH] [--mode 400|320|both] [--look enhanced|classic]\n"
+    std::puts("fod_host [--pack PATH] [--map ship-box|briar-house] [--mission briar-house] [--mode 400|320|both] [--look enhanced|classic]\n"
               "         [--trace PATH [--journal PATH] | --bench PATH [--frames 3000] [--warmup 300]]\n"
               "         [--image PATH [--image-tick TICK]] [--inspect]\n"
-              "Without headless options, launch the offline Ship Box duel.");
+#ifdef FOD_DESKTOP
+              "         [--mode 800|1280] for desktop solo\n"
+              "         [--local-duel [--duel-resolution 400|640|800]]\n"
+              "         [--stick-sensitivity PERCENT] for desktop gamepad aim (1-200)\n"
+#endif
+              "Without headless options, launch an offline duel. Ship Box is the default map.");
 }
 
 bool options(int argc, char** argv, Options& out) {
@@ -35,13 +46,40 @@ bool options(int argc, char** argv, Options& out) {
             out.inspect = true;
             continue;
         }
+#ifdef FOD_DESKTOP
+        if (!std::strcmp(option, "--local-duel")) {
+            out.localDuel = true;
+            continue;
+        }
+#endif
         if (i + 1 == argc) return false;
         const char* value = argv[++i];
         if (!std::strcmp(option, "--pack")) out.pack = value;
+        else if (!std::strcmp(option, "--map")) {
+            if (!std::strcmp(value, "ship-box")) { out.arena = Arena::ShipBox; out.briarMode = BriarHouseMode::Standard; }
+            else if (!std::strcmp(value, "briar-house")) { out.arena = Arena::BriarHouse; out.briarMode = BriarHouseMode::Standard; }
+            else return false;
+        } else if (!std::strcmp(option, "--mission")) {
+            if (!std::strcmp(value, "briar-house")) { out.arena = Arena::BriarHouse; out.briarMode = BriarHouseMode::Invasion; }
+            else return false;
+        }
         else if (!std::strcmp(option, "--trace")) out.trace = value;
         else if (!std::strcmp(option, "--bench")) { out.benchmark = true; out.trace = value; }
         else if (!std::strcmp(option, "--journal")) out.journal = value;
         else if (!std::strcmp(option, "--image")) out.image = value;
+#ifdef FOD_DESKTOP
+        else if (!std::strcmp(option, "--duel-resolution")) {
+            if (!std::strcmp(value, "400")) out.duelWidth = 400;
+            else if (!std::strcmp(value, "640")) out.duelWidth = 640;
+            else if (!std::strcmp(value, "800")) out.duelWidth = 800;
+            else return false;
+        } else if (!std::strcmp(option, "--stick-sensitivity")) {
+            char* end = nullptr;
+            const long percent = std::strtol(value, &end, 10);
+            if (*end || percent < 1 || percent > 200) return false;
+            out.stickSensitivity = float(percent) / 100;
+        }
+#endif
         else if (!std::strcmp(option, "--look")) {
             if (!std::strcmp(value, "classic")) out.look = RenderLook::Classic;
             else if (!std::strcmp(value, "enhanced")) out.look = RenderLook::Enhanced;
@@ -49,7 +87,12 @@ bool options(int argc, char** argv, Options& out) {
         } else if (!std::strcmp(option, "--mode")) {
             if (!std::strcmp(value, "320")) out.width = 320;
             else if (!std::strcmp(value, "both")) { out.both = true; out.width = 400; }
-            else if (std::strcmp(value, "400")) return false;
+            else if (!std::strcmp(value, "400")) out.width = 400;
+#ifdef FOD_DESKTOP
+            else if (!std::strcmp(value, "800")) out.width = 800;
+            else if (!std::strcmp(value, "1280")) out.width = desktopHdWidth;
+#endif
+            else return false;
         } else if (!std::strcmp(option, "--frames") || !std::strcmp(option, "--warmup") || !std::strcmp(option, "--image-tick")) {
             char* end = nullptr;
             const long n = std::strtol(value, &end, 10);
@@ -59,7 +102,11 @@ bool options(int argc, char** argv, Options& out) {
             else out.imageTick = int(n);
         } else return false;
     }
-    return (!out.benchmark || (out.frames && !out.journal)) &&
+    return (!out.duelWidth || out.localDuel) &&
+           (!out.stickSensitivity || (!out.inspect && !out.trace && !out.image)) &&
+           (!out.localDuel || (!out.inspect && !out.trace && !out.image && (out.width == 0 || out.width == 400))) &&
+           (out.width <= 400 || (!out.inspect && !out.trace && !out.image)) &&
+           (!out.benchmark || (out.frames && !out.journal)) &&
            (!out.journal || out.trace) && (!out.imageTick || (out.trace && out.image && !out.benchmark)) && (!out.both || (out.benchmark && !out.image));
 }
 
@@ -199,7 +246,9 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
 } // namespace
 
 #ifdef FOD_DESKTOP
-int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look);
+fod::LaunchAction runDesktop(const fod::Assets& assets, int width, fod::RenderLook look,
+                             std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry);
+int runLocalDuel(const fod::Assets& assets, fod::RenderLook look, int width, std::optional<float> stickSensitivity);
 #endif
 
 int main(int argc, char** argv) {
@@ -212,19 +261,54 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s: %s\n", out.pack, error.c_str());
         return 1;
     }
+    if (out.arena == Arena::BriarHouse) buildBriarHouse(assets, out.briarMode);
     if (out.inspect) describeAssets(assets);
     fod::ReplayTrace trace;
-    if (out.trace && !trace.load(out.trace, error)) {
+    if (out.trace && !trace.load(out.trace, error, assets.extent)) {
         std::fprintf(stderr, "%s: %s\n", out.trace, error.c_str());
         return 1;
     }
     if (out.trace || out.image) {
-        const auto run = headless(assets, out.trace ? &trace : nullptr, out, out.width);
+        const auto run = headless(assets, out.trace ? &trace : nullptr, out, out.width ? out.width : 400);
         return run || !out.both ? run : headless(assets, &trace, out, 320);
     }
     if (out.inspect) return 0;
 #ifdef FOD_DESKTOP
-    return runDesktop(assets, out.width == 320, out.look);
+    if (out.localDuel) return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);
+#ifdef __APPLE__
+    constexpr int soloDefaultWidth = fod::desktopHdWidth;
+#else
+    constexpr int soloDefaultWidth = 400;
+#endif
+    fod::MenuState carry{};
+    carry.desktopRenderWidth = out.width ? out.width : soloDefaultWidth;
+    carry.selectedArena = out.arena;
+    bool autoStart = false;
+    for (;;) {
+        const auto action = runDesktop(assets, carry.desktopRenderWidth, out.look, out.stickSensitivity, autoStart, &carry);
+        if (action == fod::LaunchAction::None) return 0;
+        const auto reloadPack = [&]() -> bool {
+            assets = fod::Assets{};
+            if (!assets.load(out.pack, error)) {
+                std::fprintf(stderr, "%s: %s\n", out.pack, error.c_str());
+                return false;
+            }
+            return true;
+        };
+        if (action == fod::LaunchAction::Campaign) {
+            if (assets.arena != fod::Arena::ShipBox && !reloadPack()) return 1;
+            buildBriarHouse(assets, fod::BriarHouseMode::Invasion);
+            autoStart = true;
+        } else if (action == fod::LaunchAction::BotMatch) {
+            if (assets.arena != fod::Arena::ShipBox && !reloadPack()) return 1;
+            if (carry.selectedArena == fod::Arena::BriarHouse) buildBriarHouse(assets, fod::BriarHouseMode::Standard);
+            autoStart = true;
+        } else if (action == fod::LaunchAction::LocalDuel) {
+            if (assets.arena != fod::Arena::ShipBox && !reloadPack()) return 1;
+            if (carry.selectedArena == fod::Arena::BriarHouse) buildBriarHouse(assets, fod::BriarHouseMode::Standard);
+            return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);
+        }
+    }
 #else
     std::fputs("Build with FOD_DESKTOP=ON for the interactive SDL2 host.\n", stderr);
     return 2;

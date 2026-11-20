@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app.hpp"
+#include "assets.hpp"
 
 #include <cstdio>
 #include <string>
@@ -10,7 +11,7 @@ namespace fod {
 
 class ReplayTrace {
 public:
-    bool load(const char* path, std::string& error);
+    bool load(const char* path, std::string& error, ArenaExtent extent = {});
     void begin(App& app);
     bool step(App& app);
     size_t length() const { return inputs_.size(); }

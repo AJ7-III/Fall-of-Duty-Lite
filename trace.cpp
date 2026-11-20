@@ -6,7 +6,7 @@
 
 namespace fod {
 
-bool ReplayTrace::load(const char* path, std::string& error) {
+bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent) {
     const std::unique_ptr<FILE, decltype(&std::fclose)> file(std::fopen(path, "r"), &std::fclose);
     if (!file) { error = "TRACE NOT FOUND"; return false; }
     char line[512]{};
@@ -33,8 +33,8 @@ bool ReplayTrace::load(const char* path, std::string& error) {
         error = "TRACE INITIAL STATE";
         return false;
     }
-    const auto inYard = [](Vec3 p) {
-        return std::abs(p.x) <= 16 && std::abs(p.z) <= 16 && p.y >= 0 && p.y <= 20;
+    const auto inYard = [extent](Vec3 p) {
+        return std::abs(p.x) <= extent.x + .4f && std::abs(p.z) <= extent.z + .4f && p.y >= 0 && p.y <= 20;
     };
     if (!inYard(next.fixture_.player) || !inYard(next.fixture_.rival) ||
         !std::isfinite(next.fixture_.yaw) || !std::isfinite(next.fixture_.pitch) ||

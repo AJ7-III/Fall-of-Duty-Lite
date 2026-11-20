@@ -45,6 +45,7 @@ struct Material {
     int16_t texture = -1;
     uint8_t alpha = 255;
     bool doubleSided = true;
+    bool emissive = false;
 };
 
 struct Texture {
@@ -74,6 +75,7 @@ struct ShotSurface {
 
 struct Obstacle {
     float cx, cz, hw, hd, minY, maxY, yaw, cos, sin;
+    bool blocksSight = true;
 };
 
 struct NavNode {
@@ -103,6 +105,43 @@ struct WeaponPose {
     std::vector<Vec3> positions;
 };
 
+enum class Arena { ShipBox, BriarHouse };
+enum class BriarHouseMode : uint8_t { Standard, Invasion };
+
+struct ArenaExtent {
+    float x = 15.6f, z = 15.6f;
+};
+
+constexpr const char* arenaLabel(Arena arena) {
+    return arena == Arena::BriarHouse ? "BRIAR HOUSE" : "SHIP BOX";
+}
+
+struct SpawnPoint {
+    Vec3 position;
+    float yaw;
+};
+
+struct BakedLight {
+    Vec3 position;
+    float radius, strength;
+};
+
+// A column of smoke the renderer animates: puffs climb `height`, lean by `drift` at the top,
+// grow from `size` and recycle every 1 / rate seconds.
+struct SmokeSource {
+    Vec3 base;
+    float height;
+    Vec3 drift;
+    float size, rate;
+};
+
+// Where the transport's rotor sits on its airframe.
+constexpr Vec3 transportRotorMount{0, 3.35f, .15f};
+
+// Layout of Assets::alienTrooperPoses and Assets::civilianPoses.
+constexpr uint16_t alienIdlePoses = 2, alienStridePoses = 6;
+constexpr uint16_t civilianCowerPoses = 2, civilianRunPoses = 6, civilianStandPose = civilianCowerPoses + civilianRunPoses;
+
 struct Assets {
     Mesh world, weapon[3], apache, jet;
     std::vector<Mesh> rivalFrames;
@@ -112,8 +151,24 @@ struct Assets {
     std::array<std::vector<WeaponPose>, size_t(WeaponTrack::Count)> weaponTracks;
     std::vector<Mesh> hanzFrames;
     Mesh playerBody;
+    Mesh alienTrooper, alienDrone;
+    // Position-only poses that share alienTrooper's topology: idle breaths, then the lope cycle.
+    std::vector<Mesh> alienTrooperPoses;
+    // Enforcers: the same body armored with bone crest, spikes and blades, on the same pose layout.
+    Mesh alienEnforcer;
+    std::vector<Mesh> alienEnforcerPoses;
+    // Unarmed civilian: cower, run cycle, then a standing pose; outfits come from civilianUniforms.
+    Mesh civilianMesh;
+    std::vector<Mesh> civilianPoses;
+    // Utility helicopter for the campaign's evac bird; the rotor spins about its own origin.
+    Mesh transportHelo, transportRotor;
+    std::vector<SmokeSource> smoke;
+    std::array<Mesh, 3> alienFleet;
     std::vector<Material> materials;
     std::vector<uint16_t> playerUniform;
+    std::vector<uint16_t> commanderUniform;
+    std::vector<uint16_t> enforcerUniform;
+    std::array<std::vector<uint16_t>, 3> civilianUniforms;
     std::vector<Texture> textures;
     std::array<std::vector<uint8_t>, 6> sky;
     std::vector<ShotSurface> shotSurfaces;
@@ -123,6 +178,7 @@ struct Assets {
     std::vector<Obstacle> obstacles;
     std::vector<NavNode> navNodes;
     std::vector<NavEdge> navEdges;
+    std::vector<BakedLight> lamps;
     std::vector<Clip> audio;
     std::array<std::vector<EncodedVoice>, voiceBankCount> voices;
     std::vector<uint8_t> glassHits;
@@ -130,6 +186,13 @@ struct Assets {
     std::array<uint8_t, 20> sourceRevision{};
     uint32_t artSeed = 0;
     uint16_t walkFrameCount = 0, runFrameCount = 0;
+    Arena arena = Arena::ShipBox;
+    BriarHouseMode briarHouseMode = BriarHouseMode::Standard;
+    ArenaExtent extent;
+    std::array<SpawnPoint, 4> spawns{{
+        {{-13.5f, 0, -13.5f}, pi / 4}, {{13.5f, 0, 13.5f}, -3 * pi / 4},
+        {{-13.5f, 0, 13.5f}, 3 * pi / 4}, {{13.5f, 0, -13.5f}, -pi / 4},
+    }};
 
     std::array<Vec3, 3> shotCorners(size_t i) const {
         if (shotIndices.empty()) {

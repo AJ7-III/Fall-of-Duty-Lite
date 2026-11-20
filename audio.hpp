@@ -64,7 +64,7 @@ private:
     uint32_t activeSpeechGeneration_ = 0;
     // Stops invalidate older commands even if the effects queue is full.
     std::atomic<uint32_t> speechGeneration_{0};
-    std::array<std::atomic<uint32_t>, size_t(Sound::VoiceStart)> loopGenerations_;
+    std::array<std::atomic<uint32_t>, size_t(Sound::Count)> loopGenerations_;
     std::atomic<bool> speechPaused_{false};
     std::atomic<uint32_t> write_{0}, read_{0}, dropped_{0};
     std::atomic<int> volume_{70};

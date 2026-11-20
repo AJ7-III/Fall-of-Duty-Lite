@@ -27,7 +27,7 @@ void Mixer::push(Command command) {
 }
 
 void Mixer::play(Sound sound, float gain, float pan) {
-    const auto generation = sound >= Sound::VoiceStart ? speechGeneration_.load(std::memory_order_relaxed) : 0u;
+    const auto generation = isVoiceSound(sound) ? speechGeneration_.load(std::memory_order_relaxed) : 0u;
     push({sound, gain, pan, false, generation});
 }
 
@@ -137,9 +137,9 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
     unsigned candidates = 0;
     while (read != write) {
         const auto command = queue_[read++ % queue_.size()];
-        if (command.sound < Sound::VoiceStart) {
+        if (!isVoiceSound(command.sound) && command.sound < Sound::Count) {
             applyEffect(command);
-        } else if (command.sound < Sound::Count && canSpeak && command.gain > 0 &&
+        } else if (isVoiceSound(command.sound) && canSpeak && command.gain > 0 &&
                    command.generation == activeSpeechGeneration_) {
             // Pick one eligible request from this block. Busy requests expire here.
             if (++candidates == 1 || voiceDraw() % candidates == 0) speechCandidate = command;

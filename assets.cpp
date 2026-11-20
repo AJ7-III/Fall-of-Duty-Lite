@@ -406,7 +406,7 @@ bool readGlass(Reader& in, LoadBudget& budget, Assets& assets) {
 bool readAudio(Reader& in, LoadBudget& budget, Assets& assets, uint32_t schema) {
     constexpr auto legacyEffects = uint32_t(Sound::Rain) + 1;
     constexpr auto effects = uint32_t(Sound::VoiceStart);
-    constexpr auto allSounds = uint32_t(Sound::Count);
+    constexpr auto allSounds = uint32_t(Sound::VoiceAlternateVictory) + 1;
     const auto storedEffects = schema < 4 ? legacyEffects : effects;
     const auto storedVoices = schema == 2 ? allSounds - effects : 0;
     const auto count = in.u32();

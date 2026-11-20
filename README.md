@@ -41,6 +41,8 @@ Follow the [handheld installation guide](INSTALL.md) to verify `SHA256SUMS`, cop
 
 For a three-way match, open **Match Setup**, cycle **Rival** to **Free-for-all**, then return to the title screen and choose **Start FFA**. The rivals can score against each other, and the kill feed shows who scored. Only your own kills advance your killstreak.
 
+Choosing **Campaign**, or a bot match in an arena that is not loaded, restarts the handheld into that arena. It shows a loading card, builds Briar House from the pack before the renderer starts, and returns to the title screen with that mode selected. Press Cross to begin. The firmware for this has been cross-built but not yet run on a board.
+
 > [!NOTE]
 > The v1.1.0 handheld package is cross-built with ESP-IDF v5.5.3 and checked for flash layout and image checksums. Physical Guition JC4880P443C_I_W qualification is still pending. Display scanout, touch corners, USB controller handling, audio under scanout, optical latency, and full first-to-ten play on hardware remain to be verified using [BOARD.md](BOARD.md).
 
@@ -55,28 +57,54 @@ ctest --test-dir build/host --output-on-failure
 build/host/fod_host
 ```
 
-Pass `--mode 320` to launch in compact resolution, `--look classic` to compare with the earlier visual path, or `--pack PATH` to load another `.fodp` file. The enhanced look scales the picture with bilinear filtering, as the handheld's scaler does. The classic look keeps flat lighting and nearest-neighbor scaling. Pass `-DFOD_DESKTOP=OFF` when configuring CMake for a headless CLI and test build without SDL2.
+Solo targets 60 fps and renders at **1280×720** by default on macOS. Use **Render Size** in Match Setup or the pause menu, or pass `--mode 800`, `--mode 400`, or `--mode 320` to start at a lower resolution. Pass `--look classic` to use flat lighting and nearest-neighbor scaling, or `--pack PATH` to load another `.fodp` file. The enhanced look uses bilinear filtering when scaling. Pass `-DFOD_DESKTOP=OFF` when configuring CMake for a headless CLI and test build without SDL2.
+
+### Briar House playtest and Mission 1 (Campaign)
+
+Run `build/host/fod_host --mission briar-house` for **Mission 1: Briar House**, a paced single-player Delta Squad campaign mission. It is 05:47 on the first day of the landings in the Colorado Front Range. Delta Squad was sent to extract Dr. Nora Marsh, the astronomer whose radio array tracked the fleet, and her family. Their helicopter, Warhorse 2-1, was shot down on approach.
+
+You wake up concussed on the Grand Hall floor as Delta-1 rallies you up. Warhorse burns in the road beyond the front gate while an alien patrol picks through the wreck. From the portico you line up an M40A3 shot 15–18 m out. When the shooting starts, the survivors vault the garden wall, and a second team flanks through the rear doors. Delta-1 then follows you room by room to find Ben in the kitchen, Dr. Marsh in the garage, and her father Walt in the garden shed (with a sniper sightline out the west kitchen windows). Each of them speaks when you reach them. The aliens are homing on Dr. Marsh's dish, still aimed at the mothership from the east wing roof. You fall back to the rear patio and hold it until the Dustoff medevac arrives, with US Apache support against reinforcements that drop in on beams from the mothership. A short, skippable exfil cutscene closes the mission as the family boards, and the results screen ends with a line about who made it out.
+
+The ground aliens are hulking violet predators with whipping tendrils, a split fanged maw, four glowing pit-eyes and bone claws. They lope, breathe, roar and spit plasma from the mouth. Enforcers wear blood-red hide armored with a bone crest, spikes and forearm blades. Smoke rises from the wreck and from homes burning across the valley. They take firing spots beside cover, spread out to flank you, and a badly hurt alien falls back out of sight before returning from a new angle. Only a few aim at you at once, more at higher difficulty, while the rest pin Delta-1 or lay down loose suppressing fire. The civilians are unarmed, in their own clothes: they cower with hands over their heads until you clear their room, then run for the back door.
+
+A diamond marker with range points to the next civilian or the patio. Checkpoints save at the overwatch, after the breach, and before the final hold, and a reload keeps your rescues, kills, and mission time. In the campaign, a tap of Swap returns to your previous weapon and holding it reaches the third. Mission subtitles always show; the **Radio Sound** setting only mutes the radio squelch. A hit that drops you into last-stand health buys a brief window to reach cover, and a single stray burst can wound a civilian but not kill them. Rank S needs all three civilians, no checkpoint reloads, and a time under 4:30.
+
+Run `build/host/fod_host --map briar-house` for the standard mansion duel playtest (or add `--local-duel` for two-player split-screen). The grand hall is the direct route between the lobbies, with the service wing, portrait gallery, and open garage bay offering covered flanks and a fallen bookcase sealing the stairs.
+
+### Local two-player duel
+
+```sh
+build/host/fod_host --local-duel
+```
+
+Pair two SDL-compatible gamepads with the computer. The 8BitDo Pro 2 may appear as **Pro Controller** in Switch mode. Press **Start** or **+** on each controller to claim a slot, then press the confirm button shown for Player 1. On the Pro 2, that's the printed **B**. The first player to ten wins. A simultaneous 10–10 ends in a draw.
+
+Either player can pause with **Start**. If a controller disconnects, press **Start** on the reconnected pad to reclaim the open seat, then press **Start** again to resume. Press the bottom face button on the results screen for a rematch. The Mac split-screen build renders at 640×360 per view and targets 60 fps. Use `--duel-resolution 400` or `--duel-resolution 800` to select 400×225 or 800×450. Local duels use the three standard weapons.
 
 ### Controls
 
 SDL gamepads use the same layout as the handheld DualShock 4. On the Guition, touch works in menus and on the HUD pause button. Losing focus or disconnecting a controller pauses a desktop match. Resume explicitly when ready.
 
-| Action | Keyboard and mouse | DualShock 4 and SDL gamepad |
-| --- | --- | --- |
-| Move | `W A S D` | Left stick |
-| Look and airstrike cursor | Mouse | Right stick |
-| Fire and mark airstrike | Left mouse | `R2` / Right trigger |
-| Aim down sights | Right mouse or `Space` | `L2` / Left trigger |
-| Sprint | `Shift` | `L3` / Left stick press |
-| Jump | `Z` | `Cross` / `A` |
-| Crouch (tap) or prone (hold) | `C` | `Circle` / `B` |
-| Reload | `R` | `Square` / `X` |
-| Swap weapon | `X` | `Triangle` / `Y` |
-| Deploy banked streak or close laptop | `Up` arrow or `4` | `D-pad Up` |
-| Confirm or start duel | `Enter` or click menu | `Cross` / `A` |
-| Navigate menus | Arrow keys | `D-pad` |
-| Back from Match Setup | `Esc` or `P` | `Circle` / `B` |
-| Pause or resume | `Esc` or `P` | `Options` / `Start` |
+On desktop, controller play leaves the cursor free. In Solo, click inside the game window to switch to mouse aim. Pause to release the mouse again.
+
+The Nintendo controller profile, which includes the 8BitDo Pro 2 in Switch mode, uses 80% stick sensitivity by default. Other desktop profiles default to 100%. Pass `--stick-sensitivity 70` in Solo or Local Duel to set the right-stick sensitivity to 70%.
+
+| Action | Keyboard and mouse | DualShock 4 / Xbox-style | 8BitDo Pro 2 |
+| --- | --- | --- | --- |
+| Move | `W A S D` | Left stick | Left stick |
+| Look and airstrike cursor | Mouse | Right stick | Right stick |
+| Fire and mark airstrike | Left mouse | `R2` / Right trigger | `R2` |
+| Aim down sights | Right mouse or `Space` | `L2` / Left trigger | `L2` |
+| Sprint | `Shift` | `L3` / Left stick press | Left stick press |
+| Jump | `Z` | `Cross` / `A` | `B` |
+| Crouch (tap) or prone (hold) | `C` | `Circle` / `B` | `A` |
+| Reload | `R` | `Square` / `X` | `Y` |
+| Swap weapon (campaign: tap for previous, hold for third) | `X` | `Triangle` / `Y` | `X` |
+| Deploy banked streak or close laptop | `Up` arrow or `4` | D-pad Up | D-pad Up |
+| Confirm or start duel | `Enter` or click menu | `Cross` / `A` | `B` |
+| Navigate menus | Arrow keys | D-pad | D-pad |
+| Back from Match Setup | `Esc` or `P` | `Circle` / `B` | `A` |
+| Pause or resume | `Esc` or `P` | `Options` / `Start` | `+` |
 
 ## Screenshots
 

@@ -16,7 +16,7 @@ struct RenderStats {
 
 class Renderer {
 public:
-    explicit Renderer(const Assets& assets, RenderLook look = RenderLook::Enhanced);
+    explicit Renderer(const Assets& assets, RenderLook look = RenderLook::Enhanced, size_t maxPixels = 400 * 225);
     ~Renderer();
     Renderer(const Renderer&) = delete;
     Renderer& operator=(const Renderer&) = delete;
@@ -47,7 +47,14 @@ private:
 // baseline PPA fills these pixels; the CPU only adds the logical overlays.
 void drawHud(const Assets& assets, const Snapshot& snapshot, const MenuState& menu, uint16_t* framebuffer, bool rotated,
              Speaker speaker = Speaker::None);
+#ifdef FOD_LOCAL_DUEL
+// A desktop canvas keeps the 800×480 logical layout, including the 16:9 view.
+void drawDesktopHud(const Assets& assets, const Snapshot& snapshot, const MenuState& menu, uint16_t* framebuffer,
+                    int canvasWidth, Speaker speaker = Speaker::None);
+#endif
 void drawRecovery(const char* message, uint16_t* framebuffer, bool rotated);
+// Full-screen card shown while an arena is being built.
+void drawLoading(const char* title, uint16_t* framebuffer, bool rotated);
 void drawNumberedFrame(uint32_t sequence, uint16_t* framebuffer, bool rotated);
 // The CPU scaler for desktops and captures. Smooth scaling filters the way the handheld's PPA does.
 void scaleWorld(const uint16_t* source, int width, int height, uint16_t* framebuffer, bool rotated, bool smooth = false);

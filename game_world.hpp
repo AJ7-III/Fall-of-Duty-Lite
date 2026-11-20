@@ -9,12 +9,10 @@ namespace fod::game_detail {
 
 constexpr float infinity = std::numeric_limits<float>::infinity();
 constexpr float gravity = -15;
-constexpr float boundary = 15.6f;
 
 inline float planarSquared(Vec3 v) { return v.x * v.x + v.z * v.z; }
 inline float planar(Vec3 v) { return std::sqrt(planarSquared(v)); }
 inline Vec3 atHeight(Vec3 v, float height) { return {v.x, v.y + height, v.z}; }
-inline float limit(float v) { return std::clamp(v, -boundary, boundary); }
 inline float sign(float v) { return v < 0 ? -1.f : 1.f; }
 inline float smooth(double t) {
     t = std::clamp(t, 0.0, 1.0);
@@ -69,6 +67,9 @@ public:
         for (int i = 0; i < steps; ++i) grounded = moveStep(pos, velocity, dt / steps, height, radius);
         return grounded;
     }
+
+    float clampX(float x) const { return std::clamp(x, -assets_.extent.x, assets_.extent.x); }
+    float clampZ(float z) const { return std::clamp(z, -assets_.extent.z, assets_.extent.z); }
 
     bool canStand(Vec3 pos, float eye) const {
         for (const auto& b : assets_.obstacles) {
@@ -155,10 +156,11 @@ private:
         float best = maxDistance;
         bool hit = false;
         for (size_t i = 0; i < boxBounds_.size(); ++i) {
+            const auto& b = assets_.obstacles[i];
+            if (!b.blocksSight) continue;
             float first = 0;
             if (!intersects(p, d, boxBounds_[i], first, best)) continue;
             first = 0;
-            const auto& b = assets_.obstacles[i];
             if (intersects(local(b, p), localDirection(b, d),
                            {{-b.hw, b.minY, -b.hd}, {b.hw, b.maxY, b.hd}}, first, best)) {
                 if (any) return first;
@@ -170,7 +172,7 @@ private:
     }
 
     bool moveStep(Vec3& pos, Vec3& v, float dt, float height, float radius) const {
-        Vec3 next{limit(pos.x + v.x * dt), pos.y, limit(pos.z + v.z * dt)};
+        Vec3 next{clampX(pos.x + v.x * dt), pos.y, clampZ(pos.z + v.z * dt)};
         for (int pass = 0; pass < 2; ++pass) {
             bool pushed = false;
             for (const auto& b : assets_.obstacles) {
@@ -195,8 +197,8 @@ private:
                 pushed = true;
             }
             if (!pushed) break;
-            next.x = limit(next.x);
-            next.z = limit(next.z);
+            next.x = clampX(next.x);
+            next.z = clampZ(next.z);
         }
         const float vy = v.y, rise = std::clamp(-vy / gravity, 0.f, dt);
         const float apex = pos.y + std::max(0.f, (vy + .5f * gravity * rise) * rise);

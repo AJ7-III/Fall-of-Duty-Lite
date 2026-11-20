@@ -165,6 +165,22 @@ float faceLight(const Field& field, Vec3 point, Vec3 normal, bool thorough) {
     return shade(normal, sky, sun ? 1.0f : 0.0f);
 }
 
+float lampLight(const Field& field, const std::vector<BakedLight>& lamps, Vec3 point, Vec3 normal) {
+    float light = 0;
+    const Vec3 sample = point + normal * 0.18f;
+    for (const auto& lamp : lamps) {
+        const Vec3 offset = lamp.position - sample;
+        const float distanceSquared = dot(offset, offset);
+        const float toward = dot(normal, offset);
+        if (toward <= 0 || distanceSquared >= lamp.radius * lamp.radius) continue;
+        const float distance = std::sqrt(distanceSquared);
+        if (field.size && field.reach(sample, offset / distance, field.cell, distance - field.cell * 1.8f) != escaped) continue;
+        const float falloff = 1 - distance / lamp.radius;
+        light += lamp.strength * falloff * falloff * (0.35f + 0.65f * toward / distance);
+    }
+    return light;
+}
+
 } // namespace
 
 uint8_t SceneLight::surface(Vec3 normal, Vec3 sun, Vec3 up, unsigned scale) {
@@ -237,6 +253,7 @@ void SceneLight::bake(const Assets& assets) {
                 // A roof hides the zenith. Low cover hides more of the sky than a lamp arm.
                 if (field.high[i] > eye) sky *= std::clamp((field.low[i] - eye) / 8, 0.45f, 1.0f);
                 light[i] = shade({0, 1, 0}, sky, field.sunlit(point) ? 1.0f : 0.0f);
+                if (!assets.lamps.empty()) light[i] += lampLight(field, assets.lamps, point, {0, 1, 0});
             }
         }
         soften(light, size);
@@ -270,11 +287,15 @@ void SceneLight::bake(const Assets& assets) {
     faces.resize(world.triangles.size());
     for (size_t i = 0; i < world.triangles.size(); ++i) {
         const auto& triangle = world.triangles[i];
+        auto& face = faces[i];
+        if (assets.materials[triangle.material].emissive) {
+            face = {{255, 255, 255}, 255};
+            continue;
+        }
         const Vertex* corners[]{&world.vertices[triangle.a], &world.vertices[triangle.b], &world.vertices[triangle.c]};
         const Vec3 a = corners[0]->position, b = corners[1]->position, c = corners[2]->position;
         const Vec3 turned = cross(b - a, c - a);
         const float doubled = length(turned);
-        auto& face = faces[i];
         if (doubled < 1e-9f) {
             face = {{level(ambient), level(ambient), level(ambient)}, level(ambient)};
             continue;
@@ -302,15 +323,19 @@ void SceneLight::bake(const Assets& assets) {
         }
 
         const Vec3 center = (a + b + c) / 3;
+        const auto lit = [&](Vec3 point, Vec3 direction, bool thorough) {
+            const float daylight = faceLight(field, point, direction, thorough);
+            return level(daylight + lampLight(field, assets.lamps, point, direction));
+        };
         if (doubled * 0.5f >= largeFace) {
             // Corners carry their own light so a wall darkens toward the ground.
             for (int corner = 0; corner < 3; ++corner) {
-                face.front[corner] = level(faceLight(field, corners[corner]->position, normal, true));
+                face.front[corner] = lit(corners[corner]->position, normal, true);
             }
         } else {
-            face.front[0] = face.front[1] = face.front[2] = level(faceLight(field, center, normal, false));
+            face.front[0] = face.front[1] = face.front[2] = lit(center, normal, false);
         }
-        face.back = level(faceLight(field, center, normal * -1, false));
+        face.back = lit(center, normal * -1, false);
     }
 }
 

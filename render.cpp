@@ -2,6 +2,7 @@
 #include "assets.hpp"
 #include "game_data.hpp"
 #include "light.hpp"
+#include "mission.hpp"
 
 #include <algorithm>
 #include <array>
@@ -261,7 +262,7 @@ Texture halfTexture(const Texture& source) {
 struct Renderer::Impl {
     const Assets& assets;
     const bool enhanced;
-    std::vector<uint16_t> depth = std::vector<uint16_t>(400 * 225);
+    std::vector<uint16_t> depth;
     std::vector<Vec3> culledNormals;
     std::vector<uint8_t> worldLights;
     std::vector<uint16_t> edgeRow;
@@ -291,7 +292,8 @@ struct Renderer::Impl {
         if (measure) stats.rasterUs += microseconds(start, Clock::now());
     }
 
-    explicit Impl(const Assets& source, RenderLook look) : assets(source), enhanced(look == RenderLook::Enhanced) {
+    explicit Impl(const Assets& source, RenderLook look, size_t maxPixels)
+        : assets(source), enhanced(look == RenderLook::Enhanced), depth(maxPixels) {
         // Opaque primitives can flush in submission order. Keep every translucent
         // primitive for the depth-tested, back-to-front pass that follows.
         solid.reserve(256);
@@ -312,11 +314,16 @@ struct Renderer::Impl {
         }
         maxActorAlpha = std::max(maxActorAlpha, alphaCount(source.playerBody));
         vertices = std::max(vertices, source.playerBody.vertices.size());
+        vertices = std::max({vertices, source.alienTrooper.vertices.size(), source.alienEnforcer.vertices.size()});
+        vertices = std::max(vertices, source.civilianMesh.vertices.size());
+        vertices = std::max({vertices, source.transportHelo.vertices.size(), source.transportRotor.vertices.size()});
+        vertices = std::max(vertices, source.alienDrone.vertices.size());
+        for (const auto& craft : source.alienFleet) vertices = std::max(vertices, craft.vertices.size());
         for (const auto& weapon : source.weapon) {
             maxWeaponAlpha = std::max(maxWeaponAlpha, alphaCount(weapon));
             vertices = std::max(vertices, weapon.vertices.size());
         }
-        const size_t worldAlpha = alphaCount(source.world) + 3 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
+        const size_t worldAlpha = alphaCount(source.world) + 5 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
         translucent.reserve(2 * std::max(worldAlpha, maxWeaponAlpha)); // One near-plane split per triangle.
         posedVertices.resize(vertices);
         visible.reserve(source.world.chunks.size());
@@ -840,7 +847,7 @@ struct Renderer::Impl {
         }
     }
 
-    void drawActor(const Actor& actor, const Snapshot& state, bool player, bool alternate = false) {
+    void drawActor(const Actor& actor, const Snapshot& state, bool player, bool alternate = false, float heightScale = 1.f) {
         if (!actor.visible || assets.rivalFrames.empty()) return;
         const auto& frames = alternate && !assets.hanzFrames.empty() ? assets.hanzFrames : assets.rivalFrames;
         const bool separatePlayer = player && !assets.playerBody.vertices.empty();
@@ -850,6 +857,7 @@ struct Renderer::Impl {
         const float fallYaw = actor.fallVariant == 2 ? fall * 1.35f : 0;
         const float fallPitch = actor.fallVariant == 1 ? fall * 1.46f : -fall * 1.46f;
         auto transform = orientation(actor.position + Vec3{0, fall * 0.24f, 0}, actor.yaw + fallYaw, fallPitch, fall * 0.12f);
+        if (heightScale != 1.f) transform.y *= heightScale;
         const Bounds bounds{actor.position + Vec3{-2, -0.4f, -2}, actor.position + Vec3{2, 2.2f, 2}};
         if (!view.sees(bounds)) return;
         const Mesh* topology = mesh.triangles.empty() ? &frames.front() : &mesh;
@@ -858,6 +866,88 @@ struct Renderer::Impl {
         const bool legacyMetal = !player && state.difficulty >= 9 && assets.playerUniform.empty() && assets.hanzFrames.empty();
         submit(mesh, state, transform, MeshSpace::World,
                mesh.vertexCount() == next.vertexCount() ? &next : nullptr, actor.frameBlend, legacyMetal, topology, uniform);
+    }
+
+    void drawMissionActor(const MissionActor& ma, const Snapshot& state) {
+        if (!ma.active || !ma.actor.visible) return;
+        const auto& actor = ma.actor;
+        if (ma.role == MissionRole::Civilian && !assets.civilianPoses.empty()) {
+            const auto& poses = assets.civilianPoses;
+            const float fall = std::clamp(actor.fall, 0.0f, 1.0f);
+            const auto transform = orientation(actor.position + Vec3{0, fall * 0.2f, 0}, actor.yaw, -fall * 1.46f, fall * 0.12f);
+            const Bounds bounds{actor.position + Vec3{-2, -0.4f, -2}, actor.position + Vec3{2, 2.2f, 2}};
+            if (!view.sees(bounds)) return;
+            meshLight = standing(actor.position);
+            const auto& outfit = assets.civilianUniforms[ma.variant % 3];
+            const auto& pose = poses[std::min<size_t>(actor.frame, poses.size() - 1)];
+            const auto& next = poses[std::min<size_t>(actor.nextFrame, poses.size() - 1)];
+            submit(pose, state, transform, MeshSpace::World, &next, actor.frameBlend, false, &assets.civilianMesh,
+                   outfit.empty() ? nullptr : outfit.data());
+            return;
+        }
+        if (ma.role == MissionRole::Commander || ma.role == MissionRole::Civilian) {
+            if (assets.rivalFrames.empty()) return;
+            const auto& frames = assets.rivalFrames;
+            const auto& mesh = frames[std::min<size_t>(actor.frame, frames.size() - 1)];
+            const auto& next = frames[std::min<size_t>(actor.nextFrame, frames.size() - 1)];
+            const float fall = std::clamp(actor.fall, 0.0f, 1.0f);
+            const float fallPitch = -fall * 1.46f;
+            auto transform = orientation(actor.position + Vec3{0, fall * 0.24f, 0}, actor.yaw, fallPitch, fall * 0.12f);
+            if (ma.role == MissionRole::Civilian && !ma.rescued && !ma.dead) transform.y *= 0.78f;
+            const Bounds bounds{actor.position + Vec3{-2, -0.4f, -2}, actor.position + Vec3{2, 2.2f, 2}};
+            if (!view.sees(bounds)) return;
+            const Mesh* topology = mesh.triangles.empty() ? &frames.front() : &mesh;
+            meshLight = standing(actor.position);
+            const uint16_t* uniform = nullptr;
+            if (ma.role == MissionRole::Commander && !assets.commanderUniform.empty()) {
+                uniform = assets.commanderUniform.data();
+            } else if (ma.role == MissionRole::Civilian && !assets.civilianUniforms[ma.variant % 3].empty()) {
+                uniform = assets.civilianUniforms[ma.variant % 3].data();
+            }
+            submit(mesh, state, transform, MeshSpace::World,
+                   mesh.vertexCount() == next.vertexCount() ? &next : nullptr, actor.frameBlend, false, topology, uniform);
+            return;
+        }
+        if (ma.role == MissionRole::AlienTrooper) {
+            if (assets.alienTrooper.triangles.empty()) return;
+            const bool armored = ma.variant > 0 && !assets.alienEnforcerPoses.empty();
+            const auto& poses = armored ? assets.alienEnforcerPoses : assets.alienTrooperPoses;
+            const auto& body = armored ? assets.alienEnforcer : assets.alienTrooper;
+            const bool posed = !poses.empty();
+            const float fall = std::clamp(actor.fall, 0.0f, 1.0f);
+            // Pose frames carry the gait; the rigid bob and sway only stand in without them.
+            const bool slide = !posed && !ma.dead && actor.speed > 0.3f;
+            const float bob = slide ? std::abs(std::sin(actor.phase * 2 * pi)) * 0.08f : 0.f;
+            const float sway = slide ? std::sin(actor.phase * 2 * pi) * 0.07f : 0.f;
+            auto transform = orientation(actor.position + Vec3{0, fall * 0.22f + bob, 0}, actor.yaw, -fall * 1.45f, sway);
+            if (ma.variant > 0) {
+                transform.x *= 1.08f;
+                transform.y *= 1.08f;
+                transform.z *= 1.08f;
+            }
+            const Bounds bounds{actor.position + Vec3{-1.4f, -0.3f, -1.4f}, actor.position + Vec3{1.4f, 2.8f, 1.4f}};
+            if (!view.sees(bounds)) return;
+            meshLight = standing(actor.position);
+            const uint16_t* uniform = (ma.variant > 0 && !assets.enforcerUniform.empty())
+                ? assets.enforcerUniform.data() : nullptr;
+            if (posed) {
+                const auto& pose = poses[std::min<size_t>(actor.frame, poses.size() - 1)];
+                const auto& next = poses[std::min<size_t>(actor.nextFrame, poses.size() - 1)];
+                submit(pose, state, transform, MeshSpace::World, &next, actor.frameBlend, false, &body, uniform);
+            } else {
+                submit(assets.alienTrooper, state, transform, MeshSpace::World, nullptr, 0, false, nullptr, uniform);
+            }
+            return;
+        }
+        if (ma.role == MissionRole::AlienDrone) {
+            if (assets.alienDrone.triangles.empty()) return;
+            const float pitch = ma.dead ? 0.55f : (actor.speed > 0.5f ? 0.14f : 0.f);
+            auto transform = orientation(actor.position, actor.yaw, pitch, ma.dead ? 0.45f : 0.f);
+            const Bounds bounds{actor.position + Vec3{-1.f, -0.6f, -1.f}, actor.position + Vec3{1.f, 0.6f, 1.f}};
+            if (!view.sees(bounds)) return;
+            meshLight = standing({actor.position.x, 0, actor.position.z});
+            submit(assets.alienDrone, state, transform, MeshSpace::World);
+        }
     }
 
     // A figure in shade dims with the ground under it, yet stays easy to pick out.
@@ -1015,7 +1105,7 @@ struct Renderer::Impl {
         recordRasterTime(start);
     }
 
-    void drawTracer(const Tracer& shot) {
+    void drawTracer(const Tracer& shot, uint16_t tint = rgb(255, 195, 107)) {
         if (shot.time <= 0) return;
         Vertex a{view.transform(shot.start), 0, 0};
         Vertex b{view.transform(shot.end), 0, 0};
@@ -1032,7 +1122,49 @@ struct Renderer::Impl {
             const float inverseZ = p.depth + (q.depth - p.depth) * t;
             const float z = enhanced ? encodedDepth(inverseZ) : inverseZ * view.near * 65534;
             const int at = y * view.width + x;
-            if (z + 1 >= depth[at]) color[at] = blend(color[at], rgb(255, 195, 107), 192);
+            const unsigned alpha = unsigned(std::clamp(int(shot.time * 220.f), 72, 220));
+            if (z + 1 >= depth[at]) color[at] = blend(color[at], tint, alpha);
+        }
+    }
+
+    // Rising plumes: soft puffs climb each source's column, widening, leaning downwind and
+    // thinning out, then recycle. Each puff is depth-tested against the scene as a disc.
+    void smoke(const Snapshot& state) {
+        const float t = float(state.realTime);
+        constexpr int puffs = 16;
+        for (size_t s = 0; s < assets.smoke.size(); ++s) {
+            const auto& src = assets.smoke[s];
+            for (int i = 0; i < puffs; ++i) {
+                const float life = std::fmod(t * src.rate + float(i) / puffs + float(s) * .37f, 1.f);
+                const Vec3 wander{std::sin(float(i) * 2.1f + t * .5f) * .7f * life, src.height * life,
+                                  std::cos(float(i) * 1.7f + t * .4f) * .5f * life};
+                const Vec3 at = src.base + wander + src.drift * (life * life);
+                const float radius = src.size * (.45f + 1.7f * life);
+                const Vertex centre{view.transform(at), 0, 0};
+                if (centre.position.z < view.near + radius) continue;
+                const auto p = view.project(centre);
+                const float pixels = radius * view.focal / centre.position.z;
+                if (pixels < 1.f) continue;
+                const int r = int(pixels + 1), cx = int(p.x), cy = int(p.y);
+                if (cx + r < 0 || cx - r >= view.width || cy + r < 0 || cy - r >= view.height) continue;
+                const float z = enhanced ? encodedDepth(p.depth) : p.depth * view.near * 65534;
+                // Fade in over the fire, thin out as it spreads; warm and brown low, cool grey high.
+                const float strength = std::min(1.f, life * 6.f) * (1.f - life);
+                const unsigned peak = unsigned(150.f * strength);
+                if (peak < 6) continue;
+                const int warm = int(28.f * (1.f - life));
+                const uint16_t tint = rgb(52 + warm, 50 + warm / 2, 52);
+                const float inv = 1.f / (pixels * pixels);
+                for (int y = std::max(0, cy - r); y <= std::min(view.height - 1, cy + r); ++y) {
+                    const float dy = float(y - cy);
+                    for (int x = std::max(0, cx - r); x <= std::min(view.width - 1, cx + r); ++x) {
+                        const float dx = float(x - cx), fall = 1.f - (dx * dx + dy * dy) * inv;
+                        if (fall <= 0) continue;
+                        const int at = y * view.width + x;
+                        if (z + 1 >= depth[at]) color[at] = blend(color[at], tint, unsigned(float(peak) * fall));
+                    }
+                }
+            }
         }
     }
 
@@ -1068,6 +1200,34 @@ struct Renderer::Impl {
         }
     }
 
+    void invasionAtmosphere(const Snapshot& state, bool title) {
+        // Slow drifting ash motes and glowing embers; single trig pair outside loop for zero hot-loop sin() cost.
+        uint32_t seed = 918273u;
+        const int count = enhanced ? 46 : 24;
+        const float t = float(state.realTime);
+        const int s = int(std::sin(t * 0.9f) * 12.f), c = int(std::cos(t * 0.9f) * 12.f);
+        const int sway[4]{s, c, -s, -c};
+        const int wSpan = view.width - 2, hSpan = view.height - 2;
+        for (int i = 0; i < count; ++i) {
+            seed = seed * 1664525u + 1013904223u;
+            const float speed = 7.f + float((seed >> 24) & 15) * 1.4f;
+            const int drift = int(t * speed);
+            const int rawX = int((seed >> 10) & 0x7fffu) + (drift * 9) / 20 + sway[i & 3];
+            const int x = ((rawX % wSpan) + wSpan) % wSpan;
+            const int rawY = int((seed >> 2) & 0x7fffu) - drift;
+            const int y = ((rawY % hSpan) + hSpan) % hSpan;
+            const bool ember = (i & 3) == 0;
+            const bool cyan = !title && (i % 7) == 0;
+            const uint16_t tint = cyan ? rgb(88, 240, 255) : ember ? rgb(255, 165, 86) : rgb(164, 168, 174);
+            const unsigned alpha = ember || cyan ? 128u : 64u;
+            const int at = y * view.width + x;
+            color[at] = blend(color[at], tint, alpha);
+            if (enhanced && (ember || cyan) && x + 1 < view.width) {
+                color[at + 1] = blend(color[at + 1], tint, alpha / 2);
+            }
+        }
+    }
+
     void smoothDiagonals() {
         const auto start = timestamp();
         const int width = view.width;
@@ -1094,7 +1254,9 @@ struct Renderer::Impl {
         const auto start = timestamp();
         stats = {};
         color = target;
-        constexpr Camera overview{{-13.8f, 6.6f, -13.8f}, 0.60f, 0.32f, 59 * pi / 180};
+        constexpr Camera shipBox{{-13.8f, 6.6f, -13.8f}, 0.60f, 0.32f, 59 * pi / 180};
+        constexpr Camera briarHouse{{13.3f, 8.3f, -24.4f}, -.46f, .13f, 72 * pi / 180};
+        const auto& overview = assets.arena == Arena::BriarHouse ? briarHouse : shipBox;
         const bool title = state.match == Match::Start;
         const auto& camera = title ? overview : state.camera;
         view = makeView(camera, width, height, 0.10f);
@@ -1103,15 +1265,56 @@ struct Renderer::Impl {
         std::fill_n(depth.data(), width * height, 0);
         sky(camera);
         drawWorld(state);
+        float rivalHeightScale = 1.f;
+#ifdef FOD_LOCAL_DUEL
+        rivalHeightScale = state.rivalHeightScale;
+#endif
+        const bool missionActive = state.mission && state.mission->active;
         if (!title) {
-            drawActor(state.rival, state, false, state.alternateRival);
-            if (state.freeForAll) drawActor(state.secondRival, state, false, true);
+            if (missionActive) {
+                for (const auto& ma : state.mission->actors) drawMissionActor(ma, state);
+            } else {
+                drawActor(state.rival, state, false, state.alternateRival, rivalHeightScale);
+                if (state.freeForAll) drawActor(state.secondRival, state, false, true);
+            }
         }
-        if (state.dead) drawActor(state.player, state, true);
+        if (state.dead) {
+#ifdef FOD_LOCAL_DUEL
+            if (state.localDuel) drawActor(state.player, state, false, !state.alternateRival);
+            else
+#endif
+                drawActor(state.player, state, true);
+        }
         meshLight = 255;
+        if (!title && missionActive) {
+            const float hover = float(std::sin(state.realTime * 0.45) * 0.55);
+            const Transform lift = orientation({0, hover, 0}, 0, 0, 0);
+            for (const auto& craft : assets.alienFleet) {
+                if (craft.triangles.empty()) continue;
+                if (!craft.chunks.empty()) {
+                    Bounds b = craft.chunks.front().bounds;
+                    b.min.y += hover;
+                    b.max.y += hover;
+                    if (!view.sees(b)) continue;
+                }
+                submit(craft, state, lift, MeshSpace::World);
+            }
+        }
         if (state.apacheActive) {
             submit(assets.apache, state,
                    orientation(state.apachePosition, state.apacheYaw, 0, 0), MeshSpace::World);
+        }
+        if (!title && missionActive && state.mission->evacVisible && !assets.transportHelo.triangles.empty()) {
+            // The evac bird, with its rotor spun about the mast on top of the airframe's attitude.
+            const auto body = orientation(state.mission->evacPos, state.mission->evacYaw, state.mission->evacPitch, 0);
+            submit(assets.transportHelo, state, body, MeshSpace::World);
+            const float spin = float(std::fmod(state.realTime * 23.0, 2 * pi));
+            const float c = std::cos(spin), s = std::sin(spin);
+            Transform rotor = body;
+            rotor.origin = body(transportRotorMount);
+            rotor.x = body.x * c - body.z * s;
+            rotor.z = body.x * s + body.z * c;
+            submit(assets.transportRotor, state, rotor, MeshSpace::World);
         }
         for (const auto& jet : state.jets) {
             if (jet.visible) submit(assets.jet, state, orientation(jet.position, jet.yaw, 0, 0), MeshSpace::World);
@@ -1119,21 +1322,46 @@ struct Renderer::Impl {
         draw(solid, true);
         if (enhanced) {
             const auto shadows = timestamp();
-            if (!title && state.rival.visible && !assets.rivalFrames.empty()) contactShadow(state.rival.position, 0.62f);
-            if (!title && state.freeForAll && state.secondRival.visible && !assets.rivalFrames.empty()) {
-                contactShadow(state.secondRival.position, 0.62f);
+            if (!title && missionActive) {
+                for (const auto& ma : state.mission->actors) {
+                    if (!ma.active || !ma.actor.visible) continue;
+                    const Vec3 ground{ma.actor.position.x, 0.f, ma.actor.position.z};
+                    contactShadow(ground, ma.role == MissionRole::AlienDrone ? 0.48f
+                                          : ma.role == MissionRole::AlienTrooper ? 0.78f : 0.62f);
+                }
+            } else {
+                if (!title && state.rival.visible && !assets.rivalFrames.empty()) contactShadow(state.rival.position, 0.62f);
+                if (!title && state.freeForAll && state.secondRival.visible && !assets.rivalFrames.empty()) {
+                    contactShadow(state.secondRival.position, 0.62f);
+                }
             }
             if (state.dead && state.player.visible && !assets.rivalFrames.empty()) contactShadow(state.player.position, 0.62f);
             recordRasterTime(shadows);
         }
         drawSkyCube();
         draw(translucent, false);
-        drawTracer({state.tracerStart, state.tracerEnd, state.tracer});
-        if (state.freeForAll) {
-            for (const auto& shot : state.rivalTracers) drawTracer(shot);
+        if (missionActive) {
+            for (const auto& shot : state.mission->tracers) {
+                if (shot.time > 0) drawTracer({shot.start, shot.end, shot.time}, shot.color);
+            }
+        } else {
+#ifdef FOD_LOCAL_DUEL
+            if (state.localDuel) drawTracer(state.rivalTracers[0]);
+            else
+#endif
+                drawTracer({state.tracerStart, state.tracerEnd, state.tracer});
+            if (state.freeForAll) {
+                for (const auto& shot : state.rivalTracers) drawTracer(shot);
+            }
         }
-        weather(state);
-        if (!title && !state.dead && state.device == Device::None && state.scope < 0.6f &&
+        if (assets.arena == Arena::ShipBox) weather(state);
+        else if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion) {
+            smoke(state);
+            invasionAtmosphere(state, title);
+        }
+        const bool introWeaponHidden = missionActive && state.lower >= 0.99f &&
+                                       (state.mission->phase == MissionPhase::Intro || state.mission->cinematic);
+        if (!title && !state.dead && !introWeaponHidden && state.device == Device::None && state.scope < 0.6f &&
             !assets.weapon[size_t(state.weapon)].triangles.empty()) {
             // The weapon is posed in view space, so bring the daylight into that space with it.
             sun = {dot(light.sun, view.right), dot(light.sun, view.up), dot(light.sun, view.forward)};
@@ -1154,7 +1382,8 @@ struct Renderer::Impl {
     }
 };
 
-Renderer::Renderer(const Assets& assets, RenderLook look) : impl_(std::make_unique<Impl>(assets, look)) {}
+Renderer::Renderer(const Assets& assets, RenderLook look, size_t maxPixels)
+    : impl_(std::make_unique<Impl>(assets, look, maxPixels)) {}
 Renderer::~Renderer() = default;
 void Renderer::render(const Snapshot& state, int width, int height, uint16_t* rgb565, bool measure) {
     impl_->render(state, width, height, rgb565, measure);

@@ -9,6 +9,7 @@
 namespace fod {
 
 struct Assets;
+struct MissionSnapshot;
 enum class Match : uint8_t { Start, Playing, Paused, Results };
 enum class Device : uint8_t { None, Laptop, Transmitter };
 enum class Weapon : uint8_t { Mp44, Sniper, Pistol };
@@ -94,6 +95,12 @@ struct Snapshot {
     KillNotice killNotice{};
     int secondRivalScore = 0;
     bool freeForAll = false, secondRadarContact = false;
+    std::shared_ptr<const MissionSnapshot> mission;
+
+#ifdef FOD_LOCAL_DUEL
+    float rivalHeightScale = 1.f;
+    bool localDuel = false;
+#endif
 
     int leadingRivalScore() const { return rivalScore > secondRivalScore ? rivalScore : secondRivalScore; }
 };
@@ -123,6 +130,9 @@ public:
     size_t eventCount() const;
     void start(uint32_t seed, int difficulty, bool alternateRival = false);
     void start(uint32_t seed, int difficulty, Opponent opponent);
+    void startMission(uint32_t seed, int difficulty, bool fromCheckpoint = false);
+    bool isMission() const;
+    bool canRetryCheckpoint() const;
     void pause();
     // Use the trigger state sampled when the platform accepts Resume.
     void resume(bool triggerHeld = true);
@@ -130,6 +140,14 @@ public:
     void setDifficulty(int difficulty);
     void setupFixture(const Fixture& fixture);
     void step(const Input& input, double realDelta = tickSeconds);
+#ifdef FOD_LOCAL_DUEL
+    void startLocalDuel(uint32_t seed);
+    void stepLocalDuel(std::array<Input, 2> inputs);
+    void resumeLocalDuel();
+    const Snapshot& localView(int slot) const;
+    // Use the player-side fields of each fixture after starting a local duel.
+    void setupLocalDuelFixture(const std::array<Fixture, 2>& fixtures);
+#endif
     // Fixtures can inject the browser's tagged gameplay draw stream. Return false to
     // fall back to the native PRNG. This stays out of live controller operation.
     using RandomHook = bool (*)(void*, uint32_t tick, const char* site, double& value);

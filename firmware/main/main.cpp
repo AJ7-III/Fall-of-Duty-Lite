@@ -13,6 +13,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -20,6 +21,7 @@
 #if !CONFIG_FOD_BOARD_DIAGNOSTIC
 #include "app.hpp"
 #include "assets.hpp"
+#include "host/briar_house.hpp"
 #include "render.hpp"
 #include "trace.hpp"
 #endif
@@ -194,10 +196,18 @@ struct StageSample {
 #endif
 };
 
+// Arena switches restart the board and build the requested arena before any task touches it.
+enum Launch : uint8_t { LaunchDefault = 0, LaunchCampaign = 1, LaunchBriarMatch = 2, LaunchShipMatch = 3 };
+
+const char* launchTitle(uint8_t launch) {
+    return launch == LaunchCampaign ? "MISSION 1: BRIAR HOUSE" : launch == LaunchBriarMatch ? "BRIAR HOUSE" : "SHIP BOX";
+}
+
 struct Live {
     explicit Live(const fod::Assets& assets, fod::App& app) : assets(assets), app(app) {}
     const fod::Assets& assets;
     fod::App& app;
+    std::atomic<uint8_t> loading{0}; // Set just before a restart; the render task shows the loading card
     Published latest{};
     portMUX_TYPE lock = portMUX_INITIALIZER_UNLOCKED;
     board::SlotSample* capture = nullptr;
@@ -240,6 +250,14 @@ void publish(Live& live, bool marker) {
     current.matchRevision = live.latest.matchRevision + (current.snapshot.match != live.latest.snapshot.match);
     live.latest = current;
     portEXIT_CRITICAL(&live.lock);
+}
+
+void showLoading(const char* title) {
+    auto frame = board::acquireFrame();
+    if (!frame) return;
+    static uint32_t sequence = 0x90000000U;
+    fod::drawLoading(title, frame.pixels, true);
+    if (board::present(frame, ++sequence) != ESP_OK) board::discard(frame);
 }
 
 void showRecovery(const char* message) {
@@ -371,6 +389,13 @@ void renderTask(void* context) {
     bool reportReady = live.benchmark && board::captureSlots(live.capture, benchmarkSamples);
     while (true) {
         if (!board::waitForSlot(100)) continue;
+        if (const auto launch = live.loading.load()) {
+            auto frame = board::acquireFrame();
+            if (!frame) continue;
+            fod::drawLoading(launchTitle(launch), frame.pixels, true);
+            if (board::present(frame, ++sequence) != ESP_OK) board::discard(frame);
+            continue;
+        }
         if (reportReady && board::capturedSlots() >= benchmarkSamples) {
             reportReady = false;
             ESP_LOGI(tag, "replay scene=%s compact=%d sim_overruns=%" PRIu32 " worst_sim_us=%" PRIu32
@@ -485,6 +510,27 @@ void runSimulation(Live& live, fod::ReplayTrace* replay) {
                 app.tick(input);
             }
             publish(live, input.down(fod::Fire));
+            if (!replay && app.settings().pendingLaunch != fod::LaunchAction::None) {
+                // The menu picked an arena that is not loaded: remember it and restart into it.
+                const auto action = app.settings().pendingLaunch;
+                app.settings().pendingLaunch = fod::LaunchAction::None;
+                uint8_t launch = LaunchDefault;
+                if (action == fod::LaunchAction::Campaign) launch = LaunchCampaign;
+                else if (action == fod::LaunchAction::BotMatch) {
+                    launch = app.settings().selectedArena == fod::Arena::BriarHouse ? LaunchBriarMatch : LaunchShipMatch;
+                }
+                if (launch != LaunchDefault) {
+                    reportError("Settings save", board::writeSettings(fromMenu(app.settings())));
+                    const auto err = board::requestLaunch(launch);
+                    if (err == ESP_OK) {
+                        ESP_LOGI(tag, "restarting into %s", launchTitle(launch));
+                        live.loading.store(launch);
+                        vTaskDelay(pdMS_TO_TICKS(150));
+                        esp_restart();
+                    }
+                    reportError("Launch request", err);
+                }
+            }
             now = board::timeUs();
             const auto tickUs = static_cast<uint32_t>(now - start);
             if (tickUs > live.simWorstUs.load()) live.simWorstUs.store(tickUs);
@@ -519,6 +565,23 @@ void gameplay() {
     fod::Assets assets;
     loadPack(assets);
     const char* name = CONFIG_FOD_REPLAY_SCENE;
+    const uint8_t launch = *name ? uint8_t(LaunchDefault) : board::takeLaunch();
+    if (launch == LaunchCampaign || launch == LaunchBriarMatch) {
+        showLoading(launchTitle(launch));
+        const auto begin = board::timeUs();
+        try {
+            fod::buildBriarHouse(assets, launch == LaunchCampaign ? fod::BriarHouseMode::Invasion
+                                                                  : fod::BriarHouseMode::Standard);
+        } catch (const std::bad_alloc&) {
+            // The request was already cleared, so a retry boots straight back into Ship Box.
+            showRecovery("ARENA MEMORY EXHAUSTED");
+            waitForRetry();
+            esp_restart();
+        }
+        ESP_LOGI(tag, "arena=%s build_us=%" PRId64 " resident_payload=%llu", launchTitle(launch), board::timeUs() - begin,
+                 static_cast<unsigned long long>(assets.residentBytes));
+        board::logMemory("arena-built");
+    }
     fod::App app(assets, *name ? 0u : esp_random());
     toMenu(board::readSettings(), app.settings());
     fod::ReplayTrace trace;
