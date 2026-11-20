@@ -39,6 +39,9 @@ if(BUILD_TESTING)
         target_compile_definitions(fod_duel_tests PRIVATE FOD_DUEL_DESKTOP_TEST=1)
         target_link_libraries(fod_duel_tests PRIVATE fod_core SDL2::SDL2)
         add_test(NAME local_duel_tests COMMAND fod_duel_tests "${FOD_TEST_PACK}")
+        add_test(NAME desktop_init_failure COMMAND "${CMAKE_COMMAND}" -E env "SDL_VIDEODRIVER=fod-invalid-driver"
+            "$<TARGET_FILE:fod_host>" --pack "${FOD_TEST_PACK}")
+        set_tests_properties(desktop_init_failure PROPERTIES WILL_FAIL TRUE TIMEOUT 10)
     endif()
     find_package(Python3 3.9 QUIET COMPONENTS Interpreter)
     if(Python3_Interpreter_FOUND)
@@ -47,5 +50,12 @@ if(BUILD_TESTING)
             --host "$<TARGET_FILE:fod_host>" --pack "${CMAKE_CURRENT_SOURCE_DIR}/assets/fall-of-duty.fodp"
             --reference "${CMAKE_CURRENT_SOURCE_DIR}/reference/fixtures"
             --out "${CMAKE_CURRENT_BINARY_DIR}/replay-parity" --skip-bench)
+        set(finished_replay_dir "${CMAKE_CURRENT_BINARY_DIR}/finished-replay-fixture")
+        file(GENERATE OUTPUT "${finished_replay_dir}/finished-array.fodtrace" CONTENT "FODTRACE 3\nS 52 5 array-finale\nW 2400\n")
+        add_test(NAME replay_after_match_end COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/run-evidence.py"
+            --host "$<TARGET_FILE:fod_host>" --pack "${CMAKE_CURRENT_SOURCE_DIR}/assets/fall-of-duty.fodp"
+            --reference "${finished_replay_dir}"
+            --out "${CMAKE_CURRENT_BINARY_DIR}/finished-replay-evidence" --skip-bench)
     endif()
 endif()

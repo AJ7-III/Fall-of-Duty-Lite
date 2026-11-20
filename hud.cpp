@@ -699,8 +699,8 @@ void drawTitleCard(const Painter& p, float t) {
         {"DAY ONE OF THE LANDINGS  /  DUSK", rgb(248, 126, 58), 1, 152, .2f},
         {"COLORADO FRONT RANGE  /  19:47", paper, 2, 170, .5f},
         {"DELTA SQUAD  -  OPERATION BRIAR", muted, 1, 206, 1.4f},
-        {"BREAK OUT OF BRIAR HOUSE. SWEEP THE TOWN FOR THE MARSH FAMILY.", paper, 1, 240, 2.f},
-        {"WARHORSE 2-1 WAS HIT ON APPROACH.", alert, 1, 262, 3.1f},
+        {"EXTRACT DR. NORA MARSH AND HER FAMILY FROM BRIAR HOUSE.", paper, 1, 240, 2.f},
+        {"WARHORSE 2-1 WAS HIT ON FINAL APPROACH.", alert, 1, 262, 3.1f},
     };
     p.rect(0, 15, 800, 450, ink); // Eyes fully shut behind the card
     p.rect(150, 140, 56, 2, rgb(248, 118, 52));

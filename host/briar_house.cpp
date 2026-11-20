@@ -623,13 +623,16 @@ private:
             const int row = y / 8, board = (x + row * 8) % 32;
             if (y % 8 == 0 || board == 0) return rgb(84, 60, 42);
             const int coarse = tileNoise(x, y, 64, 8);
-            const int fleck = (x + coarse * 2 + y * 9) % 19 < 3 ? -9 : 0;
-            const int light = int(grain(row, board / 16)) + coarse + fleck + (y % 8 == 1 ? 9 : 0);
-            return rgb(133 + light, 90 + light, 57 + light / 2);
+            const int fibers = (y + tileNoise(x, y, 64, 16) / 3) & 3;
+            const int fleck = (x + coarse * 2 + y * 9) % 19 < 3 ? -8 : 0;
+            const int light = int(grain(row, board / 16)) + coarse + fleck + (y % 8 == 1 ? 10 : -fibers * 2);
+            return rgb(134 + light, 91 + light, 58 + light * 2 / 3);
         });
         texture(Grass, 64, .33f, [](int x, int y) {
-            const int blades = int(grain(x, y)) / 2, earth = tileNoise(x, y, 64, 8);
-            return rgb(74 + earth, 78 + earth * 2 + blades, 43 + earth + blades / 2);
+            const int soil = tileNoise(x, y, 64, 16), leaves = tileNoise(x, y, 64, 4);
+            const int blades = (int(grain(x, y)) + int(grain(x / 2, y / 2))) / 3;
+            return rgb(58 + soil * 2 + leaves + blades, 71 + (15 - soil) + leaves * 2 + blades,
+                       37 + soil + leaves + blades / 2);
         });
         texture(Pavers, 64, .39f, [](int x, int y) {
             const int course = y / 8, stone = (x + course % 2 * 8) % 16;
@@ -659,17 +662,20 @@ private:
         });
         texture(Concrete, 64, .33f, [](int x, int y) {
             const int age = tileNoise(x, y, 64, 16), grainValue = int(grain(x, y));
-            const int aggregate = (grainValue == 15 ? 12 : grainValue < 2 ? -12 : 0) + age * 2;
-            return rgb(115 + aggregate, 113 + aggregate, 105 + aggregate);
+            const int aggregate = (grainValue > 13 ? 13 : grainValue < 2 ? -11 : 0) + age * 2;
+            const int damp = std::max(0, 8 - tileNoise(x, y, 64, 8));
+            return rgb(116 + aggregate - damp * 2, 114 + aggregate - damp, 111 + aggregate);
         });
         texture(Asphalt, 64, .48f, [](int x, int y) {
             const unsigned grainValue = grain(x, y);
-            const int aggregate = tileNoise(x, y, 64, 8) + (grainValue > 13 ? 19 : grainValue / 2);
-            return rgb(62 + aggregate, 66 + aggregate, 68 + aggregate);
+            const int aggregate = tileNoise(x, y, 64, 8) + (grainValue > 13 ? 20 : int(grainValue) / 2);
+            const int wet = std::max(0, 9 - tileNoise(x, y, 64, 16));
+            return rgb(64 + aggregate - wet * 2, 68 + aggregate - wet, 71 + aggregate + wet / 2);
         });
         texture(Meadow, 64, .15f, [](int x, int y) {
             const int clumps = tileNoise(x, y, 64, 8) * 2, grit = int(grain(x, y)) / 2;
-            return rgb(81 + clumps + grit, 91 + clumps + grit, 51 + clumps / 2 + grit);
+            const int straw = tileNoise(x, y, 64, 16);
+            return rgb(71 + clumps + grit + straw * 2, 88 + clumps + grit + straw, 49 + clumps / 2 + grit);
         });
         const auto granite = [](int x, int y) {
             const int fold = tileNoise(x, y, 64, 16) * 3;

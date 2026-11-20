@@ -59,13 +59,21 @@ struct Device {
     uint32_t requireRelease = 0;
 };
 
+void markDisconnected(Device& device) {
+    device.disconnect = true;
+    enqueue({.us = timeUs()});
+#if CONFIG_FOD_LATENCY_GPIO >= 0
+    gpio_set_level(static_cast<gpio_num_t>(CONFIG_FOD_LATENCY_GPIO), 0);
+    device.fireState = false;
+#endif
+}
+
 void onTransfer(usb_transfer_t* transfer) {
     auto& device = *static_cast<Device*>(transfer->context);
     device.inFlight = false;
     if (device.disconnect) return;
     if (transfer->status != USB_TRANSFER_STATUS_COMPLETED) {
-        device.disconnect = true;
-        enqueue({.us = timeUs()});
+        markDisconnected(device);
         return;
     }
     const uint8_t* data = transfer->data_buffer;
@@ -106,21 +114,14 @@ void onTransfer(usb_transfer_t* transfer) {
         }
     }
     device.inFlight = usb_host_transfer_submit(transfer) == ESP_OK;
-    if (!device.inFlight) {
-        device.disconnect = true;
-        enqueue({.us = timeUs()});
-    }
+    if (!device.inFlight) markDisconnected(device);
 }
 
 void onDeviceEvent(const usb_host_client_event_msg_t* msg, void* context) {
     auto& device = *static_cast<Device*>(context);
     if (msg->event == USB_HOST_CLIENT_EVENT_NEW_DEV) device.newAddress = msg->new_dev.address;
     if (msg->event == USB_HOST_CLIENT_EVENT_DEV_GONE && msg->dev_gone.dev_hdl == device.handle) {
-        device.disconnect = true;
-        enqueue({.us = timeUs()});
-#if CONFIG_FOD_LATENCY_GPIO >= 0
-        gpio_set_level(static_cast<gpio_num_t>(CONFIG_FOD_LATENCY_GPIO), 0);
-#endif
+        markDisconnected(device);
     }
 }
 

@@ -182,7 +182,9 @@ function meshBytes(mesh, writer, positionsOnly, q16, metrics) {
     }
     writeChunks(writer, chunks);
   }
-  return (vertices.length / 5) * 20 + (positionsOnly ? 0 : (triangles.length / 5) * 16 + chunks.length * 32);
+  const vertexCount = vertices.length / 5;
+  if (positionsOnly) return vertexCount * 12;
+  return vertexCount * 20 + (triangles.length / 5) * 16 + chunks.length * 32;
 }
 
 function createPack(assets, sourceRevision, encodings) {
@@ -265,7 +267,10 @@ function createPack(assets, sourceRevision, encodings) {
       writer.i16(triangles[i + 4]);
     }
     writeChunks(writer, chunks);
-    return (triangles.length / 5) * 44 + chunks.length * 32;
+    const triangleCount = triangles.length / 5;
+    const shotVertices = indexed ? vertexMap.size : triangleCount * 3;
+    const shotIndices = indexed ? triangleCount * 3 : 0;
+    return shotVertices * 12 + shotIndices * 4 + triangleCount * 8 + chunks.length * 32;
   });
   add(5, "movement obstacles", 0, (writer) => {
     writer.u32(assets.obstacles.length);

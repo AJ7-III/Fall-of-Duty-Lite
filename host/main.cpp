@@ -193,7 +193,7 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
                 trace->step(app);
             }
             if (journal) writeTraceTick(journal, app);
-            if (out.imageTick && int(app.state().tick) == out.imageTick) {
+            if (!imageCaptured && out.imageTick && int(app.state().tick) == out.imageTick) {
                 imageState = app.state();
                 imageCaptured = capture = true;
             }
@@ -222,7 +222,13 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
             }
         }
     }
-    if (journal && std::fclose(journal)) { std::perror(out.journal); return 1; }
+    if (journal) {
+        const bool writeFailed = std::ferror(journal) != 0;
+        if (std::fclose(journal) != 0 || writeFailed) {
+            std::fprintf(stderr, "%s: could not finish writing the replay journal\n", out.journal);
+            return 1;
+        }
+    }
     if (out.imageTick && !imageCaptured) {
         std::fputs("The replay did not reach the requested image tick.\n", stderr);
         return 2;
@@ -249,8 +255,8 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
 } // namespace
 
 #ifdef FOD_DESKTOP
-fod::LaunchAction runDesktop(const fod::Assets& assets, int width, fod::RenderLook look,
-                             std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry);
+std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int width, fod::RenderLook look,
+                                           std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry);
 int runLocalDuel(const fod::Assets& assets, fod::RenderLook look, int width, std::optional<float> stickSensitivity);
 #endif
 
@@ -291,7 +297,9 @@ int main(int argc, char** argv) {
     carry.selectedArena = out.arena;
     bool autoStart = false;
     for (;;) {
-        const auto action = runDesktop(assets, carry.desktopRenderWidth, out.look, out.stickSensitivity, autoStart, &carry);
+        const auto launch = runDesktop(assets, carry.desktopRenderWidth, out.look, out.stickSensitivity, autoStart, &carry);
+        if (!launch) return 1;
+        const auto action = *launch;
         if (action == fod::LaunchAction::None) return 0;
         const bool campaign = action == fod::LaunchAction::Campaign;
         const auto arena = campaign ? fod::Arena::BriarHouse : carry.selectedArena;

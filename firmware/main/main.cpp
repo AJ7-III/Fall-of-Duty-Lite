@@ -630,12 +630,14 @@ void gameplay() {
             showRecovery("JOURNAL WRITE FAILED");
             return;
         }
-        while (replay->step(app)) fod::writeTraceTick(journal, app);
-        auto result = std::fclose(journal);
-        ESP_LOGI(tag, "replay journal ticks=%u unused_draws=%u missing_draws=%" PRIu32 " close=%d",
+        while (!std::ferror(journal) && replay->step(app)) fod::writeTraceTick(journal, app);
+        const bool writeFailed = std::ferror(journal) != 0;
+        const int closeResult = std::fclose(journal);
+        const bool saved = !writeFailed && closeResult == 0;
+        ESP_LOGI(tag, "replay journal input_ticks=%u unused_draws=%u missing_draws=%" PRIu32 " write_ok=%d close=%d",
                  static_cast<unsigned>(replay->length()), static_cast<unsigned>(replay->unusedDraws()),
-                 replay->missingDraws(), result);
-        showRecovery(result == 0 ? "JOURNAL WRITTEN TO SD" : "JOURNAL WRITE FAILED");
+                 replay->missingDraws(), !writeFailed, closeResult);
+        showRecovery(saved ? "JOURNAL WRITTEN TO SD" : "JOURNAL WRITE FAILED");
         return;
 #endif
     }

@@ -854,6 +854,7 @@ private:
         world_.move(actor.position, velocity, float(dt), 1.85f, .4f);
         const Vec3 moved = actor.position - previous;
         actor.speed = intended > 0 ? planar(moved) / float(std::max(dt, 1e-6)) : 0;
+        actor.trackMotion(velocity, std::min(1.f, float(dt * 10)));
         if (intended > 0 && actor.speed < intended * .25f) {
             b.stuck += dt;
             if (b.stuck > .42) recover(t, d, now);

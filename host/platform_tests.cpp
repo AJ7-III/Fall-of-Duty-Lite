@@ -362,6 +362,10 @@ void checkFreeForAllTrace(const Assets& assets, const char* path) {
             sample.apacheActive = false;
             renderer.render(sample, width, height, hidden.data(), false);
             overlap = full != hidden;
+            sample = state;
+            sample.apachePitch = sample.apacheRoll = 0;
+            renderer.render(sample, width, height, hidden.data(), false);
+            overlap &= full != hidden;
             for (Actor Snapshot::*rival : {&Snapshot::rival, &Snapshot::secondRival}) {
                 sample = state;
                 (sample.*rival).visible = false;
@@ -370,7 +374,7 @@ void checkFreeForAllTrace(const Assets& assets, const char* path) {
             }
             if (overlap) break;
         }
-        check(overlap, "The stress trace should render both living rivals and the incoming Apache together.");
+        check(overlap, "The stress trace should render both living rivals and the banking Apache together.");
     }
 }
 
@@ -428,6 +432,61 @@ void checkResumeLatch(const Assets& assets) {
     buttons(Reload, Confirm);
     buttons(Reload, Fire);
     check(app.state().clip == 28, "A held reload button must allow a fresh trigger tap immediately after resume.");
+}
+
+void checkViewmodelMotion(const Assets& assets) {
+    Game game(assets);
+    game.start(7, defaultDifficulty);
+    Fixture fixture;
+    fixture.freezeRival = true;
+    game.setupFixture(fixture);
+    game.step(Input{0, 1, 0, 0, Sprint});
+    const float sprintLeadIn = game.state().sprintPose;
+    const float firstPhase = game.state().sprintPhase;
+    check(sprintLeadIn > 0 && sprintLeadIn < .3f, "The weapon should ease into the sprint pose.");
+    game.step(Input{0, 1, 0, 0, Sprint});
+    const float secondPhase = game.state().sprintPhase;
+    check(game.state().sprintPose > sprintLeadIn && firstPhase > 0 && secondPhase > firstPhase,
+          "Ground travel must advance both the sprint lead-in and the stride.");
+
+    game.step(Input{0, 1, 0, 0, Sprint, Jump});
+    check(!game.state().grounded && game.state().player.motion.y > 0.f,
+          "The viewmodel must follow upward travel when the player jumps.");
+    game.step(Input{0, 1, 0, 0, Sprint});
+    check(game.state().sprintPhase == secondPhase, "Sprinting in the air must hold the last ground stride.");
+    for (int i = 0; i < 100 && !game.state().grounded; ++i) game.step({});
+    const float impact = game.state().landing;
+    check(game.state().grounded && impact > .3f, "Landing must add a visible impact to the viewmodel pose.");
+    game.step({});
+    check(game.state().landing < impact, "The landing pose must recover on the following ticks.");
+    game.step(Input{0, 0, .12f, -.08f});
+    const float lag = game.state().weaponYawLag;
+    check(lag < 0 && game.state().weaponPitchLag > 0, "The weapon must lag behind a turn.");
+    game.step({});
+    check(game.state().weaponYawLag > lag && game.state().weaponYawLag < 0, "Turn lag must ease back to center.");
+
+    constexpr int width = 320, height = 180;
+    std::vector<uint16_t> left(width * height), right(left.size());
+    for (const auto look : {RenderLook::Classic, RenderLook::Enhanced}) {
+        Renderer renderer(assets, look);
+        for (const auto weapon : {Weapon::Mp44, Weapon::Sniper, Weapon::Pistol}) {
+            fixture.weapon = weapon;
+            game.setupFixture(fixture);
+            auto snap = game.state();
+            snap.sprint = snap.grounded = true;
+            snap.sprintPose = 1;
+            snap.sprintPhase = .125f;
+            renderer.render(snap, width, height, left.data(), false);
+            snap.sprintPhase = .625f;
+            renderer.render(snap, width, height, right.data(), false);
+            check(left != right, "Both halves of the sprint loop must produce different weapon poses at a fixed camera.");
+            snap.ads = 1;
+            renderer.render(snap, width, height, left.data(), false);
+            snap.sprintPhase = .125f;
+            renderer.render(snap, width, height, right.data(), false);
+            check(left == right, "Fully aligned sights must settle out the sprint cycle.");
+        }
+    }
 }
 
 void checkTranslucentPass() {
@@ -1048,7 +1107,7 @@ void playTimberlineThroughMenu(App& app, const game_detail::World& world, game_d
     }
     const auto& done = d.m();
     check(d.s().match == Match::Results && done.phase == MissionPhase::Victory && done.operation.calls == 4 &&
-              std::string_view(done.epilogue).find("NORA HAS HER NUMBERS") == 0,
+              std::string_view(done.epilogue).find("NORA HAS HER CALIBRATION") == 0,
           "Four answered calls must complete Timberline.");
     check(sawPainting && sawShipMove && sawUnaware && sawSecondDrone,
           "Holding Signal must mark open ground, move the saucer there, and land drops that have not seen the player.");
@@ -1113,7 +1172,7 @@ void playArrayThroughMenu(App& app, const game_detail::World& world, game_detail
     }
     const auto& done = d.m();
     check(d.s().match == Match::Results && done.phase == MissionPhase::Victory && !done.operation.clearingBurned &&
-              std::string_view(done.epilogue) == "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF CAME BACK FOR US.",
+              std::string_view(done.epilogue) == "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF BROUGHT US HOME.",
           "Steering the beam around the clearing to the saddle must complete The Array.");
     check(sawDishLink && sawFinalJammer && sawCommit && sawRecall && signalled,
           "The finale must link the dish, send a last jammer, set the fleet down, and end on the signal to Nora.");
@@ -1379,7 +1438,7 @@ void playBriarHouse(const Assets& assets, const game_detail::World& world, game_
     const auto& result = *mission.state().mission;
     check(result.civiliansBoarded == 2 && result.civiliansSaved == 3 && result.civiliansLost == 0 &&
               result.retries == (retries ? 4 : 0) &&
-              std::string_view(result.epilogue) == "BEN AND WALT FLEW OUT. NORA STAYED WITH HER DISH.",
+              std::string_view(result.epilogue) == "BEN AND WALT MADE IT OUT. NORA STAYED WITH HER DISH.",
           "Natural and skipped lifts must produce the same outcome: two aboard, Nora staying.");
     check(mission.state().mission->evacSeconds == 0.f, "Dustoff must wait for the evac countdown to finish.");
     check(mission.state().mission->aliensKilled - killsBeforeHold > 4,
@@ -1899,7 +1958,7 @@ void checkArrayRules(const Assets& assets, mission_detail::MissionHost& host, co
         closest = std::min(closest, planar(view->actors[1].actor.position - snap.player.position));
     }
     check(snap.match == Match::Results && view->phase == MissionPhase::Victory && closest < 2.8f && !view->nextMissionReady() &&
-              std::string_view(view->epilogue) == "THE FLEET SET DOWN BEYOND THE RIDGE. WE MET DUSTOFF ON THE ROAD.",
+              std::string_view(view->epilogue) == "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF PULLED US OFF THE ROAD.",
           "Nora must come when signalled, and a burned clearing must change how the campaign ends.");
 }
 
@@ -1960,10 +2019,10 @@ void checkArrayWithoutNora(const Assets& assets, mission_detail::MissionHost& ho
     for (int t = 0; t < 15 * 60 && snap.match == Match::Playing; ++t) {
         controller.step(snap, {}, tickSeconds, false, host);
         controller.publish(view);
-        line |= std::string_view(view->radioLine) == "THAT WAS HER IDEA.";
+        line |= std::string_view(view->radioLine) == "SHE PULLED IT OFF... EVEN AFTER WE LOST HER. LET'S GO HOME.";
     }
     check(snap.match == Match::Results && view->phase == MissionPhase::Victory && line &&
-              std::string_view(view->epilogue) == "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF CAME BACK FOR US.",
+              std::string_view(view->epilogue) == "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF BROUGHT US HOME.",
           "Without Nora, The Array must still end, on Delta-1's line about her.");
 }
 
@@ -2019,7 +2078,7 @@ void checkBenAndDish(const Assets& assets, mission_detail::MissionHost& host, co
         controller.publish(view);
         check(view->actors[1].civilian == CivilianOutcome::Evacuating && view->civiliansSaved == 1 &&
                   planar(view->actors[1].actor.position - snap.player.position) < gap - 3.f &&
-                  std::string_view(view->radioLine) == "MY MOM WENT UP NORTH AVENUE. IS SHE OKAY?",
+                  std::string_view(view->radioLine) == "THANK GOD - MY MOM RAN UP NORTH AVENUE TO HER DISH. IS SHE ALIVE?",
               "Ben must run toward the player who waved, asking after his mother.");
     }
     // On North Avenue, each pulse from Nora's dish breaks the drone's link to the Enforcer.
@@ -2165,7 +2224,7 @@ void checkMissionRules(const Assets& assets) {
         bool waited = false;
         for (int t = 0; t < 1200; ++t) {
             controller.publish(view);
-            waited |= std::string_view(view->radioLine) == "WAIT.";
+            waited |= std::string_view(view->radioLine) == "HOLD UP - SCANNER.";
             if (civilianRescued(view->actors[3].civilian)) break;
             movePlayer(view->actors[3].actor.position + Vec3{2.6f, 0, .7f});
             controller.step(snap, {}, tickSeconds, false, host);
@@ -2216,7 +2275,7 @@ void checkMissionRules(const Assets& assets) {
         controller.step(snap, Input{0, 0, 0, 0, Signal, Signal}, tickSeconds, false, host);
         controller.publish(view);
         check(view->actors[nora + 1].civilian == CivilianOutcome::Stayed &&
-                  std::string_view(view->radioLine) == "TAKE MY FATHER AND MY SON. I'M STAYING WITH THE DISH.",
+                  std::string_view(view->radioLine) == "GET MY DAD AND BEN OUT OF HERE. MY DISH BROUGHT THEM - I'M STAYING.",
               "With the clearing quiet, Nora must refuse the bird and send her father and son.");
         for (int t = 0; t < 60 * 20 && snap.match == Match::Playing; ++t) controller.step(snap, {}, tickSeconds, false, host);
         controller.publish(view);
@@ -2273,7 +2332,7 @@ void checkMissionRules(const Assets& assets) {
         for (int t = 0; t < 14 * 60 && snap.match == Match::Playing; ++t) controller.step(snap, {}, tickSeconds, false, host);
         controller.publish(view);
         check(snap.match == Match::Results && view->civiliansBoarded == 2 && view->civiliansLost == 1 &&
-                  std::string_view(view->epilogue) == "BEN AND WALT FLEW OUT. WE LOST NORA.",
+                  std::string_view(view->epilogue) == "BEN AND WALT MADE IT OUT. WE LOST DR. MARSH.",
               "A blocked boarding path must still resolve, and the epilogue must say who went and who was lost.");
         auto next = controller;
         controller.start(45, 3, MissionStart::Retry, snap, start, yaw, host);
@@ -2615,6 +2674,7 @@ int main(int argc, char** argv) {
     checkFreeForAllKillNotice(assets);
     checkFreeForAllTrace(assets, argv[2]);
     checkResumeLatch(assets);
+    checkViewmodelMotion(assets);
     checkTranslucentPass();
     checkDepthPrecision();
     checkBakedLight();

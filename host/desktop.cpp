@@ -102,8 +102,8 @@ struct Sdl {
 
 } // namespace
 
-fod::LaunchAction runDesktop(const fod::Assets& assets, int initialWidth, fod::RenderLook look,
-                             std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry) {
+std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int initialWidth, fod::RenderLook look,
+                                           std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry) {
     using namespace fod;
     App app(assets, std::random_device{}());
     if (carry) {
@@ -139,7 +139,7 @@ fod::LaunchAction runDesktop(const fod::Assets& assets, int initialWidth, fod::R
         !sdl.surface(app.settings().width(), assets.arena, assets.briarHouseMode) ||
         !sdl.presentation(std::max(800, app.settings().width()), look)) {
         std::fprintf(stderr, "SDL display: %s\n", SDL_GetError());
-        return LaunchAction::None;
+        return std::nullopt;
     }
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0) {
         SDL_AudioSpec spec{};
@@ -254,7 +254,7 @@ fod::LaunchAction runDesktop(const fod::Assets& assets, int initialWidth, fod::R
             case SDL_RENDER_DEVICE_RESET:
                 if (!sdl.presentation(std::max(800, app.settings().width()), look, true)) {
                     std::fprintf(stderr, "SDL display reset: %s\n", SDL_GetError());
-                    return LaunchAction::None;
+                    return std::nullopt;
                 }
                 [[fallthrough]];
             case SDL_RENDER_TARGETS_RESET:
@@ -329,7 +329,7 @@ fod::LaunchAction runDesktop(const fod::Assets& assets, int initialWidth, fod::R
         const int width = menu.width(), height = menu.height(), canvas = std::max(800, width);
         if (!sdl.presentation(canvas, look)) {
             std::fprintf(stderr, "SDL presentation: %s\n", SDL_GetError());
-            return LaunchAction::None;
+            return std::nullopt;
         }
         worldFrame.render(app.state(), matchRevision, width, height);
         if (width == canvas) {

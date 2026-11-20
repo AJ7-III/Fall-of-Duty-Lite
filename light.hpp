@@ -19,6 +19,13 @@ struct GroundPatch {
     float xu, xv, x0, zu, zv, z0;
 };
 
+struct SurfaceLight {
+    Vec3 lift, beam;
+    float fill;
+
+    uint8_t level(Vec3 normal, unsigned scale) const;
+};
+
 // Overcast daylight for Ship Box, derived from the pack's geometry while it loads.
 // The front of a face is the side its winding turns away from.
 class SceneLight {
@@ -28,8 +35,10 @@ public:
 
     void bake(const Assets& assets);
 
-    // Light for a face that moves through the scene. The normal must face the viewer.
-    static uint8_t surface(Vec3 normal, Vec3 sun, Vec3 up, unsigned scale);
+    // Express the arena's lighting in the moving mesh's coordinate space.
+    SurfaceLight moving(Vec3 sunDir, Vec3 upDir) const {
+        return {upDir * movingCoefficients_.y, sunDir * movingCoefficients_.z, movingCoefficients_.x};
+    }
 
     // Ground light at a world position, for whatever stands there.
     unsigned at(float x, float z) const {
@@ -61,6 +70,7 @@ public:
 private:
     std::vector<uint8_t> map_;
     int offsets_[levels]{};
+    Vec3 movingCoefficients_{};
     float minX_ = 0, minZ_ = 0, cell_ = 1, inverseCell_ = 1;
 };
 

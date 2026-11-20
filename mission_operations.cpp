@@ -134,14 +134,14 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
     case OperationStage::Travel:
         setObjective(noraHere ? "TAKE NORA TO TIMBERLINE" : "GET TO TIMBERLINE", "WEST TIMBERLINE / WALT'S STONE WALL");
         if (noraHere) {
-            setRadio("NORA MARSH", "LOOK AT THE TRACE. EVERY SHIP CAME DOWN ON A TRANSMITTER.", 3.8f, host, false, RadioStory);
-            setRadio("NORA MARSH", "I BUILT A SMALL ONE FROM THE RELAY KIT. LET'S SEE IF IT CAN PICK THE SPOT.", 4.0f, host,
+            setRadio("NORA MARSH", "LOOK AT THESE LOGS. EVERY DROP SHIP HOMED STRAIGHT ONTO A RADIO BEACON.", 4.0f, host, false, RadioStory);
+            setRadio("NORA MARSH", "I RIGGED A PORTABLE EMITTER FROM SPARE RELAYS. IF IT WORKS, WE PICK WHERE THEY LAND.", 4.2f, host,
                      false, RadioStory);
-            setRadio("DELTA-1", "WHERE?", 1.4f, host, true, RadioStory);
-            setRadio("NORA MARSH", "MY FATHER'S PLACE. THERE'S NOBODY LEFT UP THERE TO HURT.", 3.6f, host, false, RadioStory);
+            setRadio("DELTA-1", "WHERE DO WE TEST IT?", 1.8f, host, true, RadioStory);
+            setRadio("NORA MARSH", "MY DAD'S PLACE IN TIMBERLINE. OPEN GROUND, AND NOBODY LEFT TO GET CAUGHT IN IT.", 4.0f, host, false, RadioStory);
         } else {
-            setRadio("DELTA-1", "HER NOTES SAY EVERY SHIP CAME DOWN ON A TRANSMITTER.", 3.4f, host, true, RadioStory);
-            setRadio("DELTA-1", "SHE WAS BUILDING A SMALL ONE FROM THE RELAY KIT. WE FINISH IT AT TIMBERLINE.", 4.0f, host,
+            setRadio("DELTA-1", "HER LOGS SHOW EVERY DROP SHIP HOMED ON A RADIO BEACON.", 3.6f, host, true, RadioStory);
+            setRadio("DELTA-1", "SHE LEFT A RIGGED EMITTER ON THE BENCH. WE TEST IT UP AT HER DAD'S PLACE IN TIMBERLINE.", 4.2f, host,
                      true, RadioStory);
         }
         break;
@@ -157,19 +157,24 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         setObjective(title, op.calls == 3 ? "KEEP HOLDING SIGNAL UNTIL IT LANDS" : "HOLD SIGNAL ON OPEN GROUND YOU CAN SEE");
         if (op.calls == 0) {
             setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
-                     noraHere ? "IT'S ON. HOLD THE POINTER ON OPEN GROUND. THE SMALL SHIP SHOULD FOLLOW."
-                              : "KIT'S UP. POINT IT AT OPEN GROUND AND SEE WHAT COMES.",
-                     3.8f, host, !noraHere, RadioStory);
+                     noraHere ? "EMITTER'S HOT. HOLD SIGNAL ON OPEN GROUND - LET'S SEE IF THAT SCOUT BITES."
+                              : "EMITTER'S LIVE. HOLD SIGNAL ON CLEAR GROUND AND SEE IF THAT SCOUT TAKES THE BAIT.",
+                     4.0f, host, !noraHere, RadioStory);
         } else if (op.calls == 1) {
-            setRadio(noraHere ? "NORA MARSH" : "DELTA-1", "IT CAME DOWN WHERE YOU POINTED. AGAIN.", 2.8f, host, !noraHere,
-                     RadioStory);
+            setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
+                     noraHere ? "IT WORKED - DROPPED RIGHT ON YOUR MARK! GIVE ME ANOTHER PASS."
+                              : "DROPPED RIGHT ON YOUR MARK. HER MATH HOLDS UP - DO IT AGAIN.",
+                     3.4f, host, !noraHere, RadioStory);
         } else if (op.calls == 2) {
-            setRadio(noraHere ? "NORA MARSH" : "DELTA-1", "HALFWAY THERE. SAME AGAIN.", 2.4f, host, !noraHere, RadioStory);
+            setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
+                     noraHere ? "TWO DOWN, TWO TO GO. MARK ANOTHER SPOT SO I CAN LOCK THE DRIFT."
+                              : "HALFWAY THERE. MARK ANOTHER ONE SO WE CAN DIAL THIS IN.",
+                     3.2f, host, !noraHere, RadioStory);
         } else {
             setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
-                     noraHere ? "THIS ONE'S HEAVY. IT WON'T STAY ON THE POINTER UNLESS YOU HOLD IT."
-                              : "HEAVY ONE. HOLD THE POINTER ON IT OR IT COMES TO THE KIT.",
-                     3.8f, host, !noraHere, RadioStory);
+                     noraHere ? "LAST PASS - IT'S FIGHTING THE SIGNAL. KEEP IT HELD OR IT'LL DRIFT ONTO US."
+                              : "LAST PASS IS FIGHTING THE LOCK. KEEP SIGNAL HELD OR IT'LL PULL RIGHT TO US.",
+                     4.0f, host, !noraHere, RadioStory);
         }
         break;
     case OperationStage::Fight:
@@ -183,10 +188,10 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         commanderPost_ = timberDelta;
         setObjective("CALIBRATION COMPLETE", "THE MOTHERSHIP IS TURNING");
         setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
-                 noraHere ? "THAT'S ENOUGH. THE BIG DISH CAN DO THIS TO THE MOTHERSHIP."
-                          : "THAT'S HER NUMBERS CHECKED. THE BIG DISH CAN DO THE REST.",
-                 3.8f, host, !noraHere, RadioStory);
-        setRadio("DELTA-1", "THEY NOTICED.", 2.0f, host, true, RadioStory);
+                 noraHere ? "GOT IT - FULL CALIBRATION. NOW WE CAN FEED THIS SPOOF TO THE ROOF DISH."
+                          : "ALL FOUR PASSES LOGGED. WE'VE GOT ENOUGH TO RUN HER SPOOF ON THE MAIN DISH.",
+                 4.0f, host, !noraHere, RadioStory);
+        setRadio("DELTA-1", "LOOK UP - THE MOTHERSHIP JUST TURNED STRAIGHT FOR BRIAR HOUSE.", 3.4f, host, true, RadioStory);
         break;
     case OperationStage::Garden:
         for (const auto& p : gardenSquad) {
@@ -198,10 +203,10 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         if (noraHere) noraA.goal = roadNora;
         setObjective("RETAKE BRIAR HOUSE", "FRONT GARDEN / THEY HAVEN'T SEEN US");
         setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
-                 noraHere ? "THEY'VE TAKEN THE HOUSE. IF THE DISH IS STILL STANDING, I CAN USE IT."
-                          : "THEY'VE TAKEN THE HOUSE. HER DISH IS STILL STANDING.",
-                 3.8f, host, !noraHere, RadioStory);
-        setRadio("DELTA-1", "SAME WAY IN AS OUT. FRONT DOOR.", 2.6f, host, true, RadioStory);
+                 noraHere ? "THEY BEAT US BACK TO THE HOUSE. DISH IS STILL UP - GET ME TO THE CONSOLE."
+                          : "THEY BEAT US BACK TO BRIAR HOUSE. DISH IS STILL INTACT - WE HAVE ONE SHOT.",
+                 4.0f, host, !noraHere, RadioStory);
+        setRadio("DELTA-1", "THEY HAVEN'T MADE US YET. CLEAR THE GARDEN AND BREACH THE FRONT DOOR.", 3.4f, host, true, RadioStory);
         break;
     case OperationStage::Hall:
         operationGoal_ = frontDoor;
@@ -215,7 +220,7 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         operationGoal_ = rearDoor;
         operationHasGoal_ = true;
         setObjective("TAKE THE REAR DOOR", noraHere ? "NORA IS GOING FOR THE CONSOLE" : "THE DISH NEEDS YOUR POINTER");
-        if (noraHere) setRadio("NORA MARSH", "I'M GOING FOR THE CONSOLE. GET TO THE BACK DOOR.", 3.0f, host, false, RadioStory);
+        if (noraHere) setRadio("NORA MARSH", "I'M HEADING TO THE CONSOLE. TAKE THE REAR DOOR SO YOU CAN SEE THE VALLEY.", 3.6f, host, false, RadioStory);
         break;
     case OperationStage::Steer:
         commanderHolds_ = true;
@@ -230,14 +235,14 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         operation_.nextJammerAt = elapsed_ + 11.0;
         setObjective("MOVE THE BEAM TO THE WEST SADDLE", "HOLD SIGNAL / KEEP IT OFF THE CLEARING");
         if (noraHere) {
-            setRadio("NORA MARSH", "THE DISH FOLLOWS YOUR POINTER. HOLD IT WHERE YOU WANT THE BEAM.", 3.8f, host, false,
+            setRadio("NORA MARSH", "DISH IS LINKED. HOLD SIGNAL TO WALK THAT BEAM OUT TO THE WEST SADDLE.", 4.0f, host, false,
                      RadioStory);
-            setRadio("NORA MARSH", "KEEP IT OFF THE CLEARING. THAT'S OUR WAY OUT.", 3.0f, host, false, RadioStory);
+            setRadio("NORA MARSH", "KEEP IT OFF THE CLEARING - DUSTOFF NEEDS THAT GROUND TO PULL US OUT.", 3.6f, host, false, RadioStory);
         } else {
-            setRadio("DELTA-1", "HER NOTES SAY THE DISH FOLLOWS YOUR POINTER.", 3.0f, host, true, RadioStory);
-            setRadio("DELTA-1", "KEEP IT OFF THE CLEARING. THAT'S OUR WAY OUT.", 3.0f, host, true, RadioStory);
+            setRadio("DELTA-1", "CONSOLE'S RUNNING OFF HER NOTES. HOLD SIGNAL TO WALK THE BEAM TO THE SADDLE.", 4.0f, host, true, RadioStory);
+            setRadio("DELTA-1", "KEEP IT OFF THE CLEARING - IT'S THE ONLY LZ DUSTOFF HAS LEFT.", 3.6f, host, true, RadioStory);
         }
-        setRadio("DELTA-1", "I HAVE THE DOOR.", 1.8f, host, true, RadioStory);
+        setRadio("DELTA-1", "YOU STEER THE SHIP. I'LL HOLD THE DOOR.", 2.4f, host, true, RadioStory);
         break;
     case OperationStage::Commit:
         commanderHolds_ = true;
@@ -247,8 +252,10 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         op.painting = false;
         setObjective("THE FLEET IS SETTING DOWN", "BEYOND THE RIDGE");
         clearRadioQueue();
-        setRadio(noraHere ? "NORA MARSH" : "DELTA-1", noraHere ? "LET GO. IT'S COMMITTED." : "IT'S GOING. LET IT GO.",
-                 2.6f, host, !noraHere, RadioUrgent);
+        setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
+                 noraHere ? "DROP SIGNAL - IT'S LOCKED IN! THE WHOLE FLEET'S COMING DOWN PAST THE RIDGE."
+                          : "DROP SIGNAL - IT'S COMMITTED! THE MOTHERSHIP'S GOING DOWN BEYOND THE RIDGE.",
+                 3.6f, host, !noraHere, RadioUrgent);
         break;
     case OperationStage::Reunite:
         commanderHolds_ = true;
@@ -427,11 +434,11 @@ int MissionController::updateJammers(Vec3 center, const Snapshot& snap, MissionH
         if (noraHere) {
             setTacticalCallout("SIGNAL JAMMED", jammerPink, 2.1f);
             if (state_.chapter == MissionChapter::Timberline && !operation_.hijacked) {
-                setRadio("NORA MARSH", "SOMETHING'S ON THE EMITTER. IT'S PULLING THEM TO ME.", 3.2f, host, false, RadioUrgent);
+                setRadio("NORA MARSH", "DRONE'S JAMMING THE EMITTER! SHOOT IT - IT'S PULLING THE DROP ONTO US!", 3.6f, host, false, RadioUrgent);
             } else if (state_.chapter == MissionChapter::Array) {
-                setRadio("NORA MARSH", agents_[size_t(holding)].farJammer ? "ONE MORE ON THE DISH. OUT PAST THE LAWN."
-                                                                           : "SOMETHING'S ON THE DISH.",
-                         2.6f, host, false, RadioUrgent);
+                setRadio("NORA MARSH", agents_[size_t(holding)].farJammer ? "ANOTHER JAMMER OUT PAST THE LAWN - SCOPE IT THROUGH THE DOOR!"
+                                                                           : "JAMMER ON THE EAST ROOF - IT'S KILLING MY LINK!",
+                         3.2f, host, false, RadioUrgent);
             }
         }
     } else if (last >= 0 && holding < 0) {
@@ -562,7 +569,7 @@ void MissionController::stepTimberline(Snapshot& snap, double dt, MissionHost& h
             if (operation_.hijacked) {
                 const int node = nav_.nearest(timberKit + normalized(player - timberKit) * 6.f);
                 where = nav_.valid(node) ? nav_.node(node).position : timberKit + Vec3{6.f, 0, 0};
-                setRadio("DELTA-1", "THEY'RE COMING DOWN ON THE KIT.", 2.4f, host, true, RadioUrgent);
+                setRadio("DELTA-1", "LOST THE LOCK - THEY'RE DROPPING RIGHT ON THE KIT!", 2.8f, host, true, RadioUrgent);
             }
             operation_.dropPoint = where;
             operation_.squadCall = op.calls;
@@ -574,7 +581,7 @@ void MissionController::stepTimberline(Snapshot& snap, double dt, MissionHost& h
             op.painting = false;
             enterStage(OperationStage::Fight, host);
             if (op.calls == 1 && !operation_.hijacked) {
-                setRadio("DELTA-1", "THEY DON'T KNOW WE'RE HERE.", 2.2f, host, true, RadioStory);
+                setRadio("DELTA-1", "THEY HAVE NO IDEA WE'RE HERE. HIT 'EM BEFORE THEY HUNT THE KIT.", 3.4f, host, true, RadioStory);
             }
         }
         break;
@@ -634,7 +641,7 @@ void MissionController::stepArray(Snapshot& snap, double dt, MissionHost& host) 
         // The hall squad comes in as the garden bodies clear, so all four always appear.
         const int squad = int(std::size(hallSquad));
         if (operation_.drops < squad && (operation_.drops > 0 || inside || planar(player - frontDoor) < 9.f)) {
-            if (operation_.drops == 0) setRadio("DELTA-1", "THIS IS WHERE I DRAGGED YOU IN.", 2.4f, host, true, RadioStory);
+            if (operation_.drops == 0) setRadio("DELTA-1", "SAME HALL I PULLED YOU INTO AN HOUR AGO. CLEAR IT OUT.", 3.0f, host, true, RadioStory);
             while (operation_.drops < squad) {
                 const auto& p = hallSquad[operation_.drops];
                 const int slot = spawnAlien(p.role, -1, p.position, p.yaw, p.tier, difficulty_);
@@ -686,14 +693,14 @@ void MissionController::stepArray(Snapshot& snap, double dt, MissionHost& host) 
         }
         if (op.dishDistance < 14.f && !operation_.warnedDish) {
             operation_.warnedDish = true;
-            setRadio("DELTA-1", "IT'S COMING TO THE HOUSE.", 2.2f, host, true, RadioUrgent);
+            setRadio("DELTA-1", "THE BEAM'S DRIFTING BACK ONTO THE HOUSE - PULL IT WEST!", 2.8f, host, true, RadioUrgent);
         } else if (op.dishDistance > 19.f) {
             operation_.warnedDish = false;
         }
         if (!op.clearingBurned && planar(op.ship - clearingCenter) < clearingRadius) {
             op.clearingBurned = true;
             setTacticalCallout("CLEARING LOST", alertRed, 2.4f);
-            setRadio("DUSTOFF", "THE CLEARING'S BURNING, DELTA. WE'LL FIND ANOTHER WAY IN.", 3.2f, host, true, RadioUrgent);
+            setRadio("DUSTOFF", "THE CLEARING JUST WENT UP IN FLAMES, DELTA! HOLD TIGHT - WE'LL FIND ANOTHER PAD.", 3.8f, host, true, RadioUrgent);
         }
         const bool inSaddle = planar(op.ship - saddleCenter) < saddleRadius;
         if (inSaddle && op.painting) op.lock = std::min(1.f, op.lock + float(dt / lockSeconds));
@@ -702,7 +709,10 @@ void MissionController::stepArray(Snapshot& snap, double dt, MissionHost& host) 
         if (!operation_.finalJammer) op.lock = std::min(op.lock, .78f);
         if (inSaddle && operation_.cue == 0) {
             operation_.cue = 1;
-            setRadio(noraHere ? "NORA MARSH" : "DELTA-1", "THAT'S IT. HOLD IT THERE.", 2.2f, host, !noraHere, RadioStory);
+            setRadio(noraHere ? "NORA MARSH" : "DELTA-1",
+                     noraHere ? "RIGHT IN THE SADDLE! HOLD IT THERE UNTIL IT LOCKS!"
+                              : "YOU'VE GOT IT IN THE SADDLE - KEEP IT PINNED!",
+                     2.8f, host, !noraHere, RadioStory);
         }
         // The last jammer holds the dish from across the lawn: one long shot through the doorway.
         if (op.lock >= .75f && !operation_.finalJammer) {
@@ -753,8 +763,10 @@ void MissionController::stepArray(Snapshot& snap, double dt, MissionHost& host) 
         state_.flagshipBeam = t < 3.2f;
         if (operation_.cue == 0 && t > 3.6f) {
             operation_.cue = 1;
-            setRadio("DUSTOFF", op.clearingBurned ? "ROAD'S CLEAR. WE'LL PUT DOWN ON THE ROAD." : "ROAD'S CLEAR. WE'RE COMING BACK FOR YOU.",
-                     3.4f, host, true, RadioStory);
+            setRadio("DUSTOFF",
+                     op.clearingBurned ? "SKIES ARE CLEAR, DELTA. CLEARING'S TORCHED, SO WE'RE SETTING DOWN ON SOUTH ROAD."
+                                       : "FLEET'S DOWN PAST THE RIDGE, DELTA. DUSTOFF-1 IS SWINGING BACK TO THE CLEARING.",
+                     3.6f, host, true, RadioStory);
         }
         if (t > 7.5f) enterStage(OperationStage::Reunite, host);
         break;
@@ -787,8 +799,14 @@ void MissionController::updateReunite(Snapshot& snap, double, MissionHost& host)
         operation_.cue = 1;
         operation_.lineAt = elapsed_;
         clearRadioQueue();
-        if (noraHere) setRadio("NORA MARSH", "DAD AND BEN ARE WAITING.", 2.6f, host, false, RadioStory);
-        else setRadio("DELTA-1", "THAT WAS HER IDEA.", 2.4f, host, true, RadioStory);
+        if (noraHere) {
+            const char* line = state_.civiliansBoarded >= 2 ? "IT WORKED. COME ON - DAD AND BEN ARE WAITING FOR US."
+                             : state_.civiliansBoarded == 1 ? "IT WORKED. LET'S GO - WE STILL HAVE FAMILY WAITING."
+                                                            : "IT WORKED. THEY'RE GONE... LET'S GET OUT OF HERE.";
+            setRadio("NORA MARSH", line, 3.2f, host, false, RadioStory);
+        } else {
+            setRadio("DELTA-1", "SHE PULLED IT OFF... EVEN AFTER WE LOST HER. LET'S GO HOME.", 3.2f, host, true, RadioStory);
+        }
     }
     if (operation_.cue == 1) {
         const float fade = float(std::clamp((elapsed_ - operation_.lineAt - 1.8) / 1.6, 0.0, 1.0));
@@ -803,12 +821,12 @@ void MissionController::updateReunite(Snapshot& snap, double, MissionHost& host)
 }
 
 void MissionController::writeOperationEpilogue() {
-    const char* line = state_.phase == MissionPhase::Failed ? "DELTA-1 CAN GET YOU BACK TO THE LAST CHECKPOINT."
+    const char* line = state_.phase == MissionPhase::Failed ? "DELTA-1 CAN PULL YOU BACK TO THE LAST CHECKPOINT."
         : state_.chapter == MissionChapter::Timberline
-            ? (noraAlive_ ? "NORA HAS HER NUMBERS. THE MOTHERSHIP IS TURNING TOWARD US."
-                          : "HER NUMBERS HELD. THE MOTHERSHIP IS TURNING TOWARD US.")
-        : state_.operation.clearingBurned ? "THE FLEET SET DOWN BEYOND THE RIDGE. WE MET DUSTOFF ON THE ROAD."
-                                          : "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF CAME BACK FOR US.";
+            ? (noraAlive_ ? "NORA HAS HER CALIBRATION. THE MOTHERSHIP IS TURNING ON BRIAR HOUSE."
+                          : "HER CALIBRATION HELD. THE MOTHERSHIP IS TURNING ON BRIAR HOUSE.")
+        : state_.operation.clearingBurned ? "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF PULLED US OFF THE ROAD."
+                                          : "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF BROUGHT US HOME.";
     std::snprintf(state_.epilogue, sizeof(state_.epilogue), "%s", line);
 }
 

@@ -16,4 +16,8 @@ The rival and the first-person weapon dim with the ground they stand on, and the
 
 The desktop scales the enhanced picture to 800×480 with bilinear filtering, which is how the handheld's PPA scales it. Captures written with `--image` use the same filter.
 
+Ship Box's steel, paving, grass, and gear use baked pigment and surface wear at their original texture sizes. Briar House's procedural materials add distinct dry and damp surfaces. Moving meshes take their fill and direct light from the arena's lighting profile, and the static bake varies the fill beneath shadows with the distance to the blocker.
+
+The weapon pumps through an eight-key sprint cycle driven by distance along the ground. It follows quick turns with a brief delay and dips on landing. The sights settle onto the existing aim track as the player raises them. Rivals, allies, civilians, and aliens lean into travel through their existing mesh transforms. Infantry walk and run poses ease out of planted steps and roll the toe forward as the foot swings. The Apache pitches into forward flight and banks as it turns, using the same attitude as its gun mount.
+
 The desktop `--look classic` option switches to the earlier rendering path, with flat lighting and nearest-neighbor scaling. For timings and deterministic playback, see [replay and performance evidence](EVIDENCE.md).

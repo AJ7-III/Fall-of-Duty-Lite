@@ -196,15 +196,20 @@ public:
     uint64_t bytes = sizeof(Assets);
     uint64_t extra = 0;
     uint64_t peak = 0;
+    bool exceeded = false;
 
     template<class T>
     bool resize(Reader& in, std::vector<T>& data, uint32_t count, uint32_t minimumStored, uint32_t ceiling) {
-        if (!in.okay() || count > ceiling || (minimumStored && count > in.remaining() / minimumStored)
-            || bytes + extra + uint64_t(count) * sizeof(T) > maxResidentBytes) return false;
+        if (!in.okay() || count > ceiling || (minimumStored && count > in.remaining() / minimumStored)) return false;
+        if (bytes + extra + uint64_t(count) * sizeof(T) > maxResidentBytes) {
+            exceeded = true;
+            return false;
+        }
         data.resize(count);
         bytes += uint64_t(data.capacity()) * sizeof(T);
         peak = std::max(peak, bytes + extra);
-        return bytes + extra <= maxResidentBytes;
+        exceeded = bytes + extra > maxResidentBytes;
+        return !exceeded;
     }
 };
 
@@ -577,14 +582,14 @@ bool Assets::load(const char* path, std::string& error) {
     in.reset(tableBytes);
     std::array<Section, sectionCount> sections{};
     uint64_t expectedOffset = headerBytes + tableBytes;
-    uint64_t unpackedBytes = expectedOffset, declaredBytes = 0;
+    uint64_t unpackedBytes = expectedOffset;
     bool compressed = false;
     for (uint32_t i = 0; i < sectionsInFile; ++i) {
         const auto id = in.u32();
         const auto encoding = in.u32();
         const auto offset = in.u32();
         const auto stored = in.u32();
-        const auto resident = in.u32();
+        in.u32(); // Resident estimate from the exporter. LoadBudget tracks the decoded allocations.
         const auto crc = in.u32();
         const auto unpacked = schema >= 7 ? in.u32() : stored;
         const bool encoded = id == 3 || id == 4 || id == 10 || id == 11 || (id == 14 && schema >= 6);
@@ -593,11 +598,10 @@ bool Assets::load(const char* path, std::string& error) {
         sections[i] = {encoding, stored, unpacked, crc};
         expectedOffset += stored;
         unpackedBytes += unpacked;
-        declaredBytes += resident;
         compressed |= stored != unpacked;
     }
-    if (!in.done() || expectedOffset != uint32_t(fileBytes) || unpackedBytes > maxPackBytes || declaredBytes > maxResidentBytes)
-        return failed("Game pack sections exceed the storage or memory limit.");
+    if (!in.done() || expectedOffset != uint32_t(fileBytes) || unpackedBytes > maxPackBytes)
+        return failed("Game pack sections exceed the storage limit.");
 
     using Parser = bool (*)(Reader&, LoadBudget&, Assets&);
     constexpr std::array<Parser, sectionCount> parsers = {
@@ -623,7 +627,9 @@ bool Assets::load(const char* path, std::string& error) {
         else if (i == 13 && schema >= 6) decoded = readActorVariants(in, budget, next, section.encoding);
         else decoded = parsers[i](in, budget, next);
         if (!decoded || !in.done() || in.crc() != section.crc) {
-            error = std::string("Invalid game pack section: ") + names[i];
+            if (budget.exceeded) return failed("Game pack exceeds the asset memory limit.");
+            const auto name = i == 13 && schema >= 6 ? "actor variants" : names[i];
+            error = std::string("Invalid game pack section: ") + name;
             return false;
         }
     }

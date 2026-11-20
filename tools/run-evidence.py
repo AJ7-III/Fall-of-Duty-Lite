@@ -9,6 +9,39 @@ import sys
 from pathlib import Path
 
 
+def check_campaign(scene, start, ticks):
+    mission = [sample["mission"] for sample in ticks]
+    phases = sorted({sample["phase"] for sample in mission})
+    initial_phase, stages = {
+        "breakout": (0, None),
+        "landing-zone": (6, None),
+        "timberline": (10, range(0, 4)),
+        "array": (10, range(4, 10)),
+        "array-finale": (10, range(7, 10)),
+    }[start]
+    valid = mission[0]["phase"] == initial_phase
+    if stages is not None:
+        valid = (valid and mission[0]["stage"] == stages.start and set(phases) <= {8, 9, 10}
+                 and all(sample["stage"] in stages for sample in mission))
+
+    # The checked-in benchmarks have required events. Other traces may record
+    # different inputs and can play beyond these scenes.
+    if scene == "briar-breakout":
+        valid = valid and start == "breakout" and phases == [0, 1, 2] and max(m["aliens"] for m in mission) == 4
+    elif scene == "briar-landing-zone":
+        valid = (valid and start == "landing-zone" and phases == [6, 7] and any(sample["apache"] for sample in ticks)
+                 and any(m["hold"] > 0 and m["perimeter"] == 15 for m in mission))
+    elif scene == "briar-finale":
+        valid = (valid and start == "array-finale" and phases == [10] and {m["stage"] for m in mission} == {7}
+                 and any(m["dish"] for m in mission) and max(m["aliens"] for m in mission) >= 2)
+    peak_plasma = max(sample["plasma"] for sample in mission)
+    if scene in {"briar-breakout", "briar-landing-zone", "briar-finale"}:
+        valid = valid and peak_plasma > 0 and any(sample["shock"] > 0 for sample in mission)
+    if not valid:
+        raise RuntimeError(f"Campaign replay missed its expected stages or events in {scene}")
+    return phases, peak_plasma
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True)
@@ -59,37 +92,15 @@ def main():
         if header in {"FODTRACE 2", "FODTRACE 3"}:
             ticks = [json.loads(line) for line in journal.read_text().splitlines()]
             key = "mission" if header == "FODTRACE 3" else "secondRival"
-            if ([sample["tick"] for sample in ticks] != list(range(1, result["inputTicks"] + 1))
+            final_tick, input_ticks = result["ticks"], result["inputTicks"]
+            # Recorded inputs can outlast the simulation. The results screen
+            # freezes its tick while the journal continues to record each input.
+            if (not 0 < final_tick <= input_ticks
+                    or [sample["tick"] for sample in ticks] != [min(i, final_tick) for i in range(1, input_ticks + 1)]
                     or any(key not in sample for sample in ticks)):
                 raise RuntimeError(f"Native journal is incomplete in {scene}")
             if key == "mission":
-                mission = [sample["mission"] for sample in ticks]
-                phases = sorted({sample["phase"] for sample in mission})
-                start = initial.split()[-1]
-                requires_combat = start in {"breakout", "landing-zone", "array-finale"}
-                if start == "breakout":
-                    valid = phases == [0, 1, 2] and max(sample["aliens"] for sample in mission) == 4
-                elif start == "array-finale":
-                    # The Array's rear door: the dish steers the mothership while the fleet pushes the house.
-                    valid = (phases == [10] and {sample["stage"] for sample in mission} == {7}
-                             and any(sample["dish"] for sample in mission)
-                             and max(sample["aliens"] for sample in mission) >= 2)
-                elif start == "landing-zone":
-                    valid = (phases == [6, 7] and any(sample["apache"] for sample in ticks)
-                             and any(sample["hold"] > 0 and sample["perimeter"] == 15 for sample in mission))
-                else:
-                    # These starts can be used for travel and scouting replays.
-                    stages = {"timberline": range(0, 4), "array": range(4, 10)}[start]
-                    valid = (mission[0]["phase"] == 10 and mission[0]["stage"] == stages.start
-                             and set(phases) <= {8, 9, 10}
-                             and all(sample["stage"] in stages for sample in mission))
-                if requires_combat:
-                    valid = (valid and any(sample["plasma"] > 0 for sample in mission)
-                             and any(sample["shock"] > 0 for sample in mission))
-                if not valid:
-                    raise RuntimeError(f"Campaign replay missed its expected stages or events in {scene}")
-                result["missionPhases"] = phases
-                result["peakPlasma"] = max(sample["plasma"] for sample in mission)
+                result["missionPhases"], result["peakPlasma"] = check_campaign(scene, initial.split()[-1], ticks)
         else:
             report = args.out / f"{scene}.comparison.json"
             subprocess.run([sys.executable, str(base / "compare-replay.py"), str(browser), str(journal),

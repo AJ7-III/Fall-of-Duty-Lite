@@ -43,11 +43,16 @@ struct Camera {
 
 struct Actor {
     Vec3 position{};
+    Vec3 motion{}; // Smoothed travel velocity for posing. Collision uses the actual velocity.
     float yaw = 0, pitch = 0, phase = 0, speed = 0, fall = 0, health = 100;
     float frameBlend = 0;
     uint16_t frame = 0, nextFrame = 0;
     uint8_t fallVariant = 0;
     bool visible = true;
+
+    void trackMotion(Vec3 velocity, float amount) {
+        motion += (velocity - motion) * amount;
+    }
 };
 
 struct Jet {
@@ -72,10 +77,15 @@ struct Snapshot {
     Actor player{}, rival{};
     Vec3 playerVelocity{}, apachePosition{};
     Vec3 weaponPosition{}, weaponRotation{}, tracerStart{}, tracerEnd{};
+    Vec3 viewmodelSway{};
     std::array<Jet, 3> jets{};
     float playerYaw = pi / 4, playerPitch = 0, eyeHeight = 1.7f;
-    float apacheYaw = 0, ads = 0, recoil = 0, reload = 0, bolt = 0, lower = 0;
+    float apacheYaw = 0, apachePitch = 0, apacheRoll = 0;
+    float ads = 0, recoil = 0, reload = 0, bolt = 0, lower = 0;
     float weaponAnimationTime = 0, reloadDuration = 0;
+    float landing = 0; // Viewmodel compression on contact with the ground.
+    float sprintPose = 0, sprintPhase = 0;
+    float weaponYawLag = 0, weaponPitchLag = 0;
     float cursorX = 0, cursorZ = 0, deviceAmount = 0, damage = 0;
     float hitMarker = 0, killConfirm = 0, muzzle = 0, scope = 0, tracer = 0, damageFromYaw = 0, uavSeconds = 0;
     double scaledTime = 0, realTime = 0, scaledDelta = 0, timeScale = 1;

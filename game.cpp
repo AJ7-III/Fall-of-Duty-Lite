@@ -256,6 +256,9 @@ struct Game::Impl {
         s.player.yaw = yaw;
         s.player.visible = false;
         s.playerVelocity = {};
+        s.viewmodelSway = {};
+        s.landing = s.sprintPose = s.sprintPhase = 0;
+        s.weaponYawLag = s.weaponPitchLag = 0;
         s.dead = s.sprint = s.crouch = s.prone = false;
         s.grounded = true;
         s.eyeHeight = standEye;
@@ -427,11 +430,15 @@ struct Game::Impl {
         auto& s = human.view;
         const auto& state = human.gun();
         const double progress = state.adsFrame / game_data::aimLast[human.weapon()];
+        const float previousYaw = s.playerYaw, previousPitch = s.playerPitch;
         if (!human.lookLocked) {
             const auto aim = interpolateAim(human.weapon(), state.adsFrame);
             s.playerYaw += float(input.lookX * aim.sensitivity);
             s.playerPitch = std::clamp(s.playerPitch + float(input.lookY * aim.sensitivity), float(-85 * deg), float(85 * deg));
         }
+        const float turnDecay = 1.f - std::min(1.f, float(dt * 13));
+        s.weaponYawLag = std::clamp(s.weaponYawLag * turnDecay + (previousYaw - s.playerYaw), -.14f, .14f);
+        s.weaponPitchLag = std::clamp(s.weaponPitchLag * turnDecay + (previousPitch - s.playerPitch), -.10f, .10f);
         const bool stanceDown = input.down(Stance);
         const bool stancePress = !human.stanceWasDown && (stanceDown || input.edge(Stance));
         const bool stanceReleased = !stanceDown && (human.stanceWasDown || stancePress);
@@ -476,10 +483,29 @@ struct Game::Impl {
         if (input.edge(Jump) && s.grounded && !s.crouch && !s.prone) {
             s.playerVelocity.y = 5 + gravity / (2 * 60);
         }
+        const bool wasGrounded = s.grounded;
+        const float descent = s.playerVelocity.y;
+        const Vec3 previousPosition = s.player.position;
         s.grounded = world.move(s.player.position, s.playerVelocity, float(dt), s.eyeHeight + .15f, .4f);
+        const float motionBlend = std::min(1.f, float(dt * 10));
+        s.player.trackMotion(s.playerVelocity, motionBlend);
+        s.landing *= 1.f - motionBlend;
+        if (!wasGrounded && s.grounded) s.landing = std::clamp(-descent * .15f, 0.f, 1.f);
         s.player.yaw = s.playerYaw;
         s.player.pitch = s.playerPitch;
         s.player.speed = planar(s.playerVelocity);
+        float running = 0;
+        if (s.sprint && s.grounded && wasGrounded) {
+            // A full stride spans two footfalls. Measure travel so walls and edges stop the cycle.
+            constexpr float strideLength = 2.f * 6.2f * .34f;
+            const float seconds = float(dt);
+            const float distance = std::min(planar(s.player.position - previousPosition), s.player.speed * seconds);
+            const float travelSpeed = distance / std::max(1e-6f, seconds);
+            running = std::clamp((travelSpeed - 2.f) / 3.8f, 0.f, 1.f);
+            const float phase = s.sprintPhase + distance * (1.f / strideLength);
+            s.sprintPhase = phase - std::floor(phase);
+        }
+        s.sprintPose += (running - s.sprintPose) * motionBlend;
         const bool moving = magnitude > .001f;
         if (moving && s.grounded && s.player.speed > .2f && !s.prone) {
             human.footstep -= dt;
@@ -518,6 +544,7 @@ struct Game::Impl {
             human.bobTime = 0;
             human.bob *= float(decay);
         }
+        s.viewmodelSway = human.bob + human.sway;
         s.camera.position = atHeight(s.player.position, s.eyeHeight) + human.bob + human.sway -
             forward(s.playerYaw, s.playerPitch) * float(human.recoilKick);
         s.camera.yaw = s.playerYaw + float(human.recoilYaw + scopedYaw);
@@ -1470,6 +1497,8 @@ struct Game::Impl {
         s.rival = bot.actor;
         s.apachePosition = apache.pos;
         s.apacheYaw = float(apache.yaw);
+        s.apachePitch = float(apache.pitch);
+        s.apacheRoll = float(apache.roll);
         s.apacheActive = apache.phase != Flight::Off;
         s.uavSeconds = float(std::max(0., uavUntil - s.scaledTime));
         s.radarContact = !bot.dead && (bot.radar > 0 || s.uavSeconds > 0);

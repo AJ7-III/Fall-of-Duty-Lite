@@ -44,10 +44,13 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
         else return badStart();
     } else {
         auto& f = next.fixture_;
-        if (std::sscanf(line, "S %u %d %u %f %f %f %f %f %f %f %f %f %u %d %d %d %d %u",
-                        &seed, &next.difficulty_, &flags, &f.player.x, &f.player.y, &f.player.z, &f.yaw,
-                        &f.pitch, &f.rival.x, &f.rival.y, &f.rival.z, &f.rivalYaw,
-                        &weapon, &f.clip, &f.playerScore, &f.rivalScore, &f.streak, &deathTick) < 17 ||
+        // Older traces end at the streak field. Check the end of either form.
+        int end = 0;
+        const int fields = std::sscanf(line, "S %u %d %u %f %f %f %f %f %f %f %f %f %u %d %d %d %d %n%u %n",
+                                       &seed, &next.difficulty_, &flags, &f.player.x, &f.player.y, &f.player.z, &f.yaw,
+                                       &f.pitch, &f.rival.x, &f.rival.y, &f.rival.z, &f.rivalYaw,
+                                       &weapon, &f.clip, &f.playerScore, &f.rivalScore, &f.streak, &end, &deathTick, &end);
+        if (fields < 17 || line[end] != '\0' ||
             weapon > 2 || flags > (freeForAll ? 7u : 15u) || !inYard(f.player) || !inYard(f.rival) ||
             !std::isfinite(f.yaw) || !std::isfinite(f.pitch) || !std::isfinite(f.rivalYaw) ||
             f.clip < -1 || f.clip > 30 || f.playerScore < 0 || f.playerScore > 9 ||
@@ -86,9 +89,10 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
         if (line[0] == 'T') {
             Input input;
             unsigned held, pressed;
+            char extra;
             if (next.inputs_.size() >= 12000 ||
-                std::sscanf(line, "T %f %f %f %f %u %u", &input.moveX, &input.moveY, &input.lookX, &input.lookY,
-                            &held, &pressed) != 6 ||
+                std::sscanf(line, "T %f %f %f %f %u %u %c", &input.moveX, &input.moveY, &input.lookX, &input.lookY,
+                            &held, &pressed, &extra) != 6 ||
                 !(std::abs(input.moveX) <= 1 && std::abs(input.moveY) <= 1 &&
                   std::abs(input.lookX) <= 2 * pi && std::abs(input.lookY) <= 2 * pi) ||
                 ((held | pressed) & ~((1u << 16) - 1))) return invalid();
@@ -105,8 +109,9 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
         } else if (!campaign && !freeForAll && line[0] == 'R') {
             Draw draw;
             unsigned tick = 0;
+            char extra;
             if (next.draws_.size() >= 30000 ||
-                std::sscanf(line, "R %u %39s %lf", &tick, draw.site.data(), &draw.value) != 3 ||
+                std::sscanf(line, "R %u %39s %lf %c", &tick, draw.site.data(), &draw.value, &extra) != 3 ||
                 tick > next.inputs_.size() || !(draw.value >= 0 && draw.value < 1) ||
                 (!next.draws_.empty() && tick < next.draws_.back().tick)) return invalid();
             draw.tick = tick;

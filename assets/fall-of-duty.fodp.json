@@ -1,6 +1,6 @@
 {
   "format": "FODPACK",
-  "sourceRevision": "44aa4a0efa5ae28338838ef14b34ef89df751cae",
+  "sourceRevision": "164fa7015d0a8f0b616c87df4b02bf6da4b940c7",
   "sourceDirty": true,
   "inputLockSha256": "a969c7dfff40685aafb100fb8aefbd9222359e5cd2f5104a82bc9f18e320b22c",
   "babylon": "9.36.0",
@@ -915,7 +915,7 @@
     true
   ],
   "uniqueShotVertices": 20293,
-  "storedBytes": 3959160,
+  "storedBytes": 4001984,
   "sections": [
     {
       "name": "materials",
@@ -926,23 +926,23 @@
     },
     {
       "name": "textures",
-      "storedBytes": 515111,
+      "storedBytes": 556849,
       "unpackedBytes": 2404624,
       "decodedPayloadBytes": 2404352,
-      "crc32": "398ae460"
+      "crc32": "4c6257ee"
     },
     {
       "name": "mesh geometry",
-      "storedBytes": 733234,
+      "storedBytes": 733775,
       "unpackedBytes": 1938720,
-      "decodedPayloadBytes": 2832440,
-      "crc32": "6c4e7d1e"
+      "decodedPayloadBytes": 2513432,
+      "crc32": "23ccae32"
     },
     {
       "name": "player shot surfaces",
       "storedBytes": 287762,
       "unpackedBytes": 703188,
-      "decodedPayloadBytes": 1670984,
+      "decodedPayloadBytes": 1006004,
       "crc32": "fc17dcf8"
     },
     {
@@ -1010,11 +1010,11 @@
     },
     {
       "name": "Hanz and player meshes",
-      "storedBytes": 225419,
+      "storedBytes": 225964,
       "unpackedBytes": 376376,
-      "decodedPayloadBytes": 803864,
-      "crc32": "82663211"
+      "decodedPayloadBytes": 575960,
+      "crc32": "016973ee"
     }
   ],
-  "sha256": "9249fe4599dd6eb74aa2cfed0bda5808c81ea18cdf0550977f7701e0c13cd63c"
+  "sha256": "b941226f3b5afa855463a5d901e080628611f7f05a6b10b154b28c7f146c6d03"
 }

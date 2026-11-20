@@ -55,7 +55,8 @@ export function registerInfantryMaterials(palette, to565, base64) {
         for (let x = 0; x < size; x++) {
           const twill = ((x + y) % 4 - 1.5) * 0.012;
           const warp = Math.cos((x * 3 + y) * tau / size) * Math.sin(y * tau / size) * 0.045;
-          const folds = 0.075 * Math.cos((x * 2 + 2 * Math.sin(y * tau / size)) * tau / size);
+          const folds = .088 * Math.cos((x * 2 + 4 * Math.sin(y * tau / size)) * tau / size)
+                      + .034 * Math.sin((x * .8 + y * 2) * tau / size);
           const ripstop = x % 8 === 0 ? 0.026 : y % 8 === 0 ? 0.015 : 0;
           const u = x * tau / size, v = y * tau / size;
           const flecks = Math.cos(2 * u + v) + Math.sin(3 * v - u) + .50 * Math.sin(4 * u + 3 * v);
@@ -656,7 +657,7 @@ export function buildFieldInfantry(gait, phase, mat, identity) {
   const stride = gait === "run" ? .29 : gait === "walk" ? .19 : 0;
   const cycle = phase * tau, pace = stride / .29;
   const sway = (stride ? Math.sin(cycle) : .2) * .037;
-  const bob = stride ? .027 * Math.cos(cycle * 2) : .003;
+  const bob = stride ? .027 * Math.cos(cycle * 2) + .009 * Math.sin(cycle * 2) : .003;
   const hips = v(.026 + sway * .3, .993 + bob, -.046);
   const neck = v(-.016 - sway * .4, 1.522 + bob, .051 + pace * .082);
   const axes = basis(neck.subtract(hips), forward);
@@ -696,19 +697,22 @@ export function buildFieldInfantry(gait, phase, mat, identity) {
   plate(.193, .058, -.019, .076, .142, .120, mat.webbing);
   head(mesh, neck, basis(v(sway * .2, 1, pace * .08), forward), mat, identity);
 
-  const feet = basis(up, forward);
   for (const sign of [-1, 1]) {
     const step = cycle + (sign === 1 ? Math.PI : 0);
     const hip = onBody(sign * .113, -.067, 0);
-    const lift = stride ? Math.max(0, Math.sin(step)) * (.074 + .036 * pace) : 0;
-    const ankle = v(.026 + sign * .129, .125 + lift, .022 - sign * .166 + Math.cos(step) * stride);
+    const swing = stride ? Math.max(0, Math.sin(step)) : 0;
+    const reach = Math.cos(step);
+    const lift = swing * swing * (.083 + .042 * pace);
+    const toe = swing * reach * (.18 + .07 * pace);
+    const ankle = v(.026 + sign * (.129 + .016 * swing), .125 + lift,
+      .022 - sign * .166 + reach * (1.13 - .13 * reach * reach) * stride);
     const knee = bendJoint(hip, ankle, v(ankle.x, .48, 1), .433, .438);
     mesh.loft(hip, knee, thigh, mat.pants);
     mesh.loft(knee, ankle, shin, mat.pants);
     const kneeAxes = basis(knee.subtract(ankle), forward);
     mesh.box(point(knee, kneeAxes, 0, -.036, .073), kneeAxes, .119, .119, .042, mat.helmet, .37);
     mesh.box(point(lerp(hip, knee, .48), axes, sign * .082, 0, -.010), axes, .043, .141, .117, mat.pocket);
-    boots(mesh, ankle, feet, mat);
+    boots(mesh, ankle, basis(v(0, 1, toe), forward), mat);
   }
 
   const carbine = basis(v(.054, -.223, 1), up);

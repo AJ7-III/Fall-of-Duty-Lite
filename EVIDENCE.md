@@ -38,7 +38,7 @@ The Release and sanitizer test suites pass. All eight replays rendered 200 frame
 
 The [checked-in browser traces](reference/fixtures) cover long-lane combat, glass breakage, movement, weapon cycles, the airstrike laptop, the Apache fly-in, death timing, and match point across 3,076 steps. The accompanying browser journals record gameplay random draws, positions, ammo, shots, and scores. Native replay journals match across both render sizes. The strict browser comparison allows only the recorded Apache height difference for the dead rival at ticks 564–570, bounded to 7 cm with horizontal position and the rest of the state still checked.
 
-The 360-tick `ffa-apache` native trace checks both live rivals and the incoming Apache in one rendered frame at each resolution. It uses a fixed seed and records both rival states and the attacker and rival slots of gameplay events. The current 3,917,641-byte pack adds one bidirectional route out of the isolated south-edge pocket. The host test drives a rival out of that pocket, and the two rivals share A* search buffers while retaining separate paths. [Current pack manifest](assets/fall-of-duty.fodp.json)
+The 360-tick `ffa-apache` native trace checks both live rivals and the incoming Apache in one rendered frame at each resolution. It uses a fixed seed and records both rival states and the attacker and rival slots of gameplay events. The pack includes a bidirectional route out of the isolated south-edge pocket. The host test drives a rival out of that pocket, and the two rivals share A* search buffers while retaining separate paths. [Pack manifest](assets/fall-of-duty.fodp.json)
 
 Journal-only playback skips renderer initialization and framebuffer allocation. Across five paired desktop runs of all 12 fixtures, median wall time for replay verification fell from 1.83 to 1.12 seconds. All 24 gameplay journals matched byte for byte.
 
@@ -67,3 +67,11 @@ The desktop platform test launches **Campaign** from the title screen and drives
 - **The Array.** Opens with the garden squad unaware and ends with the beam steered around the clearing, a last jammer, the fleet setting down, and the signal to Nora. [Platform test](host/platform_tests.cpp)
 
 On desktop, a batch of 76,670 nearest-node queries across the 3,335-node valley graph matched the original linear search exactly. The median of five runs averaged 0.40 µs per lookup with the column search and 1.62 µs with the full scan. The search uses the existing node order and allocates no additional heap storage. [Navigation code](game_bot.hpp)
+
+## Low-resolution art and motion
+
+Three paired desktop trials per scene and resolution covered Long Lane, Free-for-all with Apache, the Briar House breakout and landing zone, a complete scripted Timberline run, and The Array finale. At 320×180 and 400×225, the median whole-frame p95 changed by −0.022 to +0.058 ms, or −0.9% to +3.2%. These timings use the enhanced renderer and exclude handheld scanout.
+
+The revised SD pack occupies 4,001,984 bytes. Texture dimensions, mesh counts, and decoded section lengths matched the prior pack. Gameplay journals for all 12 checked-in traces and the scripted Timberline run matched byte for byte at both resolutions. [Pack manifest](assets/fall-of-duty.fodp.json)
+
+Three paired desktop runs of the distance-driven sprint cycle and Apache banking covered a scripted sprint with a turn and jump, plus the Free-for-all Apache replay. Across both scenes at 320×180 and 400×225, median whole-frame p95 changed by −0.073 to +0.048 ms. The updated code matched all 28 gameplay journals byte for byte, including the sprint and Timberline runs.

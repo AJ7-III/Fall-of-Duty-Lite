@@ -17,16 +17,15 @@ inline float fastInvSqrt(float x) {
 }
 
 // Sky light fills the yard and a pale sun adds direction. Open ground sums to one.
-constexpr float ambient = 0.74f, bounce = 0.78f, direct = 0.308f, exposure = 1.12f;
 constexpr Vec3 sunward{0.4225f, 0.8450f, -0.3286f};
 
 struct LightProfile {
     float ambient, bounce, direct, exposure;
     Vec3 sun;
 };
-constexpr LightProfile daylightProfile{ambient, bounce, direct, exposure, sunward};
+constexpr LightProfile daylightProfile{.69f, .69f, .38f, 1.12f, sunward};
 // Colorado dusk sunset: low west-northwest sun casting long alpenglow light against moody twilight shadows.
-constexpr LightProfile duskProfile{0.55f, 0.74f, 0.42f, 1.08f, {-0.8190f, 0.3396f, 0.4594f}};
+constexpr LightProfile duskProfile{.59f, .69f, .52f, 1.1f, {-0.8190f, 0.3396f, 0.4594f}};
 
 // Turf, kerbs and floor slabs stay below the clutter height and never shade the yard.
 // A column that starts below the grounded height stands on the yard.
@@ -131,9 +130,11 @@ struct Field {
         return ground < last ? ground : escaped;
     }
 
-    bool sunlit(Vec3 from, Vec3 sunDir) const {
-        if (!size || from.y > top + pad) return true;
-        return reach(from, sunDir, 0, (top + pad - from.y) / sunDir.y + cell) == escaped;
+    float sunExposure(Vec3 from, Vec3 sunDir) const {
+        if (!size || from.y > top + pad) return 1.f;
+        const float blocker = reach(from, sunDir, 0, (top + pad - from.y) / sunDir.y + cell);
+        // Distant blockers leave a little more light around a patch than nearby cover.
+        return blocker == escaped ? 1.f : std::min(.23f, blocker * .034f);
     }
 };
 
@@ -207,8 +208,8 @@ float faceLight(const Field& field, Vec3 point, Vec3 normal, bool thorough, cons
     const Vec3 lifted = point + normal * 0.3f;
     float sky = 1 - strength * occlusion(field, point, normal, thorough);
     if (field.size && field.covered(lifted)) sky *= enclosed;
-    const bool sun = dot(normal, p.sun) > 0 && field.sunlit(lifted, p.sun);
-    return shade(normal, sky, sun ? 1.0f : 0.0f, p);
+    const float sun = dot(normal, p.sun) > 0 ? field.sunExposure(lifted, p.sun) : 0.f;
+    return shade(normal, sky, sun, p);
 }
 
 float lampLight(const Field& field, const std::vector<BakedLight>& lamps, Vec3 point, Vec3 normal) {
@@ -229,13 +230,10 @@ float lampLight(const Field& field, const std::vector<BakedLight>& lamps, Vec3 p
 
 } // namespace
 
-uint8_t SceneLight::surface(Vec3 normal, Vec3 sun, Vec3 up, unsigned scale) {
-    // The same daylight as shade(), folded into one fast reciprocal square root for moving meshes.
-    constexpr float level = ambient * (bounce + (1 - bounce) * 0.5f) * exposure;
-    constexpr float lift = ambient * (1 - bounce) * 0.5f * exposure, beam = direct * exposure;
+uint8_t SurfaceLight::level(Vec3 normal, unsigned scale) const {
     const float lenSq = dot(normal, normal);
     const float inverse = lenSq > 1e-12f ? fastInvSqrt(lenSq) : 1e6f;
-    const float light = level + (lift * dot(normal, up) + beam * std::max(0.0f, dot(normal, sun))) * inverse;
+    const float light = fill + (dot(normal, lift) + std::max(0.f, dot(normal, beam))) * inverse;
     return uint8_t(std::clamp(light * float(scale) + 0.5f, 1.0f, 255.0f));
 }
 
@@ -247,6 +245,9 @@ void SceneLight::bake(const Assets& assets) {
     const bool dusk = assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion;
     const LightProfile& profile = dusk ? duskProfile : daylightProfile;
     sun = profile.sun;
+    movingCoefficients_ = {profile.ambient * (.5f + .5f * profile.bounce) * profile.exposure,
+                           profile.ambient * .5f * (1.f - profile.bounce) * profile.exposure,
+                           profile.direct * profile.exposure};
     const auto& world = assets.world;
     Field field;
 
@@ -325,7 +326,7 @@ void SceneLight::bake(const Assets& assets) {
                 float sky = openSky(field, x, z, skyRays[turn & 15]);
                 // A roof hides the zenith. Low cover hides more of the sky than a lamp arm.
                 if (field.high[i] > eye) sky *= std::clamp((field.low[i] - eye) / 8, 0.45f, 1.0f);
-                light[i] = shade({0, 1, 0}, sky, field.sunlit(point, profile.sun) ? 1.0f : 0.0f, profile);
+                light[i] = shade({0, 1, 0}, sky, field.sunExposure(point, profile.sun), profile);
                 if (hasLamps) light[i] += lampLight(field, assets.lamps, point, {0, 1, 0});
             }
         }

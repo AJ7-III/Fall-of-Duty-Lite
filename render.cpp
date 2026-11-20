@@ -331,6 +331,45 @@ Transform orientation(Vec3 origin, float yaw, float pitch, float roll) {
             up * std::cos(roll) - right * std::sin(roll), f};
 }
 
+struct Lean {
+    float pitch = 0, roll = 0;
+};
+
+Lean movementLean(const Actor& actor, float weight, bool airborne = false) {
+    if (actor.fall > 0 || actor.speed < .25f) return {};
+    const float sy = std::sin(actor.yaw), cy = std::cos(actor.yaw);
+    const float sideways = actor.motion.x * cy - actor.motion.z * sy;
+    const float ahead = actor.motion.x * sy + actor.motion.z * cy;
+    const float step = airborne ? 0.f : (1.f - 4.f * std::abs(actor.phase - .5f)) * .018f;
+    return {std::clamp(ahead * .021f, -.07f, .096f) * weight,
+            (step - std::clamp(sideways * .035f, -.13f, .13f)) * weight};
+}
+
+struct SprintKey {
+    Vec3 shift, angles; // Pitch, yaw and roll in radians.
+};
+
+SprintKey sampleSprint(float phase) {
+    // The hands compress on each plant, then pump up and forward as the foot pushes off.
+    static constexpr SprintKey stride[]{
+        {{-.056f, -.101f, -.006f}, {-.27f, .22f, .15f}},
+        {{-.075f, -.134f, -.038f}, {-.36f, .31f, .23f}},
+        {{-.059f, -.071f, -.020f}, {-.23f, .28f, .17f}},
+        {{-.022f, -.053f,  .015f}, {-.16f, .19f, .10f}},
+        {{ .009f, -.099f,  .007f}, {-.26f, .12f, .035f}},
+        {{ .024f, -.122f, -.030f}, {-.33f, .075f, .016f}},
+        {{ .001f, -.065f, -.016f}, {-.21f, .12f, .063f}},
+        {{-.033f, -.051f,  .020f}, {-.15f, .18f, .115f}},
+    };
+    constexpr auto count = std::size(stride);
+    const float frame = phase * count;
+    const auto index = size_t(frame);
+    const auto& a = stride[index];
+    const auto& b = stride[(index + 1) % count];
+    const float t = frame - float(index);
+    return {a.shift + (b.shift - a.shift) * t, a.angles + (b.angles - a.angles) * t};
+}
+
 uint8_t lightFor(Vec3 normal, bool metallic, Vec3 lightDir = {-0.28f, 0.86f, 0.43f}) {
     const float lenSq = dot(normal, normal);
     const float inv = lenSq > 1e-12f ? fastInvSqrt(lenSq) : 1e6f;
@@ -379,8 +418,11 @@ constexpr auto skyDither = skyNoise();
 
 constexpr auto skyPalette = [] {
     std::array<uint16_t, 256> colors{};
-    for (int value = 0; value < int(colors.size()); ++value)
-        colors[value] = rgb(std::max(0, value - 5), value, std::min(255, value + 15));
+    for (int value = 0; value < int(colors.size()); ++value) {
+        const int cloudBlue = (255 - value) / 12;
+        colors[value] = rgb(std::max(0, value - 7 - cloudBlue / 2), std::min(255, value + 3),
+                            std::min(255, value + 5 + cloudBlue));
+    }
     return colors;
 }();
 
@@ -403,8 +445,8 @@ constexpr SkyAxes skyAxes[]{
 Vec3 duskGradient(float elevation) {
     struct Stop { float elevation; Vec3 color; };
     constexpr Stop palette[]{
-        {-1.f, {74, 58, 65}}, {0.f, {185, 96, 76}}, {.15f, {150, 72, 76}},
-        {.39f, {86, 58, 85}}, {.68f, {39, 43, 72}}, {1.f, {24, 30, 56}},
+        {-1.f, {71, 60, 71}}, {0.f, {183, 107, 86}}, {.15f, {151, 81, 91}},
+        {.39f, {82, 67, 100}}, {.68f, {39, 49, 83}}, {1.f, {23, 35, 66}},
     };
     size_t next = 1;
     while (next + 1 < std::size(palette) && elevation > palette[next].elevation) ++next;
@@ -471,6 +513,7 @@ struct Renderer::Impl {
     std::array<uint32_t, 33> hazeBlend{};
     float hazeStart = 0;
     int duskMistBucket = -1;
+    uint16_t duskMistColor = 0;
     struct AirSprite {
         float x, y, width, height;
         uint16_t back, front, top, bottom;
@@ -685,8 +728,11 @@ struct Renderer::Impl {
         const float cold = std::clamp((density - .72f) * 3.f, 0.f, .8f);
         const auto shade = rgbClamped(127.f - 35.f * cold, 113.f + 3.f * cold, 133.f + 19.f * cold);
         const uint16_t tone = blend(shade, rgb(222, 139, 102), unsigned(warm * (248.f - cold * 96.f)));
-        for (uint32_t level = 0; level < hazeBlend.size(); ++level)
-            hazeBlend[level] = (((uint32_t(tone) << 16) | tone) & 0x07e0f81f) * level;
+        if (tone != duskMistColor) {
+            duskMistColor = tone;
+            const uint32_t channels = ((uint32_t(tone) << 16) | tone) & 0x07e0f81f;
+            for (uint32_t level = 0; level < hazeBlend.size(); ++level) hazeBlend[level] = channels * level;
+        }
         const int bucket = int(density * 40.f + 0.5f);
         if (bucket == duskMistBucket) return;
         duskMistBucket = bucket;
@@ -967,6 +1013,7 @@ struct Renderer::Impl {
             : Transform{view.transform(transform.origin), rotToView(transform.x), rotToView(transform.y), rotToView(transform.z)};
         const Vec3 camSun = space == MeshSpace::View ? sun : rotToView(sun);
         const Vec3 camUp = space == MeshSpace::View ? up : Vec3{view.right.y, view.up.y, view.forward.y};
+        const auto movingLight = light.moving(camSun, camUp);
         constexpr Vec3 worldClassicLight{-0.28f, 0.86f, 0.43f};
         const Vec3 classicDir = space == MeshSpace::View ? worldClassicLight : rotToView(worldClassicLight);
 
@@ -1049,7 +1096,7 @@ struct Renderer::Impl {
             const auto shadeFace = [&](bool front) -> Shade {
                 if (invasionDusk && mat.emissive) return Shade{{255, 255, 255}};
                 const Vec3 turned = doubleSided ? cross(b.camera - a.camera, c.camera - a.camera) : normal;
-                const uint8_t level = enhanced ? SceneLight::surface(front ? turned * -1 : turned, camSun, camUp, meshLight)
+                const uint8_t level = enhanced ? movingLight.level(front ? turned * -1 : turned, meshLight)
                                                : lightFor(turned, metallic, classicDir);
                 return Shade{{level, level, level}};
             };
@@ -1847,6 +1894,8 @@ struct Renderer::Impl {
 
     void drawActor(const Actor& actor, const Snapshot& state, bool player, bool alternate = false, float heightScale = 1.f) {
         if (!actor.visible || assets.rivalFrames.empty()) return;
+        const Bounds bounds{actor.position + Vec3{-2, -0.4f, -2}, actor.position + Vec3{2, 2.2f, 2}};
+        if (!view.sees(bounds) || occluded(bounds)) return;
         const auto& frames = alternate && !assets.hanzFrames.empty() ? assets.hanzFrames : assets.rivalFrames;
         const bool separatePlayer = player && !assets.playerBody.vertices.empty();
         const auto& mesh = separatePlayer ? assets.playerBody : frames[std::min<size_t>(actor.frame, frames.size() - 1)];
@@ -1854,10 +1903,10 @@ struct Renderer::Impl {
         const float fall = std::clamp(actor.fall, 0.0f, 1.0f);
         const float fallYaw = actor.fallVariant == 2 ? fall * 1.35f : 0;
         const float fallPitch = actor.fallVariant == 1 ? fall * 1.46f : -fall * 1.46f;
-        auto transform = orientation(actor.position + Vec3{0, fall * 0.24f, 0}, actor.yaw + fallYaw, fallPitch, fall * 0.12f);
+        const Lean lean = enhanced ? movementLean(actor, alternate ? .65f : .8f) : Lean{};
+        auto transform = orientation(actor.position + Vec3{0, fall * 0.24f, 0}, actor.yaw + fallYaw,
+                                     fallPitch + lean.pitch, fall * 0.12f + lean.roll);
         if (heightScale != 1.f) transform.y *= heightScale;
-        const Bounds bounds{actor.position + Vec3{-2, -0.4f, -2}, actor.position + Vec3{2, 2.2f, 2}};
-        if (!view.sees(bounds) || occluded(bounds)) return;
         const Mesh* topology = mesh.triangles.empty() ? &frames.front() : &mesh;
         meshLight = standing(actor.position);
         const auto* uniform = player && !assets.playerUniform.empty() ? assets.playerUniform.data() : nullptr;
@@ -1874,10 +1923,14 @@ struct Renderer::Impl {
         const Bounds bounds{actor.position - Vec3{extent.x, .6f, extent.z}, actor.position + extent};
         if (!view.sees(bounds) || occluded(bounds)) return;
         const float fall = std::clamp(actor.fall, 0.f, 1.f);
+        const Lean lean = enhanced && !ma.dead
+            ? movementLean(actor, ma.role == MissionRole::AlienTrooper ? .52f : 1.f, ma.role == MissionRole::AlienDrone)
+            : Lean{};
         meshLight = standing(actor.position);
         if (ma.role == MissionRole::Civilian && !assets.civilianPoses.empty()) {
             const auto& poses = assets.civilianPoses;
-            const auto transform = orientation(actor.position + Vec3{0, fall * 0.2f, 0}, actor.yaw, -fall * 1.46f, fall * 0.12f);
+            const auto transform = orientation(actor.position + Vec3{0, fall * 0.2f, 0}, actor.yaw,
+                                               -fall * 1.46f + lean.pitch, fall * 0.12f + lean.roll);
             const auto& outfit = assets.civilianUniforms[ma.variant % 3];
             const auto& pose = poses[std::min<size_t>(actor.frame, poses.size() - 1)];
             const auto& next = poses[std::min<size_t>(actor.nextFrame, poses.size() - 1)];
@@ -1891,7 +1944,8 @@ struct Renderer::Impl {
             const auto& mesh = frames[std::min<size_t>(actor.frame, frames.size() - 1)];
             const auto& next = frames[std::min<size_t>(actor.nextFrame, frames.size() - 1)];
             const float fallPitch = -fall * 1.46f;
-            auto transform = orientation(actor.position + Vec3{0, fall * 0.24f, 0}, actor.yaw, fallPitch, fall * 0.12f);
+            auto transform = orientation(actor.position + Vec3{0, fall * 0.24f, 0}, actor.yaw,
+                                         fallPitch + lean.pitch, fall * 0.12f + lean.roll);
             if (ma.role == MissionRole::Civilian && ma.civilian == CivilianOutcome::Pinned) transform.y *= 0.78f;
             const Mesh* topology = mesh.triangles.empty() ? &frames.front() : &mesh;
             const uint16_t* uniform = nullptr;
@@ -1917,7 +1971,7 @@ struct Renderer::Impl {
             const float staggerRoll = !ma.dead ? std::sin(float(state.realTime) * 28.f) * 0.16f * ma.stagger : 0.f;
             const float staggerPitch = !ma.dead ? -0.18f * ma.stagger : 0.f;
             auto transform = orientation(actor.position + Vec3{0, fall * 0.22f + bob, 0}, actor.yaw,
-                                         -fall * 1.45f + staggerPitch, sway + staggerRoll);
+                                         -fall * 1.45f + staggerPitch + lean.pitch, sway + staggerRoll + lean.roll);
             const float s = alienScale(ma.variant);
             if (ma.variant > 0) {
                 transform.x *= s;
@@ -1978,7 +2032,7 @@ struct Renderer::Impl {
             if (assets.alienDrone.triangles.empty()) return;
             const float pitch = ma.dead ? .55f : ma.alerted ? ma.gunPitch : actor.speed > .5f ? .14f : 0.f;
             auto transform = orientation(actor.position, ma.alerted && !ma.dead ? ma.gunYaw : actor.yaw,
-                                         pitch, ma.dead ? .45f : 0.f);
+                                         pitch + lean.pitch, (ma.dead ? .45f : 0.f) + lean.roll);
             submit(assets.alienDrone, state, transform, MeshSpace::World);
             if (ma.alerted && !ma.dead && (ma.gunCharge > .04f || ma.gunRecoil > .08f) &&
                 rayGlowCount < rayGlows.size()) {
@@ -2027,7 +2081,8 @@ struct Renderer::Impl {
 
     // Darken the ground under a figure. The disc fades from a dark core to nothing at its rim.
     void contactShadow(Vec3 feet, float radius) {
-        if (!view.sees({feet - Vec3{radius, 0, radius}, feet + Vec3{radius, 0.1f, radius}})) return;
+        const Bounds bounds{feet - Vec3{radius, 0, radius}, feet + Vec3{radius, 0.1f, radius}};
+        if (!view.sees(bounds) || occluded(bounds)) return;
         constexpr int segments = 10;
         constexpr float core = 0.45f, dark = 150, clear = 255;
         const Vec3 center = feet + Vec3{0, 0.07f, 0};
@@ -2085,7 +2140,7 @@ struct Renderer::Impl {
         return {&a, &b, fraction};
     }
 
-    void drawWeapon(const Snapshot& state) {
+    void drawWeapon(const Snapshot& state, Vec3 viewVelocity) {
         const auto weapon = size_t(state.weapon);
         const auto& mesh = assets.weapon[weapon];
         using namespace game_data;
@@ -2123,14 +2178,36 @@ struct Renderer::Impl {
             yaw = rotation.y;
             roll = rotation.z;
         }
-        const float run = state.sprint ? 1.0f : 0.0f;
+        const float aimFreedom = 1.f - std::min(1.f, state.ads * 1.6f);
         const float drop = state.lower;
         const bool sniper = state.weapon == Weapon::Sniper;
         const float recoilPitch = sniper ? 0.4f : 0.12f;
-        shift += Vec3{-0.055f * run, -0.11f * run - 0.31f * drop, -state.recoil};
-        pitch -= 0.34f * run + 0.55f * drop + recoilPitch * state.recoil;
-        yaw += 0.21f * run;
-        roll += 0.14f * run;
+        shift += Vec3{0, -0.31f * drop, -state.recoil};
+        pitch -= 0.55f * drop + recoilPitch * state.recoil;
+        const bool working = state.weaponState == WeaponState::Reload || state.weaponState == WeaponState::Bolt;
+        const float ready = 1.f - std::min(1.f, state.muzzle + drop);
+        const float run = state.sprintPose * aimFreedom * ready * (working ? .12f : 1.f);
+        if (run > .001f) {
+            constexpr float pumpScale[]{1.f, .86f, .76f};
+            const auto key = sampleSprint(state.sprintPhase);
+            const float carry = run * pumpScale[weapon];
+            shift += key.shift * carry;
+            pitch += key.angles.x * carry;
+            yaw += key.angles.y * carry;
+            roll += key.angles.z * carry;
+        }
+        if (enhanced) {
+            // Carry the weight of a step into the hands. Fade the offsets as the sights align.
+            const float motionAmount = working ? aimFreedom * .55f : aimFreedom;
+            const float stepAmount = state.grounded ? 1.f - run * .65f : .15f;
+            const Vec3 sway = state.viewmodelSway * stepAmount;
+            shift += Vec3{.68f * sway.x - .0045f * viewVelocity.x,
+                          -.48f * sway.y + .003f * viewVelocity.y - .052f * state.landing,
+                          -.0035f * viewVelocity.z} * motionAmount;
+            pitch += (.075f * state.landing - .4f * sway.y + state.weaponPitchLag * .55f) * motionAmount;
+            yaw += (state.weaponYawLag * .65f - viewVelocity.x * .006f) * motionAmount;
+            roll += (1.1f * sway.x - viewVelocity.x * .014f + state.weaponYawLag * .26f) * motionAmount;
+        }
         const Vec3 pivot = state.weaponPosition;
         auto transform = orientation({}, yaw, pitch, roll);
         transform.origin = shift + pivot - transform(pivot);
@@ -3171,8 +3248,17 @@ struct Renderer::Impl {
             }
         }
         if (state.apacheActive) {
-            submit(assets.apache, state,
-                   orientation(state.apachePosition, state.apacheYaw, 0, 0), MeshSpace::World);
+            const auto pose = orientation(state.apachePosition, state.apacheYaw, state.apachePitch, state.apacheRoll);
+            bool visible = true;
+            if (assets.apache.chunks.size() == 1) {
+                const auto& local = assets.apache.chunks.front().bounds;
+                const Vec3 center = pose((local.min + local.max) * .5f);
+                const Vec3 half = (local.max - local.min) * .5f;
+                const auto absolute = [](Vec3 v) { return Vec3{std::abs(v.x), std::abs(v.y), std::abs(v.z)}; };
+                const Vec3 extent = absolute(pose.x) * half.x + absolute(pose.y) * half.y + absolute(pose.z) * half.z;
+                visible = view.sees(center, extent) && !occluded({center - extent, center + extent});
+            }
+            if (visible) submit(assets.apache, state, pose, MeshSpace::World);
         }
         if (!title && missionActive && state.mission->evacVisible && !assets.transportHelo.triangles.empty()) {
             // The evac bird, with its rotor spun about the mast on top of the airframe's attitude.
@@ -3253,9 +3339,11 @@ struct Renderer::Impl {
             sun = {dot(light.sun, view.right), dot(light.sun, view.up), dot(light.sun, view.forward)};
             up = {view.right.y, view.up.y, view.forward.y};
             meshLight = standing(camera.position);
+            const Vec3 travel{dot(state.player.motion, view.right), state.player.motion.y,
+                              state.player.motion.x * view.forward.x + state.player.motion.z * view.forward.z};
             Camera firstPerson{{}, 0, 0, state.camera.fov};
             view = makeView(firstPerson, width, height, 0.012f);
-            drawWeapon(state);
+            drawWeapon(state, travel);
             draw(solid, true);
             draw(translucent, false);
         }
