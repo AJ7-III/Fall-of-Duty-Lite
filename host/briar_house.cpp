@@ -41,8 +41,10 @@ enum Surface {
     Iron, Gravel, CabinSlate, RidgePine,
     AlienHull, AlienTrim, AlienGlow, AlienCore, Scorch,
     AlienSkin, AlienSinew, AlienTooth, AlienMaw, AlienTongue,
+    RayMetal, RayCoil, RayCore, RayOvercharge,
     CivSkin, CivHair, CivTop, CivPants, CivShoes,
-    HeloOlive, HeloDark, HeloMark, HeloCross, Ember, SurfaceCount
+    HeloOlive, HeloDark, HeloMark, HeloCross, Ember,
+    GrassBladeDark, GrassBladeMid, GrassBladeGold, RoadLine, SurfaceCount
 };
 
 constexpr std::array<uint16_t, SurfaceCount> colors{
@@ -59,9 +61,19 @@ constexpr std::array<uint16_t, SurfaceCount> colors{
     rgb(49, 56, 54), rgb(152, 143, 123), rgb(83, 100, 105), rgb(50, 72, 59),
     rgb(42, 49, 64), rgb(74, 86, 108), rgb(72, 245, 255), rgb(255, 88, 104), rgb(34, 32, 31),
     rgb(86, 50, 124), rgb(46, 28, 76), rgb(236, 230, 212), rgb(72, 14, 30), rgb(204, 88, 102),
+    rgb(56, 66, 88), rgb(132, 156, 182), rgb(166, 255, 255), rgb(255, 124, 78),
     rgb(214, 170, 136), rgb(70, 50, 38), rgb(52, 86, 138), rgb(70, 74, 82), rgb(44, 42, 42),
     rgb(78, 86, 64), rgb(38, 42, 38), rgb(228, 228, 220), rgb(182, 34, 40), rgb(255, 128, 44),
+    rgb(54, 82, 42), rgb(88, 110, 58), rgb(118, 128, 66), rgb(194, 162, 78),
 };
+
+// Warm Colorado dusk alpenglow tinting applied to exterior materials in Invasion mode.
+uint16_t duskTint(uint16_t c, int addR, int addG, int addB, int scalePct = 100) {
+    const int r = std::clamp((((c >> 11) * 255 / 31) * scalePct) / 100 + addR, 0, 255);
+    const int g = std::clamp(((((c >> 5) & 63) * 255 / 63) * scalePct) / 100 + addG, 0, 255);
+    const int b = std::clamp((((c & 31) * 255 / 31) * scalePct) / 100 + addB, 0, 255);
+    return rgb(unsigned(r), unsigned(g), unsigned(b));
+}
 
 unsigned grain(int x, int y) {
     uint32_t hash = uint32_t(x) * 0x8da6b343u + uint32_t(y) * 0xd8163841u + 0xa36b7a13u;
@@ -134,12 +146,34 @@ std::vector<uint32_t> weld(std::vector<V>& vertices, Key key) {
 
 class Builder {
 public:
-    explicit Builder(Assets& data) : assets(data), firstMaterial(uint16_t(data.materials.size())) {
+    explicit Builder(Assets& data, bool invasionDusk = false)
+        : assets(data), firstMaterial(uint16_t(data.materials.size())), dusk(invasionDusk) {
         repeats.fill(.5f);
         for (size_t i = 0; i < colors.size(); ++i) {
-            const bool twoSided = i == Glass || i == Ceiling || i == AlienTooth || i == AlienMaw;
-            const bool glow = i == Amber || i == AlienGlow || i == AlienCore || i == Ember;
-            assets.materials.push_back({colors[i], -1, uint8_t(i == Glass ? 82 : 255), twoSided, glow});
+            const bool twoSided = i == Glass || i == Ceiling || i == AlienTooth || i == AlienMaw ||
+                                  i == GrassBladeDark || i == GrassBladeMid || i == GrassBladeGold;
+            const bool glow = i == Amber || i == AlienGlow || i == AlienCore || i == Ember ||
+                              i == RayCore || i == RayOvercharge;
+            uint16_t baseColor = colors[i];
+            if (dusk) {
+                if (i == FarRidge) baseColor = rgb(138, 72, 74);           // Red-orange alpenglow far peaks
+                else if (i == MountainRock) baseColor = rgb(126, 86, 76);  // Sunset-lit granite faces
+                else if (i == ForestSlope) baseColor = rgb(62, 58, 52);    // Dusk twilight pines
+                else if (i == RidgePine) baseColor = rgb(48, 48, 46);
+                else if (i == Meadow) baseColor = rgb(104, 86, 58);        // Golden-ochre evening meadow
+                else if (i == CabinGlass) baseColor = rgb(214, 134, 78);   // Sunset-reflecting town windows
+                else if (i == Glass) baseColor = rgb(208, 136, 98);        // Warm amber-tinted estate glazing
+                else if (i == GrassBladeDark) baseColor = rgb(72, 82, 44);
+                else if (i == GrassBladeMid) baseColor = rgb(118, 108, 54);
+                else if (i == GrassBladeGold) baseColor = rgb(172, 132, 64);
+                else if (i == RoadLine) baseColor = rgb(188, 146, 68);
+                else if (i == Hedge || i == YoungLeaf) baseColor = duskTint(baseColor, 14, -8, -14, 88);
+                else if (i == Roof || i == GardenWall || i == Stucco || i == MonumentStone || i == Pavers ||
+                         i == Gravel || i == CabinCedar || i == CabinCream || i == CabinGreen || i == CabinSlate) {
+                    baseColor = duskTint(baseColor, 18, -4, -18, 92);
+                }
+            }
+            assets.materials.push_back({baseColor, -1, uint8_t(i == Glass ? 82 : 255), twoSided, glow});
         }
         texture(Tile, 32, .5f, [](int x, int y) {
             if (x % 8 == 0 || y % 8 == 0) return rgb(118, 120, 111);
@@ -152,15 +186,35 @@ public:
             const auto value = unsigned((y / 5 * 3 + x * 7 % 5) % 14);
             return rgb(142 + value, 102 + value, 69 + value / 2);
         });
-        texture(Grass, 32, .36f, [](int x, int y) {
-            const auto value = grain(x / 3, y / 3) + grain(x, y) / 2;
-            return rgb(79 + value, 99 + value, 52 + value / 2);
-        });
-        texture(Pavers, 32, .5f, [](int x, int y) {
-            if (y % 8 == 0 || (x + y / 8 * 8) % 16 == 0) return rgb(119, 115, 108);
-            const auto value = unsigned((x / 8 + y / 8 * 3) % 11);
-            return rgb(148 + value, 143 + value, 133 + value);
-        });
+        // In Invasion mode, upgrade flat 32x32 procedural lawn/paver/concrete surfaces using
+        // Ship Box's rich 128x128 textures (grassTex_12_12, stoneWalkTex, concreteTex) tinted for dusk.
+        const bool hasShipBoxTex = dusk && assets.textures.size() > 15 &&
+                                   assets.textures[0].width == 128 && assets.textures[9].width == 128 &&
+                                   assets.textures[11].width == 128;
+        const auto cloneShipBoxTex = [&](Surface material, int srcIdx, float repeat,
+                                         int addR, int addG, int addB, int scalePct) {
+            const Texture& src = assets.textures[size_t(srcIdx)];
+            Texture copy{src.width, src.height, {}};
+            copy.pixels.reserve(src.pixels.size());
+            for (const uint16_t px : src.pixels) copy.pixels.push_back(duskTint(px, addR, addG, addB, scalePct));
+            assets.materials[firstMaterial + material].texture = int16_t(assets.textures.size());
+            assets.textures.push_back(std::move(copy));
+            repeats[material] = repeat;
+        };
+        if (hasShipBoxTex) {
+            cloneShipBoxTex(Grass, 0, .28f, 22, -6, -18, 92);
+            cloneShipBoxTex(Pavers, 9, .36f, 18, -4, -18, 94);
+        } else {
+            texture(Grass, 32, .36f, [](int x, int y) {
+                const auto value = grain(x / 3, y / 3) + grain(x, y) / 2;
+                return rgb(79 + value, 99 + value, 52 + value / 2);
+            });
+            texture(Pavers, 32, .5f, [](int x, int y) {
+                if (y % 8 == 0 || (x + y / 8 * 8) % 16 == 0) return rgb(119, 115, 108);
+                const auto value = unsigned((x / 8 + y / 8 * 3) % 11);
+                return rgb(148 + value, 143 + value, 133 + value);
+            });
+        }
         texture(Stucco, 64, .36f, [](int x, int y) { return masonry(x, y, 177, 162, 131); });
         texture(GardenWall, 64, .34f, [](int x, int y) { return masonry(x, y, 125, 124, 105); });
         texture(Brick, 64, .65f, [](int x, int y) { return masonry(x, y, 128, 86, 67); });
@@ -178,19 +232,27 @@ public:
             const auto value = grain(x + y / 8, 7) + grain(x, y / 3) / 4;
             return rgb(101 + value, 69 + value, 47 + value / 2);
         });
-        texture(Concrete, 32, .51f, [](int x, int y) {
-            const auto grit = grain(x, y) + grain(x / 5, y / 5) / 2;
-            if (x == 0 || y == 0) return rgb(108, 109, 104);
-            return rgb(133 + grit, 134 + grit, 125 + grit);
-        });
+        if (hasShipBoxTex) {
+            cloneShipBoxTex(Concrete, 11, .34f, 18, -4, -18, 92);
+        } else {
+            texture(Concrete, 32, .51f, [](int x, int y) {
+                const auto grit = grain(x, y) + grain(x / 5, y / 5) / 2;
+                if (x == 0 || y == 0) return rgb(108, 109, 104);
+                return rgb(133 + grit, 134 + grit, 125 + grit);
+            });
+        }
         texture(Asphalt, 32, .61f, [](int x, int y) {
             const auto grit = grain(x, y) + grain(x / 3, y / 3) / 3;
             return rgb(76 + grit, 79 + grit, 73 + grit);
         });
-        texture(Meadow, 32, .13f, [](int x, int y) {
-            const auto variation = grain(x / 4, y / 4) + grain(x / 2, y / 2) / 2;
-            return rgb(93 + variation, 110 + variation, 67 + variation / 2);
-        });
+        if (hasShipBoxTex) {
+            cloneShipBoxTex(Meadow, 0, .14f, 34, -2, -26, 88);
+        } else {
+            texture(Meadow, 32, .13f, [](int x, int y) {
+                const auto variation = grain(x / 4, y / 4) + grain(x / 2, y / 2) / 2;
+                return rgb(93 + variation, 110 + variation, 67 + variation / 2);
+            });
+        }
         texture(MountainRock, 32, .16f, [](int x, int y) {
             const auto stone = grain(x / 4, (y + x / 2) / 3) + grain(x, y) / 2;
             return rgb(107 + stone, 113 + stone, 109 + stone);
@@ -305,6 +367,93 @@ public:
         const auto center = position((r.left + r.right) * .5f, (r.top + r.bottom) * .5f);
         assets.obstacles.push_back({center.x, center.z, (r.right - r.left) * scale * .5f,
                                     (r.bottom - r.top) * scale * .5f, bottom, top, 0, 1, 0, blocksSight});
+    }
+
+    // Oriented box collision aligned with unit horizontal vector `along` (local X) and its perpendicular (local Z).
+    void orientedCollision(Vec3 center, Vec3 along, float halfAlong, float halfOut, float bottom, float top,
+                           bool blocksSight = true) {
+        const Vec3 a = normalized({along.x, 0.f, along.z});
+        const float cs = a.x, sn = -a.z;
+        assets.obstacles.push_back({center.x, center.z, halfAlong, halfOut, bottom, top,
+                                    std::atan2(sn, cs), cs, sn, blocksSight});
+    }
+
+    bool isDusk() const { return dusk; }
+    const Assets& data() const { return assets; }
+    uint16_t surfaceMat(Surface s) const { return uint16_t(firstMaterial + s); }
+
+    // Stamp a cached static Ship Box prop (crate, pallet, barrel, lamp pole, container) directly
+    // into assets.world with full UVs, original high-res textures, and baked dusk shadows.
+    void stampMesh(const Mesh& src, Vec3 at, float yaw, float s = 1.f, int16_t swapNonTexMat = -1) {
+        if (src.triangles.empty()) return;
+        const float cs = std::cos(yaw), sn = std::sin(yaw);
+        auto& world = assets.world;
+        const uint32_t baseVert = uint32_t(world.vertices.size());
+        world.vertices.reserve(world.vertices.size() + src.vertices.size());
+        for (const auto& v : src.vertices) {
+            const Vec3 p{v.position.x * s, v.position.y * s, v.position.z * s};
+            const Vec3 w{at.x + cs * p.x + sn * p.z, at.y + p.y, at.z - sn * p.x + cs * p.z};
+            world.vertices.push_back({w, v.u, v.v});
+        }
+        world.triangles.reserve(world.triangles.size() + src.triangles.size());
+        for (const auto& t : src.triangles) {
+            uint16_t mat = t.material;
+            if (swapNonTexMat >= 0 && mat < assets.materials.size() && assets.materials[mat].texture < 0) {
+                mat = uint16_t(swapNonTexMat);
+            }
+            world.triangles.push_back({baseVert + t.a, baseVert + t.b, baseVert + t.c, mat, -1});
+        }
+    }
+
+    // Place a high-detail instanced Ship Box vehicle (Truck or Car) with exact rotated culling
+    // bounds and solid oriented collision for cover, navigation, bullets, and dusk shadows.
+    bool placeVehicle(PropKind kind, Vec3 at, float yaw, float s = 1.f) {
+        const Mesh& src = kind == PropKind::Truck ? assets.shipBoxTruck : assets.shipBoxCar;
+        if (src.triangles.empty() || src.chunks.empty()) return false;
+        const Bounds lb = src.chunks.front().bounds;
+        const float cs = std::cos(yaw), sn = std::sin(yaw);
+        Bounds wb{{1e9f, 1e9f, 1e9f}, {-1e9f, -1e9f, -1e9f}};
+        for (int ix = 0; ix < 2; ++ix) {
+            const float x = (ix ? lb.max.x : lb.min.x) * s;
+            for (int iy = 0; iy < 2; ++iy) {
+                const float y = (iy ? lb.max.y : lb.min.y) * s;
+                for (int iz = 0; iz < 2; ++iz) {
+                    const float z = (iz ? lb.max.z : lb.min.z) * s;
+                    expand(wb, {at.x + cs * x + sn * z, at.y + y, at.z - sn * x + cs * z});
+                }
+            }
+        }
+        const float halfLen = (lb.max.x - lb.min.x) * 0.5f * s;
+        const float halfWidth = (lb.max.z - lb.min.z) * 0.5f * s;
+        const float height = (lb.max.y - lb.min.y) * s;
+        assets.propInstances.push_back({kind, at, yaw, s, wb, halfLen, halfWidth, height});
+        const Vec3 along{cs, 0.f, -sn};
+        // Trim slightly inward from side mirrors so collision hugs the metal body cleanly.
+        orientedCollision(at, along, std::max(0.5f, halfLen - 0.12f), std::max(0.5f, halfWidth - 0.16f),
+                          at.y, at.y + height, true);
+        return true;
+    }
+
+    // Ship Box-style leaning 3D tapered grass tuft cluster (3-4 blades across 3 dusk shades).
+    void grassTuft(Vec3 at, uint32_t seed) {
+        const auto nextRand = [&]() -> float {
+            seed = seed * 1664525u + 1013904223u;
+            return float((seed >> 8) & 0xFFFFu) / 65535.f;
+        };
+        const int blades = 3 + int(nextRand() * 2.f);
+        static constexpr Surface shades[3]{GrassBladeDark, GrassBladeMid, GrassBladeGold};
+        for (int i = 0; i < blades; ++i) {
+            const float a = nextRand() * 2.f * pi;
+            const float leanA = a + (nextRand() - 0.5f) * 1.4f;
+            const float dist = nextRand() * 0.18f;
+            const float halfW = 0.045f + nextRand() * 0.032f;
+            const float h = 0.22f + nextRand() * 0.26f;
+            const float lean = 0.06f + nextRand() * 0.14f;
+            const Vec3 base = at + Vec3{std::cos(a) * dist, 0.f, std::sin(a) * dist};
+            const Vec3 side{std::cos(a + pi * 0.5f) * halfW, 0.f, std::sin(a + pi * 0.5f) * halfW};
+            const Vec3 tip = base + Vec3{std::cos(leanA) * lean, h, std::sin(leanA) * lean};
+            face({base - side, base + side, tip}, shades[(seed >> 24) % 3]);
+        }
     }
 
     void solid(Rect r, float bottom, float top, Surface material) {
@@ -463,10 +612,14 @@ public:
     std::vector<Vec3> homes;
 
     void smoke(Vec3 base, float height, Vec3 drift, float size) { assets.smoke.push_back({base, height, drift, size, .07f}); }
+    void mist(Vec3 base, float width, float height, Vec3 drift, float rate) {
+        assets.mist.push_back({base, width, height, drift, rate});
+    }
 
 private:
     Assets& assets;
     uint16_t firstMaterial;
+    bool dusk = false;
     uint32_t shotVertexCount = 0;
     uint32_t backdropVertexFirst = 0;
     std::array<float, SurfaceCount> repeats;
@@ -494,8 +647,24 @@ private:
     void texture(Surface material, int size, float repeat, Sample sample) {
         Texture texture{size, size, {}};
         texture.pixels.reserve(size_t(size * size));
-        for (int y = 0; y < size; ++y)
-            for (int x = 0; x < size; ++x) texture.pixels.push_back(sample(x, y));
+        const bool warmExterior = dusk && (material == Grass || material == Pavers || material == Stucco ||
+                                           material == GardenWall || material == Roof || material == Hedge ||
+                                           material == Asphalt || material == Meadow || material == MountainRock ||
+                                           material == Gravel || material == CabinGlass || material == CabinCedar ||
+                                           material == CabinGreen || material == CabinCream || material == CabinSlate ||
+                                           material == MonumentStone || material == Brick);
+        for (int y = 0; y < size; ++y) {
+            for (int x = 0; x < size; ++x) {
+                uint16_t px = sample(x, y);
+                if (warmExterior) {
+                    if (material == CabinGlass) px = duskTint(px, 78, -8, -68, 96);
+                    else if (material == MountainRock) px = duskTint(px, 28, -10, -24, 92);
+                    else if (material == Grass || material == Meadow || material == Hedge) px = duskTint(px, 20, -8, -16, 86);
+                    else px = duskTint(px, 20, -4, -20, 92);
+                }
+                texture.pixels.push_back(px);
+            }
+        }
         assets.materials[firstMaterial + material].texture = int16_t(assets.textures.size());
         assets.textures.push_back(std::move(texture));
         repeats[material] = repeat;
@@ -559,8 +728,18 @@ constexpr RailingRun westRailings[]{{5, 136, site.left - 5, site.left, 2, false}
                                    {283, 411, site.left - 5, site.left, 2, false}};
 constexpr RailingRun lawnRailings[]{frontRailing, rearRailing, westRailings[0], westRailings[1]};
 
+// In Invasion mode, wide breached openings connect Briar House out into all four town streets.
+constexpr RailingRun breachedRailings[]{
+    {106, 304, site.bottom, site.bottom + 5, 2, true},
+    {432, 555, site.bottom, site.bottom + 5, 2, true},
+    {112, 304, site.top - 5, site.top, 2, true},
+    {432, 568, site.top - 5, site.top, 2, true},
+    westRailings[0],
+    westRailings[1],
+};
+
 void railingBases(Builder& b) {
-    for (const auto& run : lawnRailings) {
+    const auto addRun = [&](const RailingRun& run) {
         const auto span = run.section(run.start, run.end, run.inside, run.outside);
         b.prop(span, .78f, GardenWall);
         b.box(run.section(run.start, run.end, run.inside - .7f, run.outside + .7f), .72f, .81f, MonumentStone);
@@ -570,11 +749,16 @@ void railingBases(Builder& b) {
             b.prop(run.section(x - 4.25f, x + 4.25f, run.inside - 1.45f, run.outside + 1.45f), 2.13f, GardenWall);
             b.box(run.section(x - 5, x + 5, run.inside - 2.25f, run.outside + 2.25f), 2.06f, 2.19f, MonumentStone);
         }
+    };
+    if (b.isDusk()) {
+        for (const auto& run : breachedRailings) addRun(run);
+    } else {
+        for (const auto& run : lawnRailings) addRun(run);
     }
 }
 
 void railingBars(Builder& b) {
-    for (const auto& run : lawnRailings) {
+    const auto addRun = [&](const RailingRun& run) {
         const float y = (run.inside + run.outside) * .5f;
         for (const float height : {.98f, 1.89f}) {
             b.box(run.section(run.start, run.end, y - .58f, y + .58f), height, height + .061f, Iron);
@@ -588,6 +772,11 @@ void railingBars(Builder& b) {
                 b.box(run.section(x - .45f, x + .45f, y - .38f, y + .38f), .8f, 2.025f, Iron);
             }
         }
+    };
+    if (b.isDusk()) {
+        for (const auto& run : breachedRailings) addRun(run);
+    } else {
+        for (const auto& run : lawnRailings) addRun(run);
     }
 }
 
@@ -617,23 +806,31 @@ void grounds(Builder& b) {
     b.collision({188, 461, 196, 469}, 0, 3.16f);
     b.round(192, 465, 0, 3.16f, 3.8f, 1.9f, Timber);
 
-    constexpr Rect gardenWalls[] {
-        {site.left - 5, site.top - 5, rearRailing.start, site.top},
-        {rearRailing.end, site.top - 5, site.right + 5, site.top},
-        {site.left - 5, site.bottom, frontRailing.start, site.bottom + 5},
-        {frontRailing.end, site.bottom, garageBay.x, site.bottom + 5},
-        {garageBay.endX, site.bottom, site.right + 5, site.bottom + 5},
-        {site.left - 5, site.top, site.left, westRailings[0].start},
-        {site.left - 5, westRailings[0].end, site.left, westRailings[1].start},
-        {site.left - 5, westRailings[1].end, site.left, site.bottom},
-        {site.right, site.top, site.right + 5, site.bottom},
-    };
-    for (const auto r : gardenWalls) {
+    const auto addGardenWall = [&](Rect r) {
         b.prop(r, 2.1f, GardenWall);
         b.box({r.left - .25f, r.top - .25f, r.right + .25f, r.bottom + .25f}, 1.98f, 2.13f, Trim);
+    };
+    addGardenWall({site.left - 5, site.top - 5, rearRailing.start, site.top});
+    addGardenWall({rearRailing.end, site.top - 5, site.right + 5, site.top});
+    addGardenWall({site.left - 5, site.bottom, frontRailing.start, site.bottom + 5});
+    addGardenWall({frontRailing.end, site.bottom, garageBay.x, site.bottom + 5});
+    addGardenWall({garageBay.endX, site.bottom, site.right + 5, site.bottom + 5});
+    addGardenWall({site.left - 5, site.top, site.left, westRailings[0].start});
+    addGardenWall({site.left - 5, westRailings[1].end, site.left, site.bottom});
+    if (b.isDusk()) {
+        // Breach wide tactical passages on the west orchard wall and east flank into town!
+        addGardenWall({site.left - 5, westRailings[0].end, site.left, 165});
+        addGardenWall({site.left - 5, 265, site.left, westRailings[1].start});
+        addGardenWall({site.right, site.top, site.right + 5, 160});
+        addGardenWall({site.right, 285, site.right + 5, site.bottom});
+    } else {
+        addGardenWall({site.left - 5, westRailings[0].end, site.left, westRailings[1].start});
+        addGardenWall({site.right, site.top, site.right + 5, site.bottom});
     }
     railingBases(b);
-    b.collision({garageBay.x, site.bottom, garageBay.endX, site.bottom + 5}, 0, 2.1f, false);
+    if (!b.isDusk()) {
+        b.collision({garageBay.x, site.bottom, garageBay.endX, site.bottom + 5}, 0, 2.1f, false);
+    }
     for (const float x : {garageBay.x, garageBay.endX}) {
         b.prop({x - 3, site.bottom - 2, x + 3, site.bottom + 7}, 2.2f, GardenWall);
     }
@@ -1099,10 +1296,10 @@ void parkedPickup(const HomeFrame& frame) {
     }
 }
 
-void home(Builder& b, const Homesite& plot, Vec3 from, Vec3 to) {
+void home(Builder& b, const Homesite& plot, Vec3 from, Vec3 to, bool solidTown = false) {
     const Vec3 outward = acrossStreet(from, to), along{-outward.z, 0, outward.x};
     const Vec3 streetCenter = mix(from, to, plot.along);
-    const HomeFrame frame{b, streetCenter + outward * plot.setback + Vec3{0, .54f, 0}, along, outward};
+    const HomeFrame frame{b, streetCenter + outward * plot.setback + Vec3{0, solidTown ? .02f : .54f, 0}, along, outward};
     b.homes.push_back(frame.base);
     const Vec3 verge = streetCenter + outward * 2.94f + Vec3{0, .035f, 0};
     switch (plot.style) {
@@ -1119,13 +1316,29 @@ void home(Builder& b, const Homesite& plot, Vec3 from, Vec3 to) {
         frame.apron(verge, 0, plot.frontGable ? 1.14f : .76f, plot.frontGable ? -1.045f : 0.f, .056f, Pavers);
         break;
     }
+    if (solidTown) {
+        // Solid footprint collision for every neighborhood home so players & aliens fight around them cleanly.
+        const Vec3 center = frame.base + outward * (plot.depth * .5f);
+        b.orientedCollision(center, along, plot.width * .5f + .15f, plot.depth * .5f + .15f, 0.f, 6.2f, true);
+        // Warm porch lantern lighting the dusk street in front of the cottage.
+        const Vec3 lampAt = frame.base - outward * 0.45f + Vec3{0, 2.3f, 0};
+        b.lamp((lampAt.x / scale) + 316.f, 212.5f - (lampAt.z / scale), 2.3f, 7.5f, .62f);
+    }
     if (plot.segment == 1 || plot.segment == 2 || plot.segment == 4 || plot.segment == 11 || plot.segment == 13) {
         mailbox({b, verge + outward * 1.35f, along, outward}, 2.35f);
     }
     if (plot.segment == 2) {
         frame.apron(verge, -3.55f, 1.45f, -.72f, .08f, Gravel);
         const Vec3 parking = verge + along * -3.55f + outward * .48f + Vec3{0, .085f, 0};
-        parkedPickup({b, parking, along, outward});
+        if (solidTown && b.placeVehicle(PropKind::Car, parking + outward * 2.15f - Vec3{0, .06f, 0},
+                                        std::atan2(-outward.z, outward.x))) {
+            // Reused Ship Box abandoned sedan parked in the A-Frame cabin driveway.
+        } else {
+            parkedPickup({b, parking, along, outward});
+            if (solidTown) {
+                b.orientedCollision(parking + outward * 1.95f, along, 0.96f, 2.0f, 0.f, 1.65f, true);
+            }
+        }
     }
 }
 
@@ -1187,12 +1400,12 @@ void uphillLane(Builder& b, const RoadSection& west, const RoadSection& east) {
     }
 }
 
-void mountainCommunity(Builder& b) {
+void mountainCommunity(Builder& b, bool playableTown = false) {
     constexpr size_t count = std::size(street);
     constexpr size_t junction = 3;
     std::array<Vec3, count> road{};
     std::array<RoadSection, count> land{};
-    for (size_t i = 0; i < count; ++i) road[i] = position(street[i].x, street[i].y, street[i].grade);
+    for (size_t i = 0; i < count; ++i) road[i] = position(street[i].x, street[i].y, playableTown ? 0.f : street[i].grade);
     for (size_t i = 0; i < count; ++i) {
         const Vec3 point = road[i];
         const Vec3 incoming = acrossStreet(road[(i + count - 1) % count], point);
@@ -1201,17 +1414,20 @@ void mountainCommunity(Builder& b) {
         const auto offset = [&](float across, float up) { return point + miter * across + Vec3{0, up, 0}; };
         const auto plateau = [&](float halfWidth, float halfDepth) {
             const float inset = 1 / std::max(std::abs(point.x) / halfWidth, std::abs(point.z) / halfDepth);
-            return Vec3{point.x * inset, -.14f, point.z * inset};
+            return Vec3{point.x * inset, playableTown ? -.015f : -.14f, point.z * inset};
         };
-        const auto lots = offset(14.f, .88f);
+        const auto lots = offset(14.f, playableTown ? 0.f : .88f);
         const auto foothills = offset(25.f + .31f * grain(i, 3), street[i].foothillRise);
         const auto ridge = offset(39.f + .68f * grain(i, 7), street[i].ridgeRise);
         const float forestDepth = .26f + .022f * grain(i, 18);
-        land[i] = {plateau(18.5f, 14.35f), plateau(21.7f, 18.f), offset(-3.7f, -.09f), offset(-2.9f, 0.f),
-                   offset(2.9f, 0.f), offset(3.75f, -.07f), lots, mix(lots, foothills, .53f), foothills,
+        land[i] = {plateau(18.5f, 14.35f), plateau(21.7f, 18.f),
+                   offset(-3.7f, playableTown ? -.012f : -.09f), offset(-2.9f, 0.f),
+                   offset(2.9f, 0.f), offset(3.75f, playableTown ? -.012f : -.07f),
+                   lots, mix(lots, foothills, .53f), foothills,
                    mix(foothills, ridge, forestDepth) - Vec3{0, .55f, 0}, ridge,
                    offset(55.f + .75f * grain(i, 4), street[i].summitRise)};
     }
+    // First emit the playable town road, yards, homes and street cover (bullet-solid in Invasion mode).
     for (size_t i = 0; i < count; ++i) {
         const auto& start = land[i];
         const auto& end = land[(i + 1) % count];
@@ -1220,6 +1436,51 @@ void mountainCommunity(Builder& b) {
             if (i == junction && j >= OutsideRoad) break;
             b.quad({start[j + 1], start[j], end[j], end[j + 1]}, bands[j]);
         }
+        if (playableTown) {
+            // Natural foothill perimeter boundary along the outer lot line keeps players on the
+            // level valley town while leaving full sightlines to the soaring Colorado ridges.
+            const Vec3 a = start[Lots], c = end[Lots];
+            const Vec3 mid = (a + c) * .5f;
+            const Vec3 edge = c - a;
+            const float halfLen = std::max(0.5f, game_detail::planar(edge) * .5f + .6f);
+            const Vec3 dir = normalized({edge.x, 0.f, edge.z});
+            const Vec3 out = acrossStreet(a, c);
+            b.orientedCollision(mid + out * 0.6f, dir, halfLen, 0.8f, 0.f, 4.5f, false);
+        }
+    }
+
+    // The estate driveway joins the paved loop at its low, level southern bend.
+    b.floor({garageBay.x, site.bottom, garageBay.endX, 599}, Asphalt, .02f);
+    if (playableTown) {
+        // Paved connector walkways out of the breached front portico and north rear gates into the town loop.
+        b.floor({304, site.bottom, 432, 600}, Pavers, .018f);
+        b.floor({304, -222, 432, site.top}, Pavers, .018f);
+        b.floor({-338, 165, site.left, 265}, Gravel, .016f);
+        b.floor({site.right, 160, 1005, 285}, Gravel, .016f);
+    }
+    constexpr Homesite plots[]{
+        {1, .54f, 6.7f, 8.4f, 5.9f, 3.45f, 5.95f, CabinCream, true},
+        {2, .50f, 7.65f, 9.5f, 6.55f, 0.f, 7.55f, CabinCedar, true, HomeStyle::AFrame},
+        {4, .64f, 7.55f, 9.6f, 6.2f, 0.f, 0.f, CabinSlate, false, HomeStyle::SplitLevel},
+        {6, .4f, 6.25f, 8.6f, 5.5f, 4.6f, 6.7f, CabinGreen, true},
+        {7, .47f, 6.6f, 8.7f, 5.2f, 3.4f, 5.4f, CabinCedar, false},
+        {9, .55f, 6.75f, 7.1f, 5.5f, 4.1f, 6.05f, CabinCream, true},
+        {10, .5f, 8.5f, 7.8f, 5.6f, 3.4f, 5.4f, CabinGreen, false},
+        {11, .55f, 5.6f, 10.35f, 6.2f, 0.f, 0.f, CabinSlate, false, HomeStyle::SplitLevel},
+        {12, .51f, 7.1f, 7.2f, 5.1f, 3.9f, 5.85f, CabinCream, false},
+        {13, .51f, 7.25f, 9.35f, 6.05f, 0.f, 7.25f, CabinGreen, true, HomeStyle::AFrame},
+        {15, .55f, 6.1f, 6.8f, 5.25f, 3.35f, 5.5f, CabinCream, false},
+        {16, .59f, 6.6f, 8.7f, 5.4f, 4.3f, 6.6f, CabinCedar, true},
+        {17, .59f, 7.05f, 7.35f, 5.15f, 3.5f, 5.35f, CabinGreen, false},
+        {18, .49f, 6.45f, 8.1f, 5.45f, 3.4f, 5.68f, CabinCream, true},
+    };
+    for (const auto& plot : plots) home(b, plot, road[plot.segment], road[(plot.segment + 1) % count], playableTown);
+
+    if (playableTown) b.beginBackdrop();
+    uphillLane(b, land[junction], land[junction + 1]);
+    for (size_t i = 0; i < count; ++i) {
+        const auto& start = land[i];
+        const auto& end = land[(i + 1) % count];
         constexpr Surface mountains[]{ForestSlope, ForestSlope, ForestSlope, MountainRock, FarRidge};
         constexpr float irregularity[]{0.f, .52f, .85f, 1.2f, 3.4f, 2.7f};
         std::array<Vec3, HighRidge - Lots + 1> spur{};
@@ -1263,27 +1524,6 @@ void mountainCommunity(Builder& b) {
             pine(b, base - Vec3{0, .35f, 0}, height, tree % 3 ? RidgePine : ForestSlope, false);
         }
     }
-
-    // The estate driveway joins the paved loop at its low, level southern bend.
-    b.floor({garageBay.x, site.bottom, garageBay.endX, 599}, Asphalt, .02f);
-    uphillLane(b, land[junction], land[junction + 1]);
-    constexpr Homesite plots[]{
-        {1, .54f, 6.7f, 8.4f, 5.9f, 3.45f, 5.95f, CabinCream, true},
-        {2, .50f, 7.65f, 9.5f, 6.55f, 0.f, 7.55f, CabinCedar, true, HomeStyle::AFrame},
-        {4, .64f, 7.55f, 9.6f, 6.2f, 0.f, 0.f, CabinSlate, false, HomeStyle::SplitLevel},
-        {6, .4f, 6.25f, 8.6f, 5.5f, 4.6f, 6.7f, CabinGreen, true},
-        {7, .47f, 6.6f, 8.7f, 5.2f, 3.4f, 5.4f, CabinCedar, false},
-        {9, .55f, 6.75f, 7.1f, 5.5f, 4.1f, 6.05f, CabinCream, true},
-        {10, .5f, 8.5f, 7.8f, 5.6f, 3.4f, 5.4f, CabinGreen, false},
-        {11, .55f, 5.6f, 10.35f, 6.2f, 0.f, 0.f, CabinSlate, false, HomeStyle::SplitLevel},
-        {12, .51f, 7.1f, 7.2f, 5.1f, 3.9f, 5.85f, CabinCream, false},
-        {13, .51f, 7.25f, 9.35f, 6.05f, 0.f, 7.25f, CabinGreen, true, HomeStyle::AFrame},
-        {15, .55f, 6.1f, 6.8f, 5.25f, 3.35f, 5.5f, CabinCream, false},
-        {16, .59f, 6.6f, 8.7f, 5.4f, 4.3f, 6.6f, CabinCedar, true},
-        {17, .59f, 7.05f, 7.35f, 5.15f, 3.5f, 5.35f, CabinGreen, false},
-        {18, .49f, 6.45f, 8.1f, 5.45f, 3.4f, 5.68f, CabinCream, true},
-    };
-    for (const auto& plot : plots) home(b, plot, road[plot.segment], road[(plot.segment + 1) % count]);
 }
 
 void gardenDetails(Builder& b) {
@@ -1291,15 +1531,17 @@ void gardenDetails(Builder& b) {
     for (const float x : {garageBay.x, garageBay.endX}) {
         b.box({x - 3.7f, site.bottom - 3, x + 3.7f, site.bottom + 8}, 2.16f, 2.29f, MonumentStone);
     }
-    constexpr float gateY = site.bottom + 2.5f;
-    for (const float height : {.27f, 1.54f, 1.89f}) {
-        b.box({garageBay.x + 3, gateY - .6f, garageBay.endX - 3, gateY + .6f}, height, height + .058f, Tire);
+    if (!b.isDusk()) {
+        constexpr float gateY = site.bottom + 2.5f;
+        for (const float height : {.27f, 1.54f, 1.89f}) {
+            b.box({garageBay.x + 3, gateY - .6f, garageBay.endX - 3, gateY + .6f}, height, height + .058f, Tire);
+        }
+        for (int i = 0; i < 13; ++i) {
+            const float x = garageBay.x + 6.f * (i + 1);
+            b.box({x - .35f, gateY - .4f, x + .35f, gateY + .4f}, .235f, 1.97f, Tire);
+        }
+        b.box({623.6f, gateY - .9f, 626.4f, gateY + .9f}, .91f, 1.06f, Trim);
     }
-    for (int i = 0; i < 13; ++i) {
-        const float x = garageBay.x + 6.f * (i + 1);
-        b.box({x - .35f, gateY - .4f, x + .35f, gateY + .4f}, .235f, 1.97f, Tire);
-    }
-    b.box({623.6f, gateY - .9f, 626.4f, gateY + .9f}, .91f, 1.06f, Trim);
     for (const auto hedge : {rearHedge, frontHedge}) {
         for (int i = 0; i < 8; ++i) {
             const float x = hedge.left + 7 + (hedge.right - hedge.left - 14) * i / 7;
@@ -1510,32 +1752,37 @@ void hallDetails(Builder& b) {
 void navigation(Assets& assets) {
     using namespace game_detail;
     const World world(assets);
-    constexpr int columns = 62, rows = 49, stride = 12;
-    std::array<int, columns * rows> grid;
-    grid.fill(-1);
+    const bool town = assets.briarHouseMode == BriarHouseMode::Invasion;
+    const int columns = town ? 79 : 62;
+    const int rows = town ? 53 : 49;
+    const int stride = town ? 20 : 12;
+    const float originX = town ? -440.f : -54.f;
+    const float originY = town ? -330.f : -79.f;
+    std::vector<int> grid(size_t(columns * rows), -1);
     for (int x = 0; x < columns; ++x) {
         for (int y = 0; y < rows; ++y) {
-            const auto p = position(-54 + x * stride, -79 + y * stride);
+            const auto p = position(originX + float(x * stride), originY + float(y * stride));
+            if (std::abs(p.x) > assets.extent.x - .6f || std::abs(p.z) > assets.extent.z - .6f) continue;
             if (world.walkBlocked(p, p)) continue;
             const auto eye = atHeight(p, 1.45f);
             const bool cover = world.blocked(eye, eye + Vec3{.8f, 0, 0}) ||
                                world.blocked(eye, eye + Vec3{-.8f, 0, 0}) ||
                                world.blocked(eye, eye + Vec3{0, 0, .8f}) ||
                                world.blocked(eye, eye + Vec3{0, 0, -.8f});
-            grid[x * rows + y] = int(assets.navNodes.size());
+            grid[size_t(x * rows + y)] = int(assets.navNodes.size());
             assets.navNodes.push_back({p, 0, 0, cover, true});
         }
     }
     for (int x = 0; x < columns; ++x) {
         for (int y = 0; y < rows; ++y) {
-            const int source = grid[x * rows + y];
+            const int source = grid[size_t(x * rows + y)];
             if (source < 0) continue;
             auto& from = assets.navNodes[source];
             from.first = uint32_t(assets.navEdges.size());
             for (int dx = -1; dx <= 1; ++dx) {
                 for (int dy = -1; dy <= 1; ++dy) {
                     if ((!dx && !dy) || x + dx < 0 || x + dx >= columns || y + dy < 0 || y + dy >= rows) continue;
-                    const int destination = grid[(x + dx) * rows + y + dy];
+                    const int destination = grid[size_t((x + dx) * rows + y + dy)];
                     if (destination < 0) continue;
                     const auto to = assets.navNodes[destination].position;
                     if (world.walkBlocked(from.position, to)) continue;
@@ -1546,9 +1793,9 @@ void navigation(Assets& assets) {
         }
     }
 
-    // Drop isolated grid samples in the tiny gaps between furniture.
+    // Drop isolated grid samples in the tiny gaps between furniture or outside the valley ring.
     int start = 0;
-    const Vec3 spawn = assets.spawns[0].position;
+    const Vec3 spawn = town ? position(368, 305) : assets.spawns[0].position;
     for (int i = 1; i < int(assets.navNodes.size()); ++i)
         if (planarSquared(assets.navNodes[i].position - spawn) < planarSquared(assets.navNodes[start].position - spawn))
             start = i;
@@ -1586,10 +1833,19 @@ uint64_t arenaBytes(const Assets& a) {
     for (const auto& pose : a.alienTrooperPoses) bytes += allocated(pose.posePositions);
     bytes += allocated(a.alienEnforcer.vertices) + allocated(a.alienEnforcer.triangles);
     for (const auto& pose : a.alienEnforcerPoses) bytes += allocated(pose.posePositions);
+    for (const auto* gun : {&a.alienRayGun, &a.alienRayRings, &a.alienHeavyRayGun, &a.alienHeavyRayRings}) {
+        bytes += allocated(gun->vertices) + allocated(gun->triangles);
+    }
     bytes += allocated(a.civilianMesh.vertices) + allocated(a.civilianMesh.triangles);
     bytes += allocated(a.transportHelo.vertices) + allocated(a.transportHelo.triangles) +
-             allocated(a.transportRotor.vertices) + allocated(a.transportRotor.triangles) + allocated(a.smoke);
+             allocated(a.transportRotor.vertices) + allocated(a.transportRotor.triangles) +
+             allocated(a.smoke) + allocated(a.mist);
     for (const auto& pose : a.civilianPoses) bytes += allocated(pose.posePositions);
+    for (const auto* prop : {&a.shipBoxTruck, &a.shipBoxCar, &a.shipBoxCrate, &a.shipBoxPallet,
+                             &a.shipBoxBarrel, &a.shipBoxLamp, &a.shipBoxContainer}) {
+        bytes += allocated(prop->vertices) + allocated(prop->triangles) + allocated(prop->chunks);
+    }
+    bytes += allocated(a.propInstances);
     for (const auto& texture : a.textures) bytes += allocated(texture.pixels);
     for (const auto& u : a.civilianUniforms) bytes += allocated(u);
     return bytes;
@@ -1653,13 +1909,16 @@ void finalizeProceduralMesh(Mesh& mesh) {
 }
 
 // The ground alien: a hulking, hunched predator with a split fanged maw, a long tongue,
-// bone claws and tendrils whipping off its back. Built facing +z with its feet at y = 0.
+// bone claws, tendrils whipping off its back, and a ray gun wielded in its right hand.
+// Built facing +z with its feet at y = 0.
 struct CreaturePose {
     float phase = 0;   // Lope cycle 0..1
     bool stride = false;
     float breathe = 0; // Idle chest swell 0..1
     float jaw = 1;     // Mouth opening 0..1
     float writhe = 0;  // Tendril and tongue wave, radians
+    float aim = 0;     // 0 = low-ready carry, 1 = raised two-hand ray gun aim
+    float recoil = 0;  // 0..1 ray gun firing kickback
 };
 
 class CreatureWriter {
@@ -1815,14 +2074,36 @@ void writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
         }
     }
 
-    // Long, heavy arms reach wide and forward, swinging against the stride.
+    // Long, heavy arms: the right arm wields the alien ray gun (low-ready at idle/stride,
+    // raised forward when aiming, kicking back on recoil), while the left arm balances or
+    // reaches across to brace beneath the emitter barrel during aimed ray shots.
     const Vec3 chest{0, hipY + .56f, .15f};
+    const auto armJoints = [&](int a, Vec3& shoulder, Vec3& elbow, Vec3& wrist) {
+        const float s = a == 0 ? -1.f : 1.f;
+        const float swing = q.stride ? -std::sin(cycle) * (a == 0 ? 1.f : -1.f) : std::sin(q.writhe * .5f + a) * .12f;
+        shoulder = {s * .52f, hipY + .64f, .1f};
+        if (a == 1) {
+            // Right gun-hand: carries low-ready while loping, snaps up to shoulder-aim when firing.
+            const Vec3 readyElbow = shoulder + Vec3{.16f, -.28f, .14f + .08f * swing};
+            const Vec3 readyWrist = readyElbow + Vec3{-.10f, .02f + .04f * q.breathe, .34f + .06f * swing};
+            const Vec3 aimElbow = shoulder + Vec3{.06f, -.16f + .06f * q.recoil, .26f - .08f * q.recoil};
+            const Vec3 aimWrist = {0.34f, hipY + .54f + .10f * q.recoil + .03f * q.breathe, .60f - .12f * q.recoil};
+            elbow = readyElbow + (aimElbow - readyElbow) * q.aim;
+            wrist = readyWrist + (aimWrist - readyWrist) * q.aim;
+        } else {
+            // Left arm: wide predatory swing during stride, sweeps inward to brace under the barrel when aiming.
+            const Vec3 freeElbow = shoulder + Vec3{-.22f, -.3f, .06f + .14f * swing};
+            const Vec3 freeWrist = freeElbow + Vec3{-.1f, -.1f + .06f * q.breathe, .32f + .1f * swing};
+            const Vec3 braceElbow = shoulder + Vec3{.08f, -.22f + .04f * q.recoil, .28f - .06f * q.recoil};
+            const Vec3 braceWrist = {0.16f, hipY + .48f + .07f * q.recoil, .74f - .10f * q.recoil};
+            elbow = freeElbow + (braceElbow - freeElbow) * q.aim;
+            wrist = freeWrist + (braceWrist - freeWrist) * q.aim;
+        }
+    };
     for (int a = 0; a < 2; ++a) {
         const float s = a == 0 ? -1.f : 1.f;
-        const float swing = q.stride ? -std::sin(cycle) * (a == 0 ? 1.f : -1.f) : std::sin(q.writhe * .5f + a) * .15f;
-        const Vec3 shoulder{s * .52f, hipY + .64f, .1f};
-        const Vec3 elbow = shoulder + Vec3{s * .22f, -.3f, .06f + .14f * swing};
-        const Vec3 wrist = elbow + Vec3{s * .1f, -.1f + .06f * q.breathe, .32f + .1f * swing};
+        Vec3 shoulder, elbow, wrist;
+        armJoints(a, shoulder, elbow, wrist);
         w.tube({shoulder, shoulder + (elbow - shoulder) * .45f, elbow, elbow + (wrist - elbow) * .4f, wrist},
                {.14f, .14f, .1f, .11f, .07f}, {.13f, .13f, .095f, .1f, .065f}, 6, ahead, skin);
         const Vec3 dir = normalized(wrist - elbow);
@@ -1926,10 +2207,8 @@ void writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
             const Vec3 root{s * (.32f + .12f * float(k)), hipY + .84f - .05f * float(k), .08f - .08f * float(k)};
             w.spike(root, root + Vec3{s * (.16f + .06f * float(k)), .3f - .08f * float(k), -.12f}, ahead, .055f, tooth);
         }
-        const float swing = q.stride ? -std::sin(cycle) * (a == 0 ? 1.f : -1.f) : std::sin(q.writhe * .5f + a) * .15f;
-        const Vec3 shoulder{s * .52f, hipY + .64f, .1f};
-        const Vec3 elbow = shoulder + Vec3{s * .22f, -.3f, .06f + .14f * swing};
-        const Vec3 wrist = elbow + Vec3{s * .1f, -.1f + .06f * q.breathe, .32f + .1f * swing};
+        Vec3 shoulder, elbow, wrist;
+        armJoints(a, shoulder, elbow, wrist);
         const Vec3 mid = elbow + (wrist - elbow) * .35f + Vec3{s * .06f, .04f, 0};
         w.spike(mid, mid + (elbow - wrist) * .55f + Vec3{s * .14f, .1f, 0}, up, .045f, tooth);
     }
@@ -1978,10 +2257,20 @@ void buildPosedMesh(Mesh& base, std::vector<Mesh>& frames, const std::vector<Pos
 void buildCreature(Assets& assets, uint16_t firstMat) {
     const auto mat = [&](Surface s) { return uint16_t(firstMat + s); };
     std::vector<CreaturePose> poses;
-    for (int i = 0; i < alienIdlePoses; ++i) poses.push_back({0, false, float(i), .75f + .25f * i, 1.7f * i});
+    // 0..1: Idle breaths (holding ray gun at low-ready)
+    for (int i = 0; i < alienIdlePoses; ++i) poses.push_back({0, false, float(i), .65f + .25f * i, 1.7f * i, .15f, 0});
+    // 2..7: Predatory lope stride carrying ray gun forward
     for (int i = 0; i < alienStridePoses; ++i) {
         const float phase = float(i) / alienStridePoses;
-        poses.push_back({phase, true, 0, .85f + .15f * std::sin(4 * pi * phase), 2 * pi * phase});
+        poses.push_back({phase, true, 0, .75f + .15f * std::sin(4 * pi * phase), 2 * pi * phase, .28f, 0});
+    }
+    // 8..9: Aim & Charge (two-handed ray gun brace, jaw snarling, tendrils flared)
+    for (int i = 0; i < alienAimPoses; ++i) {
+        poses.push_back({0, false, .35f + .55f * i, .88f + .12f * i, 2.2f * i + .6f, 1.f, 0});
+    }
+    // 10..11: Fire & Recoil (snappy kickback recoil & roaring jaw)
+    for (int i = 0; i < alienRecoilPoses; ++i) {
+        poses.push_back({0, false, 1.f - .3f * i, 1.f, 3.1f + 1.4f * i, 1.f, 1.f - .35f * i});
     }
     for (const bool armored : {false, true}) {
         buildPosedMesh(armored ? assets.alienEnforcer : assets.alienTrooper,
@@ -1992,6 +2281,106 @@ void buildCreature(Assets& assets, uint16_t firstMat) {
                           mat(AlienGlow), armored);
         });
     }
+}
+
+// Retro-futuristic alien ray guns: sleek bio-metallic receiver, glowing plasma capacitor bulb,
+// forked emitter prongs, and separate concentric accelerator rings that spin in the renderer.
+// Local space: grip center at {0, 0, 0}, barrel along +z, muzzle emitter at {0, 0.08, 0.78} (heavy: 0.94).
+void buildRayGuns(Assets& assets, uint16_t firstMat) {
+    const auto mat = [&](Surface s) { return uint16_t(firstMat + s); };
+    const Vec3 up{0, 1, 0}, side{1, 0, 0};
+
+    const auto makeGun = [&](Mesh& body, Mesh& rings, bool heavy) {
+        body = {};
+        rings = {};
+        const float len = heavy ? 1.18f : 1.0f;
+        const float wide = heavy ? 1.24f : 1.0f;
+        const uint16_t metal = mat(RayMetal);
+        const uint16_t hull = mat(AlienHull);
+        const uint16_t trim = mat(AlienTrim);
+        const uint16_t coil = mat(RayCoil);
+        const uint16_t glow = heavy ? mat(AlienCore) : mat(AlienGlow);
+        const uint16_t core = heavy ? mat(RayOvercharge) : mat(RayCore);
+
+        {
+            CreatureWriter w(body.vertices, &body.triangles);
+            // Swept ergonomic grip tucked into the alien's right claw.
+            w.tube({{0, -.18f, -.08f}, {0, -.06f, -.03f}, {0, .05f, .02f}},
+                   {.032f * wide, .038f * wide, .042f * wide}, {.042f, .048f, .052f}, 6, side, hull);
+            // Sculpted teardrop receiver housing tapering smoothly into the accelerator barrel.
+            w.tube({{0, .08f, -.22f * len}, {0, .08f, -.08f * len}, {0, .085f, .10f * len},
+                    {0, .085f, .30f * len}, {0, .08f, .54f * len}, {0, .08f, .76f * len}},
+                   {.045f * wide, .092f * wide, .086f * wide, .056f * wide, .038f * wide, .024f * wide},
+                   {.052f * wide, .105f * wide, .095f * wide, .062f * wide, .040f * wide, .026f * wide},
+                   8, up, metal);
+            // Rear glowing plasma capacitor bulb perched atop the receiver.
+            w.tube({{0, .14f * wide, -.12f * len}, {0, .195f * wide, -.02f * len},
+                    {0, .185f * wide, .09f * len}, {0, .135f * wide, .18f * len}},
+                   {.030f * wide, .064f * wide, .058f * wide, .022f * wide},
+                   {.036f * wide, .072f * wide, .062f * wide, .026f * wide},
+                   7, up, glow);
+            // Glowing side plasma channels along the receiver flanks.
+            for (float s : {-1.f, 1.f}) {
+                w.tube({{s * .072f * wide, .08f, -.06f * len}, {s * .076f * wide, .085f, .12f * len},
+                        {s * .048f * wide, .082f, .32f * len}},
+                       {.015f * wide, .022f * wide, .012f * wide}, {.020f * wide, .026f * wide, .014f * wide},
+                       5, up, glow);
+                if (heavy) {
+                    // Enforcer twin armored side fins & capacitor pods.
+                    w.spike({s * .095f * wide, .11f, .02f}, {s * .17f, .18f, -.18f}, up, .032f, trim);
+                    w.spike({s * .085f * wide, .04f, .24f}, {s * .13f, .01f, .52f}, up, .026f, coil);
+                }
+            }
+            // Forked triple emitter prongs around the muzzle tip + incandescent plasma focal orb!
+            const int prongs = heavy ? 4 : 3;
+            for (int p = 0; p < prongs; ++p) {
+                const float a = (2 * pi * p / prongs) + (heavy ? pi * .25f : pi * .5f);
+                const Vec3 radial{std::cos(a), std::sin(a), 0};
+                const Vec3 base = Vec3{0, .08f, .58f * len} + radial * (.038f * wide);
+                const Vec3 tip = Vec3{0, .08f, .83f * len} + radial * (.062f * wide);
+                w.spike(base, tip, Vec3{-radial.y, radial.x, 0}, .018f * wide, coil);
+            }
+            // Glowing muzzle focal core nestled inside the emitter prongs.
+            w.tube({{0, .08f, .68f * len}, {0, .08f, .76f * len}, {0, .08f, .82f * len}},
+                   {.022f * wide, .036f * wide, 0}, {.022f * wide, .036f * wide, 0}, 6, up, core);
+            finalizeProceduralMesh(body);
+            for (auto& v : body.vertices) v.u = v.v = 0;
+        }
+        {
+            // Spinning concentric Tesla-style accelerator rings centered at {0, 0, z} (mounted at barrel axis {0, 0.08, 0}).
+            CreatureWriter w(rings.vertices, &rings.triangles);
+            const int ringCount = heavy ? 4 : 3;
+            for (int r = 0; r < ringCount; ++r) {
+                const float frac = float(r) / float(ringCount - 1);
+                const float z = (.28f + .36f * frac) * len;
+                const float rad = (.125f - .036f * frac) * wide;
+                const float thick = .015f * wide;
+                constexpr int segs = 8;
+                std::vector<Vec3> loop;
+                std::vector<float> ru, rv;
+                for (int k = 0; k <= segs; ++k) {
+                    const float a = 2 * pi * k / segs;
+                    loop.push_back({std::cos(a) * rad, std::sin(a) * rad, z});
+                    ru.push_back(thick);
+                    rv.push_back(thick * 1.15f);
+                }
+                w.tube(loop, ru, rv, 4, Vec3{0, 0, 1}, (r & 1) ? glow : coil, false);
+                // Energetic fin teeth on each ring so rotation reads unmistakably in motion!
+                for (int f = 0; f < 3; ++f) {
+                    const float a = (2 * pi * f / 3.f) + float(r) * .7f;
+                    const Vec3 dir{std::cos(a), std::sin(a), 0};
+                    w.spike(Vec3{dir.x * rad, dir.y * rad, z},
+                            Vec3{dir.x * (rad + .042f * wide), dir.y * (rad + .042f * wide), z + .02f},
+                            Vec3{0, 0, 1}, .014f * wide, core);
+                }
+            }
+            finalizeProceduralMesh(rings);
+            for (auto& v : rings.vertices) v.u = v.v = 0;
+        }
+    };
+
+    makeGun(assets.alienRayGun, assets.alienRayRings, false);
+    makeGun(assets.alienHeavyRayGun, assets.alienHeavyRayRings, true);
 }
 
 // Unarmed civilians in everyday clothes: cowering with hands over the head while pinned,
@@ -2247,7 +2636,7 @@ void warhorseWreck(Builder& b) {
 // Dr. Marsh's radio array on the east wing ridge, still aimed at the mothership it found.
 void markerArray(Builder& b) {
     const Vec3 foot = position(612, 62, 3.75f);
-    const Vec3 mothership = position(250, -235, 31.f);
+    const Vec3 mothership = position(260, -520, 36.f);
     const Vec3 hub = foot + Vec3{0, 1.35f, 0};
     const Vec3 aim = normalized(mothership - hub);
     const Vec3 right = normalized(cross(aim, Vec3{0, 1, 0}));
@@ -2284,6 +2673,338 @@ void markerArray(Builder& b) {
           {beacon + Vec3{-.05f, .1f, -.05f}, beacon + Vec3{-.05f, .1f, .05f}, beacon + Vec3{.05f, .1f, .05f}, beacon + Vec3{.05f, .1f, -.05f}}, AlienCore);
 }
 
+// Harvest reusable high-detail textured props (box truck, sedan, wooden crates, stacked pallets,
+// metal barrels, streetlamp poles, olive military shipping container) directly from Ship Box's
+// loaded world mesh before buildBriarHouse replaces assets.world. Cached once on Assets.
+void extractShipBoxProps(Assets& assets) {
+    if (assets.arena != Arena::ShipBox || assets.world.triangles.empty() || !assets.shipBoxTruck.triangles.empty()) {
+        return;
+    }
+    const auto& src = assets.world;
+    const auto extract = [&](float cx, float cz, float yaw, float hw, float hd, float minY, float maxY,
+                             auto acceptMat, bool centerXZ = true) -> Mesh {
+        Mesh out;
+        const float cs = std::cos(yaw), sn = std::sin(yaw);
+        Vec3 lo{1e9f, 1e9f, 1e9f}, hi{-1e9f, -1e9f, -1e9f};
+        for (const auto& t : src.triangles) {
+            if (!acceptMat(t.material)) continue;
+            const Vertex& va = src.vertices[t.a];
+            const Vertex& vb = src.vertices[t.b];
+            const Vertex& vc = src.vertices[t.c];
+            const Vec3 c = (va.position + vb.position + vc.position) * (1.f / 3.f);
+            if (c.y < minY || c.y > maxY) continue;
+            const float dx = c.x - cx, dz = c.z - cz;
+            if (std::abs(cs * dx - sn * dz) > hw || std::abs(sn * dx + cs * dz) > hd) continue;
+            const uint32_t base = uint32_t(out.vertices.size());
+            for (const Vertex* vp : {&va, &vb, &vc}) {
+                const float px = cs * (vp->position.x - cx) - sn * (vp->position.z - cz);
+                const float pz = sn * (vp->position.x - cx) + cs * (vp->position.z - cz);
+                const Vec3 lp{px, vp->position.y, pz};
+                lo = {std::min(lo.x, lp.x), std::min(lo.y, lp.y), std::min(lo.z, lp.z)};
+                hi = {std::max(hi.x, lp.x), std::max(hi.y, lp.y), std::max(hi.z, lp.z)};
+                out.vertices.push_back({lp, vp->u, vp->v});
+            }
+            out.triangles.push_back({base, base + 1, base + 2, t.material, -1});
+        }
+        if (out.vertices.empty()) return out;
+        const float shiftX = centerXZ ? (lo.x + hi.x) * 0.5f : 0.f;
+        const float shiftZ = centerXZ ? (lo.z + hi.z) * 0.5f : 0.f;
+        const float shiftY = lo.y;
+        for (auto& v : out.vertices) {
+            v.position.x -= shiftX;
+            v.position.y -= shiftY;
+            v.position.z -= shiftZ;
+        }
+        finalizeProceduralMesh(out);
+        return out;
+    };
+
+    const auto vehicleMat = [](uint16_t m) {
+        return m != 0 && m != 10 && m != 112 && m != 113 && m != 114;
+    };
+    assets.shipBoxTruck = extract(9.9f, 10.2f, -0.6f + pi * 0.5f, 3.55f, 1.48f, 0.005f, 3.2f, vehicleMat);
+    assets.shipBoxCar = extract(-10.9f, -9.9f, 0.65f, 2.45f, 1.18f, -0.08f, 1.9f, vehicleMat);
+    assets.shipBoxCrate = extract(-6.6f, 10.0f, -0.3f, 0.80f, 0.80f, 0.005f, 1.45f, [](uint16_t m) { return m == 16; });
+    assets.shipBoxPallet = extract(-10.1f, 9.6f, 0.5f, 0.95f, 0.80f, 0.005f, 0.85f, [](uint16_t m) { return m == 16; });
+    assets.shipBoxBarrel = extract(-7.8f, 5.6f, 0.f, 0.40f, 0.40f, 0.005f, 1.05f, [](uint16_t m) { return m == 13; });
+    assets.shipBoxLamp = extract(-20.0f, 11.0f, 0.f, 2.1f, 0.55f, 0.005f, 8.9f, vehicleMat, false);
+    assets.shipBoxContainer = extract(-4.3f, 5.16f, 0.f, 3.15f, 1.28f, 0.005f, 2.62f,
+                                      [](uint16_t m) { return m == 14 || m == 15; });
+}
+
+// Tactical street cover, reused high-detail Ship Box vehicles/crates/barrels/containers,
+// multi-finned crashed alien drop pods, and the fortified flare-lit North Valley Clearing LZ.
+void townCombatProps(Builder& b) {
+    const auto& data = b.data();
+    const auto dropPod = [&](float x, float y) {
+        b.floor({x - 26, y - 24, x + 26, y + 24}, Scorch, .022f);
+        b.round(x, y, .02f, .24f, 18, 12, Scorch);
+        b.round(x, y, .18f, 1.45f, 9.f, 4.8f, AlienHull);
+        b.round(x, y, 1.45f, 1.78f, 4.8f, 1.8f, AlienTrim);
+        b.round(x, y, .54f, .92f, 8.4f, 7.3f, AlienGlow);
+        // Six armored landing petals & radiating plasma crystal shards around the crater rim.
+        const Vec3 base = position(x, y, 0.02f);
+        for (int i = 0; i < 6; ++i) {
+            const float a = float(i) * (pi / 3.f) + 0.25f;
+            const Vec3 dir{std::cos(a), 0, std::sin(a)};
+            const Vec3 side{-dir.z, 0, dir.x};
+            const Vec3 in0 = base + dir * 0.42f + Vec3{0, 0.22f, 0};
+            const Vec3 out0 = base + dir * 0.92f + Vec3{0, 0.05f, 0};
+            const Vec3 top0 = base + dir * 0.34f + Vec3{0, 1.38f, 0};
+            b.quad({in0 - side * 0.14f, out0 - side * 0.09f, out0 + side * 0.09f, in0 + side * 0.14f}, AlienTrim);
+            b.face({out0 - side * 0.09f, out0 + side * 0.09f, top0}, AlienHull);
+            if (i % 2 == 0) {
+                const float sx = x + std::cos(a + 0.3f) * 16.f;
+                const float sy = y - std::sin(a + 0.3f) * 16.f;
+                b.round(sx, sy, .02f, .44f, 2.2f, .3f, AlienGlow);
+            }
+        }
+        b.collision({x - 10, y - 10, x + 10, y + 10}, 0.f, 1.8f, true);
+        b.lamp(x, y, 1.2f, 8.8f, 1.20f);
+    };
+    const auto coverWall = [&](float x0, float y0, float x1, float y1, float h = 1.12f) {
+        b.prop({x0, y0, x1, y1}, h, GardenWall);
+        b.box({x0 - 1, y0 - 1, x1 + 1, y1 + 1}, h - .06f, h + .04f, MonumentStone);
+    };
+    const auto crateAt = [&](float x, float y, float yaw, float s = 1.f) {
+        const Vec3 at = position(x, y, 0.01f);
+        if (!data.shipBoxCrate.triangles.empty()) {
+            b.stampMesh(data.shipBoxCrate, at, yaw, s);
+            const float half = 0.66f * s;
+            b.orientedCollision(at, {std::cos(yaw), 0, -std::sin(yaw)}, half, half, 0.f, 1.30f * s, true);
+        } else {
+            b.prop({x - 12 * s, y - 12 * s, x + 12 * s, y + 12 * s}, 1.25f * s, Timber);
+        }
+    };
+    const auto palletAt = [&](float x, float y, float yaw) {
+        const Vec3 at = position(x, y, 0.01f);
+        if (!data.shipBoxPallet.triangles.empty()) {
+            b.stampMesh(data.shipBoxPallet, at, yaw, 1.f);
+            b.orientedCollision(at, {std::cos(yaw), 0, -std::sin(yaw)}, 0.84f, 0.70f, 0.f, 0.64f, false);
+        }
+    };
+    const auto barrelAt = [&](float x, float y) {
+        const Vec3 at = position(x, y, 0.01f);
+        if (!data.shipBoxBarrel.triangles.empty()) {
+            b.stampMesh(data.shipBoxBarrel, at, 0.f, 1.f);
+            b.collision({x - 6.5f, y - 6.5f, x + 6.5f, y + 6.5f}, 0.f, 0.96f, true);
+        }
+    };
+    const auto containerAt = [&](float x, float y, float yaw) {
+        const Vec3 at = position(x, y, 0.01f);
+        if (!data.shipBoxContainer.triangles.empty()) {
+            b.stampMesh(data.shipBoxContainer, at, yaw, 1.f);
+            b.orientedCollision(at, {std::cos(yaw), 0, -std::sin(yaw)}, 3.08f, 1.28f, 0.f, 2.62f, true);
+        }
+    };
+    const auto shipTruck = [&](float x, float y, float yaw, Vec3 fallbackAlong, Vec3 fallbackOut) {
+        const Vec3 at = position(x, y, .01f);
+        if (!b.placeVehicle(PropKind::Truck, at, yaw, 1.f)) {
+            parkedPickup({b, at, fallbackAlong, fallbackOut});
+            b.orientedCollision(at + fallbackOut * 1.95f, fallbackAlong, 0.96f, 2.0f, 0.f, 1.65f, true);
+        }
+    };
+    const auto shipCar = [&](float x, float y, float yaw) {
+        b.placeVehicle(PropKind::Car, position(x, y, .01f), yaw, 1.f);
+    };
+
+    // South Boulevard: Warhorse 2-1 crash fuselage cover + scattered Delta Squad Ship Box supply
+    // crates/barrels/pallets, abandoned Ship Box cars, stone barricades & breakout flares.
+    b.collision({344, 588, 398, 656}, 0.f, 1.75f, true);
+    coverWall(215, 608, 265, 620, 1.05f);
+    coverWall(495, 608, 545, 620, 1.05f);
+    shipCar(148, 620, 0.22f);
+    shipCar(562, 578, -0.34f);
+    // Delta Squad emergency supply drop & barricade crates outside the breached front gates.
+    crateAt(278, 536, 0.14f, 0.92f);
+    crateAt(298, 532, -0.18f, 0.72f);
+    barrelAt(262, 542);
+    crateAt(458, 536, -0.22f, 0.92f);
+    palletAt(482, 540, 0.15f);
+    barrelAt(446, 548);
+    // Scattered cargo tossed from Warhorse 2-1 on South Boulevard.
+    crateAt(310, 626, 0.42f, 0.85f);
+    barrelAt(424, 636);
+    barrelAt(436, 624);
+    roadFlare(b, 316, 526);
+    roadFlare(b, 420, 526);
+
+    // East Ridge Avenue (Ben Marsh's district): crashed pod, Ship Box box truck & sedan,
+    // roadside stone walls reinforced with Ship Box crates and oil drums.
+    dropPod(845, 255);
+    coverWall(875, 488, 930, 500, 1.12f);
+    coverWall(965, 345, 978, 395, 1.15f);
+    coverWall(935, 130, 948, 180, 1.10f);
+    shipTruck(982, 465, pi * 0.5f - 0.08f, {0, 0, 1}, {1, 0, 0});
+    shipCar(918, 215, pi * 0.5f + 0.24f);
+    crateAt(956, 412, 0.25f, 0.90f);
+    barrelAt(942, 405);
+    barrelAt(948, 392);
+    palletAt(860, 492, 0.08f);
+    crateAt(928, 114, -0.30f, 0.88f);
+    roadFlare(b, 922, 438);
+
+    // North Valley Avenue & Town Clearing LZ (Dr. Nora Marsh + Extraction LZ):
+    // Fortified Dustoff staging perimeter with olive-green Ship Box military container,
+    // Ship Box box trucks, supply crates, pallets, oil drums, and four crimson LZ flares!
+    roadFlare(b, 155, -245);
+    roadFlare(b, 265, -245);
+    roadFlare(b, 155, -195);
+    roadFlare(b, 265, -195);
+    coverWall(132, -162, 186, -150, 1.08f);
+    coverWall(234, -162, 290, -150, 1.08f);
+    containerAt(58, -242, 0.16f);
+    crateAt(98, -274, 0.12f, 0.95f);
+    crateAt(118, -276, -0.15f, 0.78f);
+    palletAt(62, -196, 0.32f);
+    barrelAt(108, -248);
+    barrelAt(120, -240);
+    shipTruck(336, -252, 0.34f, {1, 0, 0}, {0, 0, 1});
+    shipCar(28, -172, -0.20f);
+    // North Valley Avenue (Dr. Nora Marsh's street)
+    coverWall(508, -192, 566, -180, 1.15f);
+    shipTruck(602, -188, 0.06f, {1, 0, 0}, {0, 0, 1});
+    crateAt(490, -186, -0.18f, 0.90f);
+    barrelAt(474, -192);
+    palletAt(580, -235, -0.12f);
+    dropPod(735, -165);
+    roadFlare(b, 535, -206);
+
+    // West Timberline Lane (Walt Marsh's district): Ship Box forestry box truck, abandoned sedan,
+    // crashed pod, supply crates, barrels, and sunset barricades.
+    dropPod(-225, 420);
+    coverWall(-285, 248, -272, 298, 1.15f);
+    coverWall(-265, 96, -252, 146, 1.10f);
+    shipTruck(-312, 168, pi * 0.5f - 0.10f, {0, 0, -1}, {-1, 0, 0});
+    shipCar(-352, 330, pi * 0.5f + 0.20f);
+    crateAt(-278, 316, 0.28f, 0.90f);
+    palletAt(-262, 332, -0.15f);
+    barrelAt(-292, 308);
+    crateAt(-264, 78, -0.22f, 0.85f);
+    barrelAt(-254, 64);
+    roadFlare(b, -295, 242);
+}
+
+// High-detail town dressing emitted after beginDecoration() so grass tufts, lamp poles, fences,
+// and road markings never bloat bullet shot geometry while adding crisp silhouettes & dusk glow.
+void townDetails(Builder& b) {
+    const auto& data = b.data();
+    const int16_t amberMat = int16_t(b.surfaceMat(Amber));
+
+    // 1. Reused Ship Box yard streetlamps ringing the town loop & North Valley Clearing LZ!
+    const struct { float x, y, yaw; } poles[]{
+        {86, 598, -pi * 0.5f},  {478, 604, -pi * 0.5f}, {790, 610, -pi * 0.6f},
+        {944, 520, pi},         {992, 305, pi},         {955, 70, pi * 0.85f},
+        {755, -205, pi * 0.5f}, {515, -240, pi * 0.5f}, {308, -172, -pi * 0.65f},
+        {112, -174, -pi * 0.35f}, {-145, -170, pi * 0.4f},
+        {-342, 35, 0.12f},      {-364, 232, 0.f},       {-318, 435, -0.25f},
+    };
+    for (const auto& p : poles) {
+        const Vec3 at = position(p.x, p.y, 0.f);
+        constexpr float s = 0.78f;
+        if (!data.shipBoxLamp.triangles.empty()) {
+            b.stampMesh(data.shipBoxLamp, at, p.yaw, s, amberMat);
+            b.collision({p.x - 4.f, p.y - 4.f, p.x + 4.f, p.y + 4.f}, 0.f, 4.5f, false);
+        }
+        // Warm dusk streetlamp glow pool beneath the cantilevered arm (+1.55 * s along local X).
+        const float cs = std::cos(p.yaw), sn = std::sin(p.yaw);
+        const Vec3 head = at + Vec3{cs * 1.55f * s, 6.2f * s, -sn * 1.55f * s};
+        b.lamp((head.x / scale) + 316.f, 212.5f - (head.z / scale), 5.6f, 11.5f, 0.88f);
+    }
+
+    // 2. Subtle painted Colorado mountain-road dashed center lines curving around the town loop.
+    constexpr size_t segs = std::size(street);
+    for (size_t i = 0; i < segs; ++i) {
+        const Vec3 a = position(street[i].x, street[i].y, 0.014f);
+        const Vec3 c = position(street[(i + 1) % segs].x, street[(i + 1) % segs].y, 0.014f);
+        const Vec3 delta = c - a;
+        const float len = game_detail::planar(delta);
+        if (len < 3.f) continue;
+        const Vec3 dir = normalized({delta.x, 0.f, delta.z});
+        const Vec3 side{-dir.z * 0.075f, 0.f, dir.x * 0.075f};
+        for (float d = 1.6f; d + 1.8f < len - 1.2f; d += 4.6f) {
+            const Vec3 p0 = a + dir * d;
+            const Vec3 p1 = a + dir * (d + 2.0f);
+            b.quad({p0 - side, p1 - side, p1 + side, p0 + side}, RoadLine);
+        }
+    }
+
+    // 3. Rustic split-rail timber fences framing yards & meadows along the town loop.
+    const auto railFence = [&](Vec3 start, Vec3 end, int bays) {
+        const Vec3 span = end - start;
+        const Vec3 dir = normalized({span.x, 0, span.z});
+        const Vec3 side{-dir.z * 0.055f, 0, dir.x * 0.055f};
+        for (int i = 0; i <= bays; ++i) {
+            const Vec3 p = start + span * (float(i) / float(bays));
+            b.box({p - side - dir * 0.055f, p + side - dir * 0.055f, p + side + dir * 0.055f, p - side + dir * 0.055f},
+                  {p - side - dir * 0.055f + Vec3{0, 1.05f, 0}, p + side - dir * 0.055f + Vec3{0, 1.05f, 0},
+                   p + side + dir * 0.055f + Vec3{0, 1.05f, 0}, p - side + dir * 0.055f + Vec3{0, 1.05f, 0}}, DarkWood);
+        }
+        for (const float railY : {0.42f, 0.84f}) {
+            const Vec3 s2 = side * 0.65f;
+            b.box({start - s2 + Vec3{0, railY, 0}, end - s2 + Vec3{0, railY, 0},
+                   end + s2 + Vec3{0, railY, 0}, start + s2 + Vec3{0, railY, 0}},
+                  {start - s2 + Vec3{0, railY + 0.09f, 0}, end - s2 + Vec3{0, railY + 0.09f, 0},
+                   end + s2 + Vec3{0, railY + 0.09f, 0}, start + s2 + Vec3{0, railY + 0.09f, 0}}, Timber);
+        }
+    };
+    railFence(position(-115, 558), position(65, 588), 4);
+    railFence(position(735, 578), position(848, 560), 3);
+    railFence(position(855, 80), position(825, -45), 3);
+    railFence(position(305, -128), position(468, -142), 4);
+    railFence(position(-160, -108), position(-260, -40), 3);
+    railFence(position(-240, 315), position(-210, 445), 3);
+
+    // 4. Lush Ship Box-style 3D grass tufts scattered across Briar House lawns, wall edges,
+    // road verges, meadow borders, North Town Clearing LZ, and sunset-backlit West Timberline!
+    uint32_t rng = 0x51a7c3d1u;
+    const auto jitter = [&](float range) -> float {
+        rng = rng * 1664525u + 1013904223u;
+        return (float((rng >> 8) & 0xFFFFu) / 65535.f * 2.f - 1.f) * range;
+    };
+    const auto scatterRect = [&](float x0, float y0, float x1, float y1, int count) {
+        for (int i = 0; i < count; ++i) {
+            rng = rng * 1664525u + 1013904223u;
+            const float fx = float((rng >> 8) & 0xFFFFu) / 65535.f;
+            rng = rng * 1664525u + 1013904223u;
+            const float fy = float((rng >> 8) & 0xFFFFu) / 65535.f;
+            b.grassTuft(position(x0 + (x1 - x0) * fx, y0 + (y1 - y0) * fy, 0.01f), rng ^ uint32_t(i * 2654435761u));
+        }
+    };
+    // Briar House front, west, east, and rear lawns + hedge footings (avoiding paved paths).
+    scatterRect(-48, 405, 250, 502, 46);
+    scatterRect(478, 405, 570, 502, 24);
+    scatterRect(-52, -75, 42, 185, 30);
+    scatterRect(-52, 268, 42, 400, 22);
+    scatterRect(52, -78, 250, 20, 32);
+    scatterRect(486, -78, 678, 20, 30);
+    // South Boulevard grassy verges & estate frontage
+    scatterRect(-140, 530, 295, 595, 40);
+    scatterRect(442, 530, 572, 595, 22);
+    scatterRect(675, 530, 880, 598, 28);
+    // East Ridge Avenue inner & outer verges
+    scatterRect(745, 295, 925, 515, 34);
+    scatterRect(745, -110, 925, 148, 30);
+    // North Valley Avenue & North Town Clearing LZ meadow rim
+    scatterRect(28, -285, 148, -115, 26);
+    scatterRect(275, -285, 495, -115, 34);
+    scatterRect(495, -165, 765, -95, 26);
+    // West Timberline Lane (backlit golden-green grass tufts against the Colorado sunset!)
+    scatterRect(-285, 275, -115, 505, 36);
+    scatterRect(-285, -115, -115, 155, 34);
+    // Extra grass clusters hugging the outer town loop gravel shoulder.
+    for (size_t i = 0; i < segs; ++i) {
+        const Vec3 a = position(street[i].x, street[i].y, 0.01f);
+        const Vec3 c = position(street[(i + 1) % segs].x, street[(i + 1) % segs].y, 0.01f);
+        const Vec3 out = acrossStreet(a, c);
+        for (int k = 0; k < 3; ++k) {
+            const float t = 0.18f + 0.32f * float(k);
+            const Vec3 spot = mix(a, c, t) + out * (4.1f + jitter(0.6f)) + Vec3{jitter(0.5f), 0.f, jitter(0.5f)};
+            b.grassTuft(spot, rng ^ uint32_t(i * 97 + k * 31));
+        }
+    }
+}
+
 void invasionDetails(Builder& b) {
     // Scorched impact crater, crashed alien drop pod, and glowing crystalline shards on the front-west lawn.
     b.floor({64, 414, 116, 458}, Scorch, .022f);
@@ -2305,22 +3026,52 @@ void invasionDetails(Builder& b) {
     b.floor({300, 468, 352, 480}, Scorch, .021f);
     b.floor({402, 452, 440, 461}, Scorch, .021f);
     b.floor({352, 334, 386, 346}, Scorch, .008f);
-    // Military crimson road flares marking the Delta Squad perimeter & rear evac patio.
+    // Military crimson road flares marking the driveway approach and breached rear patio.
     roadFlare(b, 574, 448); // Driveway gate approach
-    roadFlare(b, 344, -14); // Rear patio evac left
-    roadFlare(b, 392, -14); // Rear patio evac right
+    roadFlare(b, 344, -14); // Rear patio left
+    roadFlare(b, 392, -14); // Rear patio right
     warhorseWreck(b);
     markerArray(b);
 }
 
 void invasionBackdrop(Builder& b) {
     // Homes across the valley burn under the landings. The fleet itself only renders once the
-    // mission begins, so the title screen shows the smoke but not its cause.
+    // mission begins, so the title screen shows the smoke and sunset mist but not its cause.
     const size_t count = b.homes.size();
-    for (size_t i = 0; i < count && i < 9; i += 3) {
+    for (size_t i = 0; i < count && i < 12; i += 3) {
         const Vec3 home = b.homes[i];
         flames(b, home + Vec3{0, 3.2f, 0}, 2.2f, 1.6f, 5);
         b.smoke(home + Vec3{0, 4.f, 0}, 26.f, Vec3{-6.f, 0, 9.f}, 2.2f);
+    }
+    // Descending dusk valley mist banks rolling across all four town districts, streets and ridges.
+    const struct { float x, y, h, width, height, dx, dz, rate; } banks[]{
+        // South Boulevard & Warhorse wreck approach
+        {240, 615, .85f, 8.0f, 2.6f, 4.2f, -1.5f, .042f},
+        {480, 640, .95f, 8.4f, 2.7f, 4.6f, -1.2f, .038f},
+        {80, 625, 1.0f, 8.2f, 2.6f, 3.8f, -1.8f, .040f},
+        {710, 600, .95f, 8.0f, 2.6f, 4.2f, -1.4f, .043f},
+        // East Ridge Avenue (Ben's district)
+        {940, 460, .95f, 8.6f, 2.8f, 4.4f, -1.2f, .039f},
+        {980, 240, .95f, 8.8f, 2.8f, 4.8f, -1.0f, .037f},
+        {920, 10, 1.0f, 8.4f, 2.7f, 4.5f, 1.2f, .040f},
+        // North Valley Avenue & Town Clearing LZ (Nora's district & Extraction)
+        {590, -210, .95f, 8.8f, 2.8f, 4.6f, 1.3f, .038f},
+        {240, -230, .95f, 9.2f, 2.9f, 5.0f, 1.1f, .036f},
+        {-80, -200, 1.0f, 8.6f, 2.8f, 4.4f, 1.4f, .039f},
+        // West Timberline Lane (Walt's district, backlit by the Colorado sunset!)
+        {-315, 20, .95f, 8.6f, 2.8f, 4.6f, 1.5f, .038f},
+        {-335, 250, .95f, 9.0f, 2.9f, 4.8f, 1.2f, .036f},
+        {-280, 470, .95f, 8.4f, 2.7f, 4.2f, -1.0f, .041f},
+        // Estate lawns & inner valley connectors
+        {170, 455, .72f, 5.8f, 2.0f, 2.8f, -1.1f, .050f},
+        {368, -76, .85f, 7.2f, 2.4f, 3.8f, 1.0f, .042f},
+        // Outer valley foothills & ridges
+        {350, 770, 1.8f, 12.f, 3.8f, 6.0f, -2.0f, .030f},
+        {780, -280, 2.1f, 12.f, 3.8f, 5.5f, 1.5f, .031f},
+        {-220, -240, 2.0f, 12.f, 3.8f, 5.4f, 1.6f, .030f},
+    };
+    for (const auto& m : banks) {
+        b.mist(position(m.x, m.y, m.h), m.width, m.height, {m.dx, 0, m.dz}, m.rate);
     }
 }
 
@@ -2331,6 +3082,7 @@ void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
     const uint16_t core = uint16_t(firstMat + AlienCore);
 
     buildCreature(assets, firstMat);
+    buildRayGuns(assets, firstMat);
     buildCivilian(assets, firstMat);
     buildTransport(assets, firstMat);
 
@@ -2356,9 +3108,9 @@ void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
 
     // Alien fleet crafts (each welded with tight bounds for O(1) frustum culling; hidden on title screen).
     const struct { float cx, cy, alt, r, h; bool beam; } specs[3]{
-        {250.f, -235.f, 31.f, 240.f, 7.6f, true},  // Primary mothership over northern ridge
-        {430.f, 770.f, 23.f, 128.f, 4.4f, false},  // Southern flanking saucer
-        {-210.f, 120.f, 29.f, 95.f, 3.6f, false},  // Western scout cruiser
+        {260.f, -520.f, 36.f, 240.f, 7.6f, true},  // Primary mothership looming over northern mountain ridge
+        {430.f, 890.f, 25.f, 128.f, 4.4f, false},  // Southern flanking saucer beyond South Boulevard
+        {-480.f, 120.f, 30.f, 95.f, 3.6f, false},  // Western scout cruiser over the sunset peaks
     };
     for (int s = 0; s < 3; ++s) {
         auto& craft = assets.alienFleet[s];
@@ -2469,10 +3221,12 @@ void buildMissionUniforms(Assets& assets, uint16_t briarFirstMat) {
         assets.enforcerUniform[briarFirstMat + AlienTrim] = enforcerTrim;
         assets.enforcerUniform[briarFirstMat + AlienGlow] = uint16_t(briarFirstMat + AlienCore);
     }
-    // Enforcers wear blood-red hide over the same body.
-    if (size_t(briarFirstMat + AlienSinew) < assets.enforcerUniform.size()) {
+    // Enforcers wear blood-red hide over the same body, with crimson-hot ray cannon coils.
+    if (size_t(briarFirstMat + RayOvercharge) < assets.enforcerUniform.size()) {
         assets.enforcerUniform[briarFirstMat + AlienSkin] = addMat(rgb(112, 30, 44));
         assets.enforcerUniform[briarFirstMat + AlienSinew] = addMat(rgb(58, 16, 26));
+        assets.enforcerUniform[briarFirstMat + RayCore] = uint16_t(briarFirstMat + RayOvercharge);
+        assets.enforcerUniform[briarFirstMat + RayCoil] = addMat(rgb(172, 108, 118));
     }
 }
 
@@ -2488,11 +3242,15 @@ void synthesizeMissionAudio(Assets& assets) {
             samples[i] = int16_t(value * 24000.0);
         }
     };
-    // Crisp alien plasma bolt: high downward frequency sweep with harmonic bite.
-    writeClip(Sound::PlasmaFire, 0.22, [](double t, double dur) {
-        const double env = std::exp(-t * 15.0) * (1.0 - t / dur);
-        const double phase = 2.0 * pi * (1350.0 * t - 420.0 * std::log(1.0 + t * 18.0));
-        return env * (0.62 * std::sin(phase) + 0.30 * std::sin(phase * 2.03) + 0.14 * std::sin(2.0 * pi * 210.0 * t));
+    // Alien ray gun blast: resonant retro-sci-fi frequency whip with harmonic shimmer and sub-punch.
+    writeClip(Sound::PlasmaFire, 0.25, [](double t, double dur) {
+        const double env = std::exp(-t * 12.5) * (1.0 - t / dur);
+        const double whip = 1750.0 * std::exp(-t * 18.0) + 280.0;
+        const double phase = 2.0 * pi * (280.0 * t + (1750.0 / 18.0) * (1.0 - std::exp(-t * 18.0)));
+        const double ring = std::sin(2.0 * pi * 54.0 * t) * 0.22 + 0.78;
+        const double crackle = 0.16 * std::exp(-t * 36.0) * std::sin(2.0 * pi * (whip * 2.4) * t);
+        const double punch = 0.28 * std::exp(-t * 28.0) * std::sin(2.0 * pi * 145.0 * t);
+        return env * (ring * (0.58 * std::sin(phase) + 0.28 * std::sin(phase * 1.99)) + crackle + punch);
     });
     // Alien drone energy burst: sharper metallic pulse.
     writeClip(Sound::DroneFire, 0.17, [](double t, double dur) {
@@ -2569,12 +3327,35 @@ void synthesizeMissionAudio(Assets& assets) {
         const double swell = 0.72 + 0.28 * std::sin(2.0 * pi * 0.5 * t);
         return swell * (0.20 * std::sin(p1) + 0.11 * std::sin(p2) + 0.04 * std::sin(2.0 * pi * 144.0 * t));
     });
+    // Rising alien ray-gun capacitor coil whine before an overcharge or focused burst.
+    writeClip(Sound::RayCharge, 0.62, [](double t, double dur) {
+        const double k = t / dur;
+        const double env = std::min(1.0, t / 0.06) * (1.0 - 0.15 * k * k);
+        const double freq = 320.0 + 1180.0 * k * k;
+        const double w = 2.0 * pi * (320.0 * t + (1180.0 / 3.0) * t * k * k);
+        const double pulse = 0.72 + 0.28 * std::sin(2.0 * pi * (18.0 + 28.0 * k) * t);
+        return env * pulse * (0.48 * std::sin(w) + 0.24 * std::sin(w * 2.01) + 0.12 * std::sin(2.0 * pi * freq * 0.5 * t));
+    });
+    // Crystalline energy-shield shatter + descending plasma discharge.
+    writeClip(Sound::ShieldBreak, 0.34, [](double t, double dur) {
+        const double env = std::exp(-t * 9.5) * (1.0 - t / dur);
+        const uint32_t hash = uint32_t(t * audioHz) * 2654435761u;
+        const double spark = (double((hash >> 9) & 1023) / 511.5 - 1.0) * std::exp(-t * 22.0);
+        const double chime = 0.42 * std::sin(2.0 * pi * (2100.0 - 1100.0 * (t / dur)) * t) +
+                             0.30 * std::sin(2.0 * pi * (1420.0 - 720.0 * (t / dur)) * t);
+        const double drop = 0.32 * std::sin(2.0 * pi * (480.0 - 340.0 * (t / dur)) * t);
+        return env * (chime + drop + 0.38 * spark);
+    });
 }
 
-void darkenInvasionSky(Assets& assets) {
-    // Deepen the sky luma slightly for an ominous alien-invasion dusk while keeping clouds legible.
+void prepareSunsetSky(Assets& assets) {
+    // Keep crisp cloud contrast in assets.sky so the renderer can map it onto a fiery
+    // Colorado Front Range red-orange dusk sunset cubemap without crushing cloud highlights.
     for (auto& face : assets.sky) {
-        for (uint8_t& luma : face) luma = uint8_t(int(luma) * 68 / 100);
+        for (uint8_t& luma : face) {
+            const int centered = (int(luma) - 128) * 12 / 10 + 128;
+            luma = uint8_t(std::clamp(centered, 12, 248));
+        }
     }
 }
 
@@ -2583,6 +3364,8 @@ void darkenInvasionSky(Assets& assets) {
 void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == mode) return;
     const uint64_t shared = assets.residentBytes - std::min(assets.residentBytes, arenaBytes(assets));
+    extractShipBoxProps(assets);
+    assets.propInstances.clear();
     assets.world = {};
     assets.shotVertices = decltype(assets.shotVertices){};
     assets.shotIndices = decltype(assets.shotIndices){};
@@ -2597,11 +3380,16 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     assets.alienTrooperPoses.clear();
     assets.alienEnforcer = {};
     assets.alienEnforcerPoses.clear();
+    assets.alienRayGun = {};
+    assets.alienRayRings = {};
+    assets.alienHeavyRayGun = {};
+    assets.alienHeavyRayRings = {};
     assets.civilianMesh = {};
     assets.civilianPoses.clear();
     assets.transportHelo = {};
     assets.transportRotor = {};
     assets.smoke.clear();
+    assets.mist.clear();
     assets.alienDrone = {};
     for (auto& craft : assets.alienFleet) craft = {};
     assets.commanderUniform.clear();
@@ -2609,14 +3397,21 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     for (auto& u : assets.civilianUniforms) u.clear();
     assets.arena = Arena::BriarHouse;
     assets.briarHouseMode = mode;
-    assets.extent.x = 19.5f;
+    if (mode == BriarHouseMode::Invasion) {
+        // Open the entire surrounding Colorado mountain town loop and neighborhood yards.
+        assets.extent.x = 52.f;
+        assets.extent.z = 40.f;
+    } else {
+        assets.extent.x = 19.5f;
+        assets.extent.z = 15.6f;
+    }
     assets.spawns = {{
         {position(322, 495), 1.06f}, {position(399, -78), -1.95f},
         {position(-27, 282), .85f}, {position(645, 285), -pi / 2},
     }};
 
     const uint16_t briarFirstMaterial = uint16_t(assets.materials.size());
-    Builder builder(assets);
+    Builder builder(assets, mode == BriarHouseMode::Invasion);
     grounds(builder);
     shell(builder);
     hallStructure(builder);
@@ -2625,6 +3420,10 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     builder.shiftX(0);
     garageStructure(builder);
     sealedStairs(builder);
+    if (mode == BriarHouseMode::Invasion) {
+        // Playable town props and cover stay bullet-solid before beginDecoration().
+        townCombatProps(builder);
+    }
     builder.beginDecoration();
     exteriorDetails(builder);
     gardenDetails(builder);
@@ -2635,16 +3434,21 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     garageDetails(builder);
     staircaseDetails(builder);
     hallDetails(builder);
-    builder.beginBackdrop();
-    mountainCommunity(builder);
-    if (mode == BriarHouseMode::Invasion) invasionBackdrop(builder);
+    if (mode == BriarHouseMode::Invasion) {
+        townDetails(builder);
+        mountainCommunity(builder, true);
+        invasionBackdrop(builder);
+    } else {
+        builder.beginBackdrop();
+        mountainCommunity(builder, false);
+    }
     builder.finish();
     navigation(assets);
     if (mode == BriarHouseMode::Invasion) {
         buildAlienMeshes(assets, briarFirstMaterial);
         buildMissionUniforms(assets, briarFirstMaterial);
         synthesizeMissionAudio(assets);
-        darkenInvasionSky(assets);
+        prepareSunsetSky(assets);
     }
     assets.residentBytes = shared + arenaBytes(assets);
     assets.peakBytes = std::max(assets.peakBytes, assets.residentBytes);

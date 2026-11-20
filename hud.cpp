@@ -182,7 +182,15 @@ void map(const Painter& p, const Assets& assets, const Snapshot& snap, int x, in
             }
         }
         if (snap.mission->hasWaypoint) {
-            const auto wp = project(snap.mission->waypoint.x, snap.mission->waypoint.z);
+            auto wp = project(snap.mission->waypoint.x, snap.mission->waypoint.z);
+            // In the expansive town map, pin distant objectives cleanly to the radar rim.
+            const int lim = size / 2 - 6;
+            const int rx = wp.x - midX, ry = wp.y - midY;
+            if (std::abs(rx) > lim || std::abs(ry) > lim) {
+                const float k = float(lim) / float(std::max(std::abs(rx), std::abs(ry)));
+                wp.x = midX + int(std::lround(rx * k));
+                wp.y = midY + int(std::lround(ry * k));
+            }
             clipped.line(wp.x - 4, wp.y, wp.x, wp.y - 4, accent);
             clipped.line(wp.x, wp.y - 4, wp.x + 4, wp.y, accent);
             clipped.line(wp.x + 4, wp.y, wp.x, wp.y + 4, accent);
@@ -252,7 +260,9 @@ void reticle(const Painter& p, const Snapshot& s) {
     if (s.hitMarker > 0) {
         const int outer = s.lethalMarker ? 17 : 10;
         const int inner = s.lethalMarker ? 7 : 4;
-        const uint16_t color = s.lethalMarker ? (s.headshot ? gold : alert) : paper;
+        const bool shieldHit = s.mission && s.mission->active && s.mission->shieldHit && !s.lethalMarker;
+        const uint16_t color = s.lethalMarker ? (s.headshot ? gold : alert)
+                             : shieldHit ? rgb(88, 240, 255) : paper;
         for (int x : {-1, 1}) {
             for (int y : {-1, 1}) {
                 p.line(400 + outer * x, 241 + outer * y, 400 + inner * x, 241 + inner * y, ink);
@@ -495,8 +505,9 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
                           m.civiliansSaved, m.civiliansTotal, m.aliensKilled, mins, secs, missionGrade(m));
         }
         p.text(menuX + 12, 104, summary, m.phase == MissionPhase::Victory ? gold : alert, 1);
-        char detail[96];
-        std::snprintf(detail, sizeof(detail), "HEADSHOTS %d  /  CHECKPOINT RELOADS %d  /  %s %d", m.headshots, m.retries,
+        char detail[112];
+        std::snprintf(detail, sizeof(detail), "HEADSHOTS %d  /  INTERRUPTS %d  /  SHIELDS %d  /  RETRIES %d  /  %s %d",
+                      m.headshots, m.chargeInterrupts, m.shieldsBroken, m.retries,
                       difficultyName(menu.difficulty), menu.difficulty);
         p.text(menuX + 12, 117, detail, muted, 1);
         if (m.epilogue[0]) p.text(menuX + 12, 131, m.epilogue, paper, 1);
@@ -628,14 +639,14 @@ void drawRadioBanner(const Painter& p, const MissionSnapshot& m) {
 // The opening card types out over the closed eyes before the wake-up.
 void drawTitleCard(const Painter& p, float t) {
     const struct { const char* text; uint16_t color; int scale, y; float at; } lines[]{
-        {"DAY ONE OF THE LANDINGS", gold, 1, 152, .2f},
-        {"COLORADO FRONT RANGE  /  05:47", paper, 2, 170, .5f},
+        {"DAY ONE OF THE LANDINGS  /  DUSK", rgb(248, 126, 58), 1, 152, .2f},
+        {"COLORADO FRONT RANGE  /  19:47", paper, 2, 170, .5f},
         {"DELTA SQUAD  -  OPERATION BRIAR", muted, 1, 206, 1.4f},
-        {"EXTRACT DR. NORA MARSH AND HER FAMILY FROM BRIAR HOUSE.", paper, 1, 240, 2.f},
+        {"BREAK OUT OF BRIAR HOUSE. SWEEP THE TOWN FOR THE MARSH FAMILY.", paper, 1, 240, 2.f},
         {"WARHORSE 2-1 WAS HIT ON APPROACH.", alert, 1, 262, 3.1f},
     };
     p.rect(0, 15, 800, 450, ink); // Eyes fully shut behind the card
-    p.rect(150, 140, 44, 2, gold);
+    p.rect(150, 140, 56, 2, rgb(248, 118, 52));
     for (const auto& line : lines) {
         const std::string_view text(line.text);
         const size_t shown = size_t(std::clamp((t - line.at) * 42.f, 0.f, float(text.size())));
@@ -811,6 +822,22 @@ void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
         p.rect(284, 58, 232, 24, ink);
         p.rect(284, 58, 232, 2, alert);
         p.text(302, 65, "CHECK YOUR FIRE!", alert, 2);
+    } else if (m.warningLock && !cutscene && !s.dead) {
+        const bool flash = (int(s.realTime * 10.0) & 1) == 0;
+        const uint16_t warnColor = flash ? rgb(255, 112, 58) : alert;
+        p.rect(224, 58, 352, 20, ink);
+        p.rect(224, 58, 352, 2, warnColor);
+        p.text(242, 64, "HEAVY RAY LOCK - HIT HEAD OR TAKE COVER", warnColor, 1);
+    }
+    if (m.tacticalCalloutTimer > 0.f && m.tacticalCallout[0] && !cutscene && !s.dead) {
+        const std::string_view badge(m.tacticalCallout);
+        const int bw = int(badge.size()) * 6 + 24;
+        const int bx = 400 - bw / 2;
+        const uint16_t c = m.tacticalCalloutColor ? m.tacticalCalloutColor : gold;
+        p.rect(bx, 316, bw, 18, ink);
+        p.rect(bx, 316, 3, 18, c);
+        p.rect(bx + bw - 3, 316, 3, 18, c);
+        p.text(bx + 12, 321, badge, c, 1);
     }
     // Mission dialogue carries the instructions, so subtitles always show; the setting mutes radio sound.
     drawRadioBanner(p, m);

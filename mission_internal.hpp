@@ -48,6 +48,7 @@ private:
         bool used = false;
         MissionRole role = MissionRole::AlienTrooper;
         uint8_t variant = 0;
+        uint8_t tacRole = 0; // 0=patrol, 1=suppressor, 2=flanker, 3=vanguard, 4=support
         int8_t sector = -1; // 0: Kitchen, 1: Garage, 2: Shed, -1: Breach/Extraction/Commander
         Actor actor{};
         Vec3 velocity{};
@@ -68,6 +69,22 @@ private:
         double flinchUntil = 0;// Civilian shrugs off further player rounds until then
         double leapAt = -1;    // Seconds into a vault over the front wall, or -1
         Vec3 leapFrom{}, leapTo{};
+        // Ray gun animation, charge-up, phase shield & suppression state
+        float gunPitch = 0;
+        float gunCharge = 0;
+        float gunRecoil = 0;
+        double chargeTime = 0;
+        double chargeDuration = 0;
+        double overchargeCooldown = 0;
+        double staggerUntil = 0;
+        float suppression = 0;
+        float shield = 0;
+        float maxShield = 0;
+        double shieldRegenAt = 0;
+        int8_t linkTarget = -1; // For Drones: slot of ground alien receiving shield link
+        bool linked = false;    // For Troopers/Enforcers: boosted by a Drone
+        bool overcharging = false;
+        bool chargeSoundPlayed = false;
         // Tactics: a firing spot around the player (or a hiding spot), re-planned every few seconds.
         Vec3 tacGoal{}, planFrom{};
         bool hasGoal = false, hiding = false, wantsCover = false, hidOnce = false;
@@ -108,11 +125,13 @@ private:
     // Progress carried across a checkpoint reload so results reflect the whole run.
     struct CheckpointStats {
         int saved = 0, lost = 0, kills = 0, headshots = 0;
+        int interrupts = 0, shieldsBroken = 0, ambushKills = 0;
         float seconds = 0;
         std::array<uint8_t, 3> civilians{}; // 0 pinned, 1 rescued, 2 lost
     };
 
     static Vec3 mapPoint(float x, float y, float height = 0.f);
+    static Vec3 rayGunMuzzle(const Agent& a);
     void resetAll();
     void setRadio(const char* speaker, const char* line, float duration, MissionHost& host, bool chirp = true,
                   uint8_t priority = RadioOrder, int sector = -1);
@@ -120,7 +139,10 @@ private:
     void showRadio(const RadioLine& line, MissionHost& host, bool chirp);
     void pumpRadio(MissionHost& host);
     void setObjective(const char* mainText, const char* subText);
-    void addTracer(Vec3 from, Vec3 to, uint16_t color);
+    void setTacticalCallout(const char* text, uint16_t color, float duration = 1.6f);
+    void addTracer(Vec3 from, Vec3 to, uint16_t color, TracerStyle style = TracerStyle::Ballistic, float life = 1.f);
+    void updateDroneLinks(double dt);
+    void updateMistDensity(double dt);
     void spawnCommander(Vec3 pos, float yaw);
     void spawnCivilian(int slot, int sector, Vec3 pos, float yaw, uint8_t outfit);
     int spawnAlien(MissionRole role, int sector, Vec3 pos, float yaw, uint8_t variant, int difficulty);
@@ -187,6 +209,11 @@ private:
     int pendingFlankers_ = 0;
     bool flankersCalled_ = false;
     bool wallCalled_ = false;
+    bool overchargeWarned_ = false;
+    bool droneLinkWarned_ = false;
+    bool interruptPraised_ = false;
+    bool mistRemarked_ = false;
+    double resupplyReadyAt_ = 0;
     double roarReadyAt_ = 0; // Roars are spaced so a pack never drowns out everything else
     bool plannedThisTick_ = false; // Spread position searches across ticks
     bool exfil_ = false;
@@ -195,6 +222,8 @@ private:
     double liftAt_ = 0;
     int evacBeat_ = 0;
     int reinforcements_ = 0;
+    int streetPatrols_ = 0;
+    double nextPatrolAt_ = 0;
     double introTime_ = 0;
     double phaseTime_ = 0;
     double elapsed_ = 0;

@@ -235,6 +235,14 @@ constexpr auto skyPalette = [] {
     return colors;
 }();
 
+// Low west-northwest Colorado Front Range sunset direction (matches dusk sun in light.cpp).
+constexpr Vec3 sunsetSunDir{-0.8780f, 0.1497f, 0.4545f};
+
+uint16_t rgbClamped(float r, float g, float b) {
+    return rgb(std::clamp(int(r + 0.5f), 0, 255), std::clamp(int(g + 0.5f), 0, 255),
+               std::clamp(int(b + 0.5f), 0, 255));
+}
+
 Texture halfTexture(const Texture& source) {
     Texture texture{std::max(1, source.width / 2), std::max(1, source.height / 2), {}};
     texture.pixels.resize(texture.width * texture.height);
@@ -262,11 +270,13 @@ Texture halfTexture(const Texture& source) {
 struct Renderer::Impl {
     const Assets& assets;
     const bool enhanced;
+    const bool invasionDusk;
     std::vector<uint16_t> depth;
     std::vector<Vec3> culledNormals;
     std::vector<uint8_t> worldLights;
     std::vector<uint16_t> edgeRow;
     std::vector<std::vector<Texture>> mipmaps;
+    std::array<std::vector<uint16_t>, 6> sunsetSky;
     std::vector<PosedVertex> posedVertices;
     // Reused for each mesh and view. The world keeps its cache across visible chunks.
     std::array<CachedProjection, 128> projections{};
@@ -282,6 +292,25 @@ struct Renderer::Impl {
     std::array<uint8_t, 1024> haze{};
     std::array<uint32_t, 33> hazeBlend{};
     float hazeStart = 0;
+    int duskMistBucket = -1;
+    // Per-frame glowing muzzle orbs and shield rims collected during drawMissionActor.
+    struct MuzzleGlow {
+        Vec3 pos{};
+        float radius = 0;
+        uint16_t core = 0, halo = 0;
+        float intensity = 0;
+        bool star = false;
+    };
+    struct ShieldGlow {
+        Vec3 pos{};
+        float radius = 0, height = 0;
+        uint16_t color = 0;
+        float strength = 0;
+    };
+    std::array<MuzzleGlow, MissionSnapshot::maxActors> muzzleGlows{};
+    size_t muzzleGlowCount = 0;
+    std::array<ShieldGlow, MissionSnapshot::maxActors> shieldGlows{};
+    size_t shieldGlowCount = 0;
     // Daylight in the space of the mesh being submitted, and the ground light where it stands.
     Vec3 sun{}, up{0, 1, 0};
     unsigned meshLight = 255;
@@ -293,7 +322,9 @@ struct Renderer::Impl {
     }
 
     explicit Impl(const Assets& source, RenderLook look, size_t maxPixels)
-        : assets(source), enhanced(look == RenderLook::Enhanced), depth(maxPixels) {
+        : assets(source), enhanced(look == RenderLook::Enhanced),
+          invasionDusk(source.arena == Arena::BriarHouse && source.briarHouseMode == BriarHouseMode::Invasion),
+          depth(maxPixels) {
         // Opaque primitives can flush in submission order. Keep every translucent
         // primitive for the depth-tested, back-to-front pass that follows.
         solid.reserve(256);
@@ -314,16 +345,27 @@ struct Renderer::Impl {
         }
         maxActorAlpha = std::max(maxActorAlpha, alphaCount(source.playerBody));
         vertices = std::max(vertices, source.playerBody.vertices.size());
-        vertices = std::max({vertices, source.alienTrooper.vertices.size(), source.alienEnforcer.vertices.size()});
+        vertices = std::max({vertices, source.alienTrooper.vertices.size(), source.alienEnforcer.vertices.size(),
+                             source.alienRayGun.vertices.size(), source.alienRayRings.vertices.size(),
+                             source.alienHeavyRayGun.vertices.size(), source.alienHeavyRayRings.vertices.size()});
         vertices = std::max(vertices, source.civilianMesh.vertices.size());
         vertices = std::max({vertices, source.transportHelo.vertices.size(), source.transportRotor.vertices.size()});
         vertices = std::max(vertices, source.alienDrone.vertices.size());
         for (const auto& craft : source.alienFleet) vertices = std::max(vertices, craft.vertices.size());
+        size_t propAlpha = 0;
+        if (!source.propInstances.empty()) {
+            vertices = std::max({vertices, source.shipBoxTruck.vertices.size(), source.shipBoxCar.vertices.size()});
+            const size_t truckAlpha = alphaCount(source.shipBoxTruck);
+            const size_t carAlpha = alphaCount(source.shipBoxCar);
+            for (const auto& inst : source.propInstances) {
+                propAlpha += inst.kind == PropKind::Truck ? truckAlpha : carAlpha;
+            }
+        }
         for (const auto& weapon : source.weapon) {
             maxWeaponAlpha = std::max(maxWeaponAlpha, alphaCount(weapon));
             vertices = std::max(vertices, weapon.vertices.size());
         }
-        const size_t worldAlpha = alphaCount(source.world) + 5 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
+        const size_t worldAlpha = alphaCount(source.world) + propAlpha + 5 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
         translucent.reserve(2 * std::max(worldAlpha, maxWeaponAlpha)); // One near-plane split per triangle.
         posedVertices.resize(vertices);
         visible.reserve(source.world.chunks.size());
@@ -343,18 +385,138 @@ struct Renderer::Impl {
         }
         if (enhanced) {
             light.bake(source);
-            mist();
+            if (invasionDusk) {
+                buildSunsetSky();
+                updateDuskMist(0.72f, sunsetSunDir);
+            } else {
+                mist();
+            }
             mipmaps.resize(source.textures.size());
-            for (const auto& triangle : world.triangles) {
-                const auto id = source.materials[triangle.material].texture;
-                if (id < 0 || !mipmaps[id].empty()) continue;
-                const Texture* previous = &source.textures[id];
-                auto& levels = mipmaps[id];
-                while (std::max(previous->width, previous->height) > 4) {
-                    levels.push_back(halfTexture(*previous));
-                    previous = &levels.back();
+            const auto buildMeshMips = [&](const Mesh& mesh) {
+                for (const auto& triangle : mesh.triangles) {
+                    const auto id = source.materials[triangle.material].texture;
+                    if (id < 0 || !mipmaps[id].empty()) continue;
+                    const Texture* previous = &source.textures[id];
+                    auto& levels = mipmaps[id];
+                    while (std::max(previous->width, previous->height) > 4) {
+                        levels.push_back(halfTexture(*previous));
+                        previous = &levels.back();
+                    }
+                }
+            };
+            buildMeshMips(world);
+            if (!source.propInstances.empty()) {
+                buildMeshMips(source.shipBoxTruck);
+                buildMeshMips(source.shipBoxCar);
+            }
+        }
+    }
+
+    // Build a legendary Colorado Front Range red-orange dusk sunset cubemap modulated by the
+    // pack's existing cloud faces so sunset clouds burn fiery orange-crimson on their undersides
+    // against deep twilight violet overhead.
+    void buildSunsetSky() {
+        static constexpr Vec3 faces[][3] = {
+            {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}},
+            {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},
+            {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}},
+        };
+        constexpr int S = skyFaceSize;
+        for (size_t f = 0; f < 6; ++f) {
+            sunsetSky[f].resize(size_t(S) * S);
+            const auto& [normal, right, upAxis] = faces[f];
+            const bool hasCloud = assets.sky[f].size() == size_t(S) * S;
+            for (int y = 0; y < S; ++y) {
+                const float v = (float(y) + 0.5f) / float(S) * 2.f - 1.f;
+                for (int x = 0; x < S; ++x) {
+                    const float u = (float(x) + 0.5f) / float(S) * 2.f - 1.f;
+                    const Vec3 dir = normalized(normal + right * u + upAxis * v);
+                    const float e = dir.y;
+                    const float sunDot = std::max(0.f, dot(dir, sunsetSunDir));
+                    const float cloud = hasCloud ? float(assets.sky[f][size_t(y) * S + x]) / 255.f : 0.45f;
+
+                    float r = 0, g = 0, b = 0;
+                    if (e >= 0.f) {
+                        // Multi-stop Colorado sunset vertical ramp: molten red-orange horizon ->
+                        // burning alpenglow crimson -> dusk magenta-plum -> twilight indigo zenith.
+                        if (e < 0.14f) {
+                            const float t = e / 0.14f;
+                            r = 248.f - 18.f * t;
+                            g = 104.f - 32.f * t;
+                            b = 40.f - 4.f * t;
+                        } else if (e < 0.34f) {
+                            const float t = (e - 0.14f) / 0.20f;
+                            r = 230.f - 78.f * t;
+                            g = 72.f - 30.f * t;
+                            b = 36.f + 20.f * t;
+                        } else if (e < 0.62f) {
+                            const float t = (e - 0.34f) / 0.28f;
+                            r = 152.f - 82.f * t;
+                            g = 42.f - 14.f * t;
+                            b = 56.f + 2.f * t;
+                        } else {
+                            const float t = std::min(1.f, (e - 0.62f) / 0.38f);
+                            r = 70.f - 42.f * t;
+                            g = 28.f - 10.f * t;
+                            b = 58.f - 12.f * t;
+                        }
+                        // Broad western sunset blaze + solar corona + glowing sun disk through mist.
+                        const float wideGlow = std::pow(sunDot, 2.4f) * std::clamp(1.15f - e * 1.4f, 0.f, 1.f);
+                        const float halo = std::pow(sunDot, 12.f);
+                        const float disk = std::pow(sunDot, 72.f);
+                        r += wideGlow * 48.f + halo * 54.f + disk * 40.f;
+                        g += wideGlow * 44.f + halo * 76.f + disk * 92.f;
+                        b += wideGlow * 6.f + halo * 26.f + disk * 78.f;
+
+                        // Dramatic backlit sunset clouds: glowing orange-gold undersides low,
+                        // dark moody crimson-violet silhouettes high.
+                        const float cloudDelta = (cloud - 0.5f) * 2.f;
+                        const float lowBand = std::clamp(1.f - e * 2.0f, 0.f, 1.f);
+                        const float lit = lowBand * (0.45f + 0.55f * sunDot);
+                        r += cloudDelta * (44.f * lit - 16.f * (1.f - lowBand));
+                        g += cloudDelta * (24.f * lit - 14.f * (1.f - lowBand));
+                        b += cloudDelta * (-4.f * lit + 10.f * (1.f - lowBand));
+                        // Soft horizon mist veil blending the lower sky seamlessly into the town fog.
+                        const float mistVeil = std::pow(1.f - std::min(1.f, e * 3.8f), 2.f);
+                        const float mR = 220.f + 24.f * sunDot;
+                        const float mG = 96.f + 20.f * sunDot;
+                        const float mB = 56.f - 6.f * sunDot;
+                        r += (mR - r) * mistVeil * 0.45f;
+                        g += (mG - g) * mistVeil * 0.45f;
+                        b += (mB - b) * mistVeil * 0.45f;
+                    } else {
+                        // Below horizon: misty glowing dusk terracotta fading into twilight shadow.
+                        const float t = std::min(1.f, -e * 2.5f);
+                        r = (218.f + 20.f * sunDot) * (1.f - t * 0.52f);
+                        g = (94.f + 16.f * sunDot) * (1.f - t * 0.56f);
+                        b = (56.f) * (1.f - t * 0.35f);
+                    }
+                    sunsetSky[f][size_t(y) * S + x] = rgbClamped(r, g, b);
                 }
             }
+        }
+    }
+
+    // Update Colorado red-orange dusk mist: directional sun-through-mist scattering updates every
+    // frame (33 integer ops), while the 1024-entry depth curve only rebuilds as mist descends.
+    void updateDuskMist(float density, Vec3 lookDir) {
+        density = std::clamp(density, 0.25f, 1.0f);
+        const float sunAlign = std::clamp(dot(lookDir, sunsetSunDir) * 0.5f + 0.5f, 0.f, 1.f);
+        const float warm = sunAlign * sunAlign * 0.45f + sunAlign * 0.55f;
+        // Toward the western sunset: luminous burning red-orange mist; away: moody copper-rose dusk.
+        const uint16_t tone = rgbClamped(148.f + 92.f * warm, 66.f + 46.f * warm, 68.f - 16.f * warm);
+        for (uint32_t level = 0; level < hazeBlend.size(); ++level)
+            hazeBlend[level] = (((uint32_t(tone) << 16) | tone) & 0x07e0f81f) * level;
+        const int bucket = int(density * 40.f + 0.5f);
+        if (bucket == duskMistBucket) return;
+        duskMistBucket = bucket;
+        const float start = 9.5f - 4.0f * density;   // 7.5m early dusk -> 5.9m thick valley mist
+        const float reach = 35.f - 13.f * density;   // Smooth atmospheric roll-off
+        const float limit = 0.74f + 0.16f * density; // Up to 0.90 in deep distance
+        hazeStart = 1.f / start;
+        for (size_t i = 0; i < haze.size(); ++i) {
+            const float distance = decodedDepth(uint16_t(i * 64 + 32));
+            haze[i] = distance > start ? uint8_t(32 * limit * (1 - std::exp((start - distance) / reach)) + 0.5f) : 0;
         }
     }
 
@@ -514,7 +676,8 @@ struct Renderer::Impl {
 
     void submit(const Mesh& mesh, const Snapshot& state, const Transform& transform, MeshSpace space,
                 const Mesh* next = nullptr, float fraction = 0, bool metallic = false,
-                const Mesh* topology = nullptr, const uint16_t* uniform = nullptr, const MotionBlend* motion = nullptr) {
+                const Mesh* topology = nullptr, const uint16_t* uniform = nullptr, const MotionBlend* motion = nullptr,
+                bool mipmapped = false) {
         resetProjections();
         const auto& base = topology ? *topology : mesh;
         const size_t vertices = mesh.vertexCount();
@@ -543,7 +706,7 @@ struct Renderer::Impl {
                 const uint8_t level = enhanced ? SceneLight::surface(front ? turned * -1 : turned, sun, up, meshLight)
                                                : lightFor(turned, metallic);
                 return Shade{{level, level, level}};
-            });
+            }, mipmapped);
         }
     }
 
@@ -596,6 +759,27 @@ struct Renderer::Impl {
         return skyPalette[std::min(luma + bias, 255)];
     }
 
+    static uint16_t sampleSunsetSky(const uint16_t* face, float u, float v, int pixelX, int pixelY) {
+        constexpr int size = skyFaceSize;
+        constexpr int last = (size - 1) * 256;
+        const int x = int(std::clamp(u, 0.0f, 1.0f) * last);
+        const int y = int(std::clamp(v, 0.0f, 1.0f) * last);
+        const int x0 = x >> 8, y0 = y >> 8;
+        const int x1 = std::min(x0 + 1, size - 1), y1 = std::min(y0 + 1, size - 1);
+        const int fx = x & 255, fy = y & 255;
+        const int ix = 256 - fx, iy = 256 - fy;
+        const uint16_t c00 = face[y0 * size + x0], c10 = face[y0 * size + x1];
+        const uint16_t c01 = face[y1 * size + x0], c11 = face[y1 * size + x1];
+        const int w00 = ix * iy, w10 = fx * iy, w01 = ix * fy, w11 = fx * fy;
+        // Full-precision RGB565 bilinear + per-screen-pixel dither eliminates cubemap texel blocks & banding.
+        const int dith = int(skyDither[(pixelY & 63) * 64 + (pixelX & 63)]) << 14;
+        const int r = ((c00 >> 11) * w00 + (c10 >> 11) * w10 + (c01 >> 11) * w01 + (c11 >> 11) * w11 + dith) >> 16;
+        const int g = (((c00 >> 5) & 63) * w00 + ((c10 >> 5) & 63) * w10 +
+                       ((c01 >> 5) & 63) * w01 + ((c11 >> 5) & 63) * w11 + dith) >> 16;
+        const int b = ((c00 & 31) * w00 + (c10 & 31) * w10 + (c01 & 31) * w01 + (c11 & 31) * w11 + dith) >> 16;
+        return uint16_t((std::min(r, 31) << 11) | (std::min(g, 63) << 5) | std::min(b, 31));
+    }
+
     // Faces whose light changes across them, or which reach into the haze, take
     // the detailed fill. Every other face keeps the plain inner loop.
     bool detailed(const Primitive& t) const {
@@ -611,7 +795,7 @@ struct Renderer::Impl {
     }
 
     template<Fill fill = Fill::Surface, bool detail = false, bool countPixels = false>
-    void raster(const Primitive& t, bool opaque, const uint8_t* skyPixels = nullptr) {
+    void raster(const Primitive& t, bool opaque, const uint8_t* skyPixels = nullptr, const uint16_t* sunsetPixels = nullptr) {
         constexpr bool backdrop = fill == Fill::Sky, shadow = fill == Fill::Shadow;
         const auto& [a, b, c] = t.p;
         const Material* material = fill == Fill::Surface ? &assets.materials[t.material] : nullptr;
@@ -763,7 +947,8 @@ struct Renderer::Impl {
                     if constexpr (backdrop) {
                         if (depth[at]) continue;
                         const float invZ = 1.0f / z;
-                        color[at] = sampleSky(skyPixels, u * invZ, v * invZ, minX + x, y);
+                        color[at] = sunsetPixels ? sampleSunsetSky(sunsetPixels, u * invZ, v * invZ, minX + x, y)
+                                                 : sampleSky(skyPixels, u * invZ, v * invZ, minX + x, y);
                         if constexpr (countPixels) ++stats.depthPasses;
                         continue;
                     } else {
@@ -794,7 +979,12 @@ struct Renderer::Impl {
                     if constexpr (detail) {
                         if (varying) pixel = shaded(pixel, std::min(unsigned(lit) >> 16, 255u), dither[(minX + x) & 3]);
                         if (hazy) {
-                            if (const unsigned level = haze[newDepth >> 6]) pixel = veil(pixel, level);
+                            if (unsigned level = haze[newDepth >> 6]) {
+                                // Emissive surfaces (ray gun cores, eyes, lanterns, flames, mothership glow)
+                                // pierce through the sunset mist instead of washing out completely.
+                                if (material && material->emissive) level >>= 1;
+                                if (level) pixel = veil(pixel, level);
+                            }
                         }
                     }
                     color[at] = opaque ? pixel : blend(color[at], pixel, material->alpha);
@@ -919,13 +1109,17 @@ struct Renderer::Impl {
             const bool slide = !posed && !ma.dead && actor.speed > 0.3f;
             const float bob = slide ? std::abs(std::sin(actor.phase * 2 * pi)) * 0.08f : 0.f;
             const float sway = slide ? std::sin(actor.phase * 2 * pi) * 0.07f : 0.f;
-            auto transform = orientation(actor.position + Vec3{0, fall * 0.22f + bob, 0}, actor.yaw, -fall * 1.45f, sway);
+            const float staggerRoll = !ma.dead ? std::sin(float(state.realTime) * 28.f) * 0.16f * ma.stagger : 0.f;
+            const float staggerPitch = !ma.dead ? -0.18f * ma.stagger : 0.f;
+            auto transform = orientation(actor.position + Vec3{0, fall * 0.22f + bob, 0}, actor.yaw,
+                                         -fall * 1.45f + staggerPitch, sway + staggerRoll);
+            const float s = ma.variant > 0 ? 1.08f : 1.f;
             if (ma.variant > 0) {
-                transform.x *= 1.08f;
-                transform.y *= 1.08f;
-                transform.z *= 1.08f;
+                transform.x *= s;
+                transform.y *= s;
+                transform.z *= s;
             }
-            const Bounds bounds{actor.position + Vec3{-1.4f, -0.3f, -1.4f}, actor.position + Vec3{1.4f, 2.8f, 1.4f}};
+            const Bounds bounds{actor.position + Vec3{-1.6f, -0.3f, -1.6f}, actor.position + Vec3{1.6f, 2.9f, 1.6f}};
             if (!view.sees(bounds)) return;
             meshLight = standing(actor.position);
             const uint16_t* uniform = (ma.variant > 0 && !assets.enforcerUniform.empty())
@@ -936,6 +1130,70 @@ struct Renderer::Impl {
                 submit(pose, state, transform, MeshSpace::World, &next, actor.frameBlend, false, &body, uniform);
             } else {
                 submit(assets.alienTrooper, state, transform, MeshSpace::World, nullptr, 0, false, nullptr, uniform);
+            }
+            // Render the alien's animated ray gun in its right claw, with spinning accelerator rings!
+            const Mesh& gunMesh = armored ? assets.alienHeavyRayGun : assets.alienRayGun;
+            const Mesh& ringMesh = armored ? assets.alienHeavyRayRings : assets.alienRayRings;
+            if (!gunMesh.triangles.empty()) {
+                const uint16_t aimBase = alienIdlePoses + alienStridePoses;
+                const float aimPose = (actor.frame >= aimBase) ? 1.f
+                                    : (actor.nextFrame >= aimBase ? actor.frameBlend : 0.f);
+                const float aimAmount = std::max(aimPose, std::max(ma.gunCharge, ma.gunRecoil));
+                const float strideSway = (!ma.dead && actor.speed > 0.4f && aimAmount < 0.5f)
+                    ? std::sin(actor.phase * 2.f * pi) * 0.06f * (1.f - aimAmount) : 0.f;
+                // Match right-hand wrist socket from writeCreature (low-ready -> shoulder-aim + recoil kick).
+                const Vec3 readyLocal{0.58f, 1.30f, 0.58f + strideSway};
+                const Vec3 aimLocal{0.34f, 1.46f + 0.09f * ma.gunRecoil, 0.62f - 0.13f * ma.gunRecoil};
+                const Vec3 gripLocal = readyLocal + (aimLocal - readyLocal) * aimAmount;
+                const Vec3 gripWorld = transform(gripLocal);
+                const float gunPitch = (1.f - fall) * (ma.gunPitch * aimAmount + 0.16f * (1.f - aimAmount) -
+                                       0.22f * ma.gunRecoil + staggerPitch * 0.8f) - fall * 1.35f;
+                const float gunYaw = actor.yaw + (1.f - aimAmount) * (-0.18f + strideSway);
+                auto gunXform = orientation(gripWorld, gunYaw, gunPitch, sway * 0.5f + staggerRoll);
+                if (ma.variant > 0) {
+                    gunXform.x *= s;
+                    gunXform.y *= s;
+                    gunXform.z *= s;
+                }
+                submit(gunMesh, state, gunXform, MeshSpace::World, nullptr, 0, true, nullptr, uniform);
+
+                if (!ringMesh.triangles.empty()) {
+                    const float spinSpeed = 2.4f + 13.f * ma.gunCharge + 18.f * ma.gunRecoil + (ma.overcharging ? 9.f : 0.f);
+                    const float spin = float(state.realTime) * spinSpeed + float(ma.actor.phase) * 6.f;
+                    const float cs = std::cos(spin), sn = std::sin(spin);
+                    const float pulseZ = (ma.gunCharge > 0.05f ? std::sin(float(state.realTime) * 18.f) * 0.025f * ma.gunCharge : 0.f)
+                                       - 0.04f * ma.gunRecoil;
+                    Transform ringXform = gunXform;
+                    ringXform.origin = gunXform({0, 0.08f, pulseZ});
+                    ringXform.x = gunXform.x * cs + gunXform.y * sn;
+                    ringXform.y = gunXform.y * cs - gunXform.x * sn;
+                    submit(ringMesh, state, ringXform, MeshSpace::World, nullptr, 0, true, nullptr, uniform);
+                }
+
+                // Collect glowing muzzle charge orb & firing starburst for depth-tested post-pass.
+                if (!ma.dead && (ma.gunCharge > 0.04f || ma.gunRecoil > 0.08f) && muzzleGlowCount < muzzleGlows.size()) {
+                    const float tipZ = armored ? 1.02f : 0.88f;
+                    const Vec3 muzzlePos = gunXform({0, 0.08f, tipZ});
+                    const bool hot = armored || ma.overcharging;
+                    const float power = std::max(ma.gunCharge * (ma.overcharging ? 1.15f : 0.72f), ma.gunRecoil * 1.0f);
+                    const float pulse = 0.88f + 0.16f * std::sin(float(state.realTime) * (ma.overcharging ? 34.f : 20.f));
+                    muzzleGlows[muzzleGlowCount++] = {
+                        muzzlePos,
+                        (0.06f + 0.10f * std::min(power, 1.15f)) * pulse * s,
+                        hot ? rgb(255, 246, 224) : rgb(228, 255, 255),
+                        hot ? rgb(255, 76, 62) : rgb(52, 242, 255),
+                        std::min(1.f, power),
+                        ma.gunRecoil > 0.25f || ma.overcharging
+                    };
+                }
+            }
+            if (!ma.dead && ma.shield > 0.01f && shieldGlowCount < shieldGlows.size()) {
+                const uint16_t shieldColor = ma.linked ? rgb(72, 238, 255) : rgb(255, 86, 128);
+                shieldGlows[shieldGlowCount++] = {
+                    actor.position + Vec3{0, 1.15f * s, 0},
+                    0.78f * s, 1.05f * s, shieldColor,
+                    std::clamp(0.45f + 0.55f * ma.shield, 0.35f, 1.f)
+                };
             }
             return;
         }
@@ -1065,6 +1323,24 @@ struct Renderer::Impl {
 
     void sky(const Camera& camera) {
         const float horizon = view.height * 0.5f - std::tan(camera.pitch) * view.focal;
+        if (invasionDusk) {
+            for (int y = 0; y < view.height; ++y) {
+                const float elev = std::clamp((horizon - float(y)) / float(view.height), -0.3f, 1.0f);
+                uint16_t pixel;
+                if (elev < 0.f) {
+                    const float t = std::clamp(-elev / 0.3f, 0.f, 1.f);
+                    pixel = rgbClamped(216.f - 96.f * t, 96.f - 46.f * t, 54.f - 10.f * t);
+                } else if (elev < 0.25f) {
+                    const float t = elev / 0.25f;
+                    pixel = rgbClamped(248.f - 36.f * t, 108.f - 42.f * t, 42.f + 6.f * t);
+                } else {
+                    const float t = std::clamp((elev - 0.25f) / 0.75f, 0.f, 1.f);
+                    pixel = rgbClamped(212.f - 172.f * t, 66.f - 44.f * t, 48.f + 4.f * t);
+                }
+                std::fill_n(color + y * view.width, view.width, pixel);
+            }
+            return;
+        }
         for (int y = 0; y < view.height; ++y) {
             const float mix = std::clamp((float(y) - horizon) / view.height + 0.40f, 0.0f, 1.0f);
             const auto pixel = rgb(int(105 + mix * 75), int(119 + mix * 59), int(132 + mix * 52));
@@ -1073,7 +1349,9 @@ struct Renderer::Impl {
     }
 
     void drawSkyCube() {
-        if (!enhanced || assets.sky[0].empty()) return;
+        if (!enhanced) return;
+        const bool useSunset = invasionDusk && !sunsetSky[0].empty();
+        if (!useSunset && assets.sky[0].empty()) return;
         const auto start = timestamp();
         // Face axes match the panorama conversion in the exporter.
         static constexpr Vec3 faces[][3] = {
@@ -1094,9 +1372,10 @@ struct Renderer::Impl {
             const auto submit = [&](Vertex a, Vertex b, Vertex c) {
                 Primitive primitive{};
                 if (!project(primitive, a, b, c)) return;
-                const auto* pixels = assets.sky[face].data();
-                if (countRenderWork && measure) raster<Fill::Sky, false, true>(primitive, false, pixels);
-                else raster<Fill::Sky>(primitive, false, pixels);
+                const auto* luma = useSunset ? nullptr : assets.sky[face].data();
+                const auto* sunset = useSunset ? sunsetSky[face].data() : nullptr;
+                if (countRenderWork && measure) raster<Fill::Sky, false, true>(primitive, false, luma, sunset);
+                else raster<Fill::Sky>(primitive, false, luma, sunset);
             };
             clip(first, submit);
             clip(second, submit);
@@ -1105,6 +1384,214 @@ struct Renderer::Impl {
         recordRasterTime(start);
     }
 
+    void drawGlowDisc(Vec3 worldPos, float radius, uint16_t coreColor, uint16_t haloColor, float intensity, bool star) {
+        const Vertex centre{view.transform(worldPos), 0, 0};
+        if (centre.position.z < view.near + 0.05f) return;
+        const auto p = view.project(centre);
+        const float pixels = std::min(float(view.width) * 0.09f, radius * view.focal / centre.position.z);
+        if (pixels < 0.8f) return;
+        const int r = int(pixels + 1.f), cx = int(p.x), cy = int(p.y);
+        if (cx + r < 0 || cx - r >= view.width || cy + r < 0 || cy - r >= view.height) return;
+        const uint16_t z = enhanced ? encodedDepth(p.depth) : uint16_t(std::clamp(p.depth * view.near * 65534.f, 0.f, 65535.f));
+        const float inv = 1.f / std::max(1.f, pixels * pixels);
+        const int x0 = std::max(0, cx - r), x1 = std::min(view.width - 1, cx + r);
+        const int y0 = std::max(0, cy - r), y1 = std::min(view.height - 1, cy + r);
+        for (int y = y0; y <= y1; ++y) {
+            const float dy = float(y - cy);
+            for (int x = x0; x <= x1; ++x) {
+                const float dx = float(x - cx);
+                const float d2 = (dx * dx + dy * dy) * inv;
+                if (d2 >= 1.f) continue;
+                const int at = y * view.width + x;
+                if (z + 2 < depth[at]) continue;
+                const float soft = 1.f - d2;
+                const float fall = soft * soft * soft;
+                const unsigned alpha = unsigned(std::clamp(fall * intensity * 245.f, 0.f, 245.f));
+                // Smooth radial color transition from incandescent white core to saturated plasma halo.
+                const unsigned coreMix = unsigned(std::clamp((1.f - d2 * 2.6f) * 255.f, 0.f, 255.f));
+                const uint16_t tint = coreMix > 4 ? blend(haloColor, coreColor, coreMix) : haloColor;
+                color[at] = blend(color[at], tint, alpha);
+            }
+        }
+        if (star && pixels >= 2.2f) {
+            // Crisp four-point plasma flare rays across the glowing muzzle.
+            const int arm = std::min(int(pixels * 1.85f), view.width / 10);
+            for (int d = -arm; d <= arm; ++d) {
+                const float fall = 1.f - std::abs(float(d)) / float(arm + 1);
+                const unsigned a = unsigned(std::clamp(fall * fall * intensity * 200.f, 0.f, 200.f));
+                if (cx + d >= 0 && cx + d < view.width && cy >= 0 && cy < view.height) {
+                    const int at = cy * view.width + cx + d;
+                    if (z + 2 >= depth[at]) color[at] = blend(color[at], coreColor, a);
+                }
+                if (cy + d >= 0 && cy + d < view.height && cx >= 0 && cx < view.width) {
+                    const int at = (cy + d) * view.width + cx;
+                    if (z + 2 >= depth[at]) color[at] = blend(color[at], haloColor, a * 3 / 4);
+                }
+            }
+        }
+    }
+
+    void drawMissionTracer(const MissionTracer& shot, float realTime) {
+        if (shot.time <= 0) return;
+        if (shot.style == TracerStyle::Ballistic) {
+            drawTracer({shot.start, shot.end, shot.time}, shot.color);
+            return;
+        }
+        Vertex a{view.transform(shot.start), 0, 0};
+        Vertex b{view.transform(shot.end), 0, 0};
+        if (a.position.z < view.near && b.position.z < view.near) return;
+        if (a.position.z < view.near) a = cut(a, b, view.near);
+        if (b.position.z < view.near) b = cut(b, a, view.near);
+        const auto p = view.project(a), q = view.project(b);
+        const float dx = q.x - p.x, dy = q.y - p.y;
+        const float segLen = std::sqrt(dx * dx + dy * dy);
+        if (segLen < 0.5f) return;
+        const int count = int(std::clamp(std::max(std::abs(dx), std::abs(dy)), 1.0f, 1.8f * view.width));
+        const float nx = -dy / segLen, ny = dx / segLen; // Screen-space perpendicular normal
+        const bool heavy = shot.style == TracerStyle::HeavyRay;
+        const bool drop = shot.style == TracerStyle::DropBeam;
+        const bool link = shot.style == TracerStyle::ShieldLink;
+        const bool scan = shot.style == TracerStyle::Scanner;
+        const uint16_t coreColor = heavy ? rgb(255, 246, 228) : link ? rgb(196, 255, 255) : rgb(236, 255, 255);
+        const float baseWidth = heavy ? 3.2f : drop ? 4.2f : scan ? 1.1f : link ? 1.6f : 1.9f;
+        const float resScale = float(view.width) / 400.f;
+        const float life = std::clamp(shot.time, 0.f, 1.f);
+        const float phaseShift = (1.f - life) * (heavy ? 18.f : 12.f) + realTime * (link ? 9.f : 0.f);
+
+        for (int i = 0; i <= count; ++i) {
+            const float t = float(i) / float(count);
+            const float inverseZ = p.depth + (q.depth - p.depth) * t;
+            const uint16_t z = enhanced ? encodedDepth(inverseZ) : uint16_t(std::clamp(inverseZ * view.near * 65534.f, 0.f, 65535.f));
+            // Undulate shield-link beams smoothly; pulse ray bolts with traveling plasma rings!
+            const float wave = link ? std::sin(t * 14.f - phaseShift) * 2.2f * resScale : 0.f;
+            const float pulse = (!scan && !drop) ? (0.65f + 0.35f * std::sin(t * (heavy ? 24.f : 18.f) - phaseShift)) : 1.f;
+            const float cx = p.x + dx * t + nx * wave;
+            const float cy = p.y + dy * t + ny * wave;
+            const float persp = std::clamp(inverseZ * 10.f, 0.55f, 2.2f);
+            const int halfW = std::clamp(int(baseWidth * resScale * persp * (0.75f + 0.35f * pulse)), 1, 7);
+            const unsigned outerA = unsigned(std::clamp(int((scan ? 90.f : heavy ? 215.f : 175.f) * life * pulse), 28, 224));
+            const unsigned coreA = unsigned(std::clamp(int((scan ? 130.f : 242.f) * life), 56, 248));
+
+            for (int off = -halfW; off <= halfW; ++off) {
+                const int px = int(cx + nx * float(off));
+                const int py = int(cy + ny * float(off));
+                if (px < 0 || px >= view.width || py < 0 || py >= view.height) continue;
+                const int at = py * view.width + px;
+                if (z + 2 < depth[at]) continue;
+                const int ad = std::abs(off);
+                if (ad == 0 || (heavy && ad == 1)) {
+                    color[at] = blend(color[at], coreColor, coreA);
+                } else {
+                    const unsigned fallA = outerA * unsigned(halfW + 1 - ad) / unsigned(halfW + 1);
+                    color[at] = blend(color[at], shot.color, fallA);
+                }
+            }
+        }
+        // Impact flash bloom where a ray bolt or heavy beam strikes cover or target!
+        if ((shot.style == TracerStyle::RayBolt || heavy) && life > 0.25f) {
+            drawGlowDisc(shot.end, heavy ? 0.24f : 0.14f, coreColor, shot.color, life * (heavy ? 0.95f : 0.72f), heavy);
+        }
+    }
+
+    void drawShieldGlows(float realTime) {
+        const auto plot = [&](int x, int y, uint16_t z, uint16_t tint, unsigned a) {
+            if (x < 0 || x >= view.width || y < 0 || y >= view.height) return;
+            const int at = y * view.width + x;
+            if (z + 8 >= depth[at]) color[at] = blend(color[at], tint, a);
+        };
+        for (size_t i = 0; i < shieldGlowCount; ++i) {
+            const auto& sg = shieldGlows[i];
+            const Vertex centre{view.transform(sg.pos), 0, 0};
+            if (centre.position.z < view.near + 0.4f) continue;
+            const auto p = view.project(centre);
+            const float rx = std::min(float(view.width) * 0.20f, sg.radius * view.focal / centre.position.z);
+            const float ry = std::min(float(view.height) * 0.30f, sg.height * view.focal / centre.position.z);
+            if (rx < 4.f || ry < 6.f) continue;
+            const uint16_t z = enhanced ? encodedDepth(p.depth) : uint16_t(std::clamp(p.depth * view.near * 65534.f, 0.f, 65535.f));
+            const float shimmer = 0.76f + 0.24f * std::sin(realTime * 11.f + float(i) * 2.1f);
+            const unsigned rimA = unsigned(std::clamp(sg.strength * shimmer * 155.f, 44.f, 172.f));
+            // Connected octagonal energy barrier contour around shielded Enforcers & linked Troopers.
+            constexpr int corners = 8;
+            float vx[corners], vy[corners];
+            for (int c = 0; c < corners; ++c) {
+                const float a = (2.f * pi * float(c)) / float(corners) + pi / 8.f;
+                vx[c] = p.x + std::cos(a) * rx;
+                vy[c] = p.y + std::sin(a) * ry;
+            }
+            for (int c = 0; c < corners; ++c) {
+                const int next = (c + 1) % corners;
+                const float dx = vx[next] - vx[c], dy = vy[next] - vy[c];
+                const int seg = std::clamp(int(std::max(std::abs(dx), std::abs(dy))), 1, 96);
+                for (int s = 0; s <= seg; ++s) {
+                    const float t = float(s) / float(seg);
+                    const int px = int(vx[c] + dx * t), py = int(vy[c] + dy * t);
+                    plot(px, py, z, sg.color, rimA);
+                    plot(px + 1, py, z, sg.color, rimA / 2);
+                    plot(px, py + 1, z, sg.color, rimA / 2);
+                }
+            }
+        }
+    }
+
+    // Low-lying dusk valley mist rolling across the town, road, lawns and patio, backlit by
+    // the red-orange Colorado sunset! Depth-tested so mist curls around walls, trees and aliens.
+    void groundMist(const Snapshot& state) {
+        if (assets.mist.empty()) return;
+        const float t = float(state.realTime);
+        const float density = (state.mission && state.mission->active) ? state.mission->mistDensity : 0.74f;
+        const float baseAlpha = std::clamp(density * 118.f, 44.f, 118.f);
+        constexpr int wisps = 3;
+        for (size_t b = 0; b < assets.mist.size(); ++b) {
+            const auto& bank = assets.mist[b];
+            for (int i = 0; i < wisps; ++i) {
+                const float life = std::fmod(t * bank.rate + float(i) / wisps + float(b) * .29f, 1.f);
+                const float fade = std::sin(life * pi);
+                if (fade < 0.08f) continue;
+                const Vec3 at = bank.base + bank.drift * (life - 0.5f) +
+                                Vec3{0, std::sin(t * 0.45f + float(b + i)) * 0.28f - 0.25f * density, 0};
+                const Vertex centre{view.transform(at), 0, 0};
+                if (centre.position.z < view.near + 1.4f || centre.position.z > 88.f) continue;
+                const auto p = view.project(centre);
+                const float rx = std::min(float(view.width) * 0.34f, bank.width * (0.75f + 0.35f * fade) * view.focal / centre.position.z);
+                const float ry = std::min(float(view.height) * 0.26f, bank.height * (0.80f + 0.25f * fade) * view.focal / centre.position.z);
+                if (rx < 3.f || ry < 2.f) continue;
+                const int irx = int(rx), iry = int(ry), cx = int(p.x), cy = int(p.y);
+                if (cx + irx < 0 || cx - irx >= view.width || cy + iry < 0 || cy - iry >= view.height) continue;
+                const uint16_t z = enhanced ? encodedDepth(p.depth) : uint16_t(std::clamp(p.depth * view.near * 65534.f, 0.f, 65535.f));
+                // Dynamic Colorado sunset scattering per mist bank: fiery orange-coral toward the
+                // setting sun, glowing dusty rose-terracotta in the eastern twilight shadow.
+                const Vec3 toBank = normalized(at - view.position);
+                const float sunAlign = std::clamp(dot(toBank, sunsetSunDir) * 0.5f + 0.5f, 0.f, 1.f);
+                const uint16_t tint = rgbClamped(164.f + 86.f * sunAlign, 74.f + 50.f * sunAlign, 68.f - 14.f * sunAlign);
+                const float closeFade = std::clamp((centre.position.z - 2.2f) / 5.5f, 0.18f, 1.f);
+                const unsigned peak = unsigned(baseAlpha * fade * closeFade);
+                if (peak < 8) continue;
+                const float invRx2 = 1.f / (rx * rx), invRy2 = 1.f / (ry * ry);
+                const int y0 = std::max(0, cy - iry), y1 = std::min(view.height - 1, cy + iry);
+                const int x0 = std::max(0, cx - irx), x1 = std::min(view.width - 1, cx + irx);
+                // Smooth 2x1 horizontal span stepping for large puffs keeps mist ultra-fast on HD & handheld.
+                const int step = irx > 48 ? 2 : 1;
+                for (int y = y0; y <= y1; ++y) {
+                    const float dy = float(y - cy);
+                    const float ny2 = dy * dy * invRy2;
+                    if (ny2 >= 1.f) continue;
+                    const int rowOff = y * view.width;
+                    for (int x = x0; x <= x1; x += step) {
+                        const float dx = float(x - cx);
+                        const float fall = 1.f - dx * dx * invRx2 - ny2;
+                        if (fall <= 0.f) continue;
+                        const unsigned a = unsigned(float(peak) * fall * fall);
+                        if (a < 4) continue;
+                        const int atIdx = rowOff + x;
+                        if (z + 1 >= depth[atIdx]) color[atIdx] = blend(color[atIdx], tint, a);
+                        if (step == 2 && x + 1 <= x1 && z + 1 >= depth[atIdx + 1]) {
+                            color[atIdx + 1] = blend(color[atIdx + 1], tint, a);
+                        }
+                    }
+                }
+            }
+        }
+    }
     void drawTracer(const Tracer& shot, uint16_t tint = rgb(255, 195, 107)) {
         if (shot.time <= 0) return;
         Vertex a{view.transform(shot.start), 0, 0};
@@ -1148,12 +1635,12 @@ struct Renderer::Impl {
                 const int r = int(pixels + 1), cx = int(p.x), cy = int(p.y);
                 if (cx + r < 0 || cx - r >= view.width || cy + r < 0 || cy - r >= view.height) continue;
                 const float z = enhanced ? encodedDepth(p.depth) : p.depth * view.near * 65534;
-                // Fade in over the fire, thin out as it spreads; warm and brown low, cool grey high.
+                // Fade in over the fire, thin out as it spreads; sunset-lit ember-copper low, dusky rose-smoke high.
                 const float strength = std::min(1.f, life * 6.f) * (1.f - life);
                 const unsigned peak = unsigned(150.f * strength);
                 if (peak < 6) continue;
-                const int warm = int(28.f * (1.f - life));
-                const uint16_t tint = rgb(52 + warm, 50 + warm / 2, 52);
+                const int warm = int(42.f * (1.f - life));
+                const uint16_t tint = invasionDusk ? rgb(88 + warm, 52 + warm / 2, 54) : rgb(52 + warm, 50 + warm / 2, 52);
                 const float inv = 1.f / (pixels * pixels);
                 for (int y = std::max(0, cy - r); y <= std::min(view.height - 1, cy + r); ++y) {
                     const float dy = float(y - cy);
@@ -1217,9 +1704,9 @@ struct Renderer::Impl {
             const int rawY = int((seed >> 2) & 0x7fffu) - drift;
             const int y = ((rawY % hSpan) + hSpan) % hSpan;
             const bool ember = (i & 3) == 0;
-            const bool cyan = !title && (i % 7) == 0;
-            const uint16_t tint = cyan ? rgb(88, 240, 255) : ember ? rgb(255, 165, 86) : rgb(164, 168, 174);
-            const unsigned alpha = ember || cyan ? 128u : 64u;
+            const bool cyan = !title && (i % 9) == 0;
+            const uint16_t tint = cyan ? rgb(88, 240, 255) : ember ? rgb(255, 134, 62) : rgb(214, 128, 92);
+            const unsigned alpha = ember || cyan ? 132u : 58u;
             const int at = y * view.width + x;
             color[at] = blend(color[at], tint, alpha);
             if (enhanced && (ember || cyan) && x + 1 < view.width) {
@@ -1262,14 +1749,31 @@ struct Renderer::Impl {
         view = makeView(camera, width, height, 0.10f);
         sun = light.sun;
         up = {0, 1, 0};
+        muzzleGlowCount = 0;
+        shieldGlowCount = 0;
+        const bool missionActive = state.mission && state.mission->active;
+        if (enhanced && invasionDusk) {
+            updateDuskMist(missionActive ? state.mission->mistDensity : 0.74f, view.forward);
+        }
         std::fill_n(depth.data(), width * height, 0);
         sky(camera);
         drawWorld(state);
+        for (const auto& inst : assets.propInstances) {
+            const Mesh& propMesh = inst.kind == PropKind::Truck ? assets.shipBoxTruck : assets.shipBoxCar;
+            if (propMesh.triangles.empty() || !view.sees(inst.bounds)) continue;
+            auto transform = orientation(inst.position, inst.yaw, 0, 0);
+            if (inst.scale != 1.f) {
+                transform.x *= inst.scale;
+                transform.y *= inst.scale;
+                transform.z *= inst.scale;
+            }
+            meshLight = standing(inst.position);
+            submit(propMesh, state, transform, MeshSpace::World, nullptr, 0, false, nullptr, nullptr, nullptr, enhanced);
+        }
         float rivalHeightScale = 1.f;
 #ifdef FOD_LOCAL_DUEL
         rivalHeightScale = state.rivalHeightScale;
 #endif
-        const bool missionActive = state.mission && state.mission->active;
         if (!title) {
             if (missionActive) {
                 for (const auto& ma : state.mission->actors) drawMissionActor(ma, state);
@@ -1340,9 +1844,17 @@ struct Renderer::Impl {
         }
         drawSkyCube();
         draw(translucent, false);
+        if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion) {
+            groundMist(state);
+        }
         if (missionActive) {
+            drawShieldGlows(float(state.realTime));
+            for (size_t i = 0; i < muzzleGlowCount; ++i) {
+                const auto& mg = muzzleGlows[i];
+                drawGlowDisc(mg.pos, mg.radius, mg.core, mg.halo, mg.intensity, mg.star);
+            }
             for (const auto& shot : state.mission->tracers) {
-                if (shot.time > 0) drawTracer({shot.start, shot.end, shot.time}, shot.color);
+                if (shot.time > 0) drawMissionTracer(shot, float(state.realTime));
             }
         } else {
 #ifdef FOD_LOCAL_DUEL
@@ -1395,7 +1907,9 @@ uint64_t Renderer::workingBytes() const {
         mips += levels.capacity() * sizeof(Texture);
         for (const auto& level : levels) mips += level.pixels.capacity() * sizeof(uint16_t);
     }
-    return sizeof(Impl) + mips + impl_->light.bytes() + (impl_->depth.capacity() + impl_->edgeRow.capacity()) * sizeof(uint16_t) +
+    uint64_t duskSky = 0;
+    for (const auto& face : impl_->sunsetSky) duskSky += face.capacity() * sizeof(uint16_t);
+    return sizeof(Impl) + mips + duskSky + impl_->light.bytes() + (impl_->depth.capacity() + impl_->edgeRow.capacity()) * sizeof(uint16_t) +
            impl_->culledNormals.capacity() * sizeof(Vec3) + impl_->worldLights.capacity() +
            impl_->posedVertices.capacity() * sizeof(PosedVertex) +
            (impl_->solid.capacity() + impl_->translucent.capacity()) * sizeof(Primitive) +

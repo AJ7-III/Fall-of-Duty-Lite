@@ -760,8 +760,13 @@ struct Game::Impl {
 
     void resolveSoloShot(const Shot& shot) {
         const Vec3 p = shot.origin, d = shot.direction;
-        const auto hit = world.shot(p, d, snapshot.brokenGlass);
+        auto hit = world.shot(p, d, snapshot.brokenGlass);
         if (mission && mission->active()) {
+            // Also stop shots on surrounding town houses, parked trucks and barricades.
+            const float townWall = world.ray(p, d, hit.distance);
+            if (townWall < hit.distance) {
+                hit = {townWall, 0, -1, true};
+            }
             Vec3 hitPoint{};
             HostAdapter host(*this);
             if (mission->resolvePlayerShot(p, d, shot.damage, hit.distance, snapshot, host, hitPoint)) {
@@ -1180,7 +1185,9 @@ struct Game::Impl {
         if (dist > .01f) velocity *= (a.phase == Flight::Leave ? 17.1f : std::min(9.5f, dist * .9f)) / dist;
         a.vel += (velocity - a.vel) * float(1 - std::exp(-1.7 * dt));
         a.pos += a.vel * float(dt);
-        if (a.phase == Flight::Enter && std::abs(a.pos.x) < 18 && std::abs(a.pos.z) < 18) {
+        if (a.phase == Flight::Enter &&
+            ((inMission && planar(a.pos - snapshot.player.position) < 34.f) ||
+             (std::abs(a.pos.x) < 18 && std::abs(a.pos.z) < 18))) {
             a.phase = Flight::Hunt;
             a.retargetAt = 0;
         }

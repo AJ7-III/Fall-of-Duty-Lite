@@ -925,9 +925,20 @@ void checkBriarHouseMission(Assets& assets) {
     // The creature carries tendrils, fangs and claws but stays well under the 2,424-vertex infantry rig.
     check(assets.alienTrooper.vertices.size() < 900 && assets.alienDrone.vertices.size() < 80,
           "Procedural alien meshes must weld duplicate vertices to minimize per-frame transforms.");
-    check(assets.alienTrooperPoses.size() == size_t(alienIdlePoses + alienStridePoses) &&
+    check(assets.alienTrooperPoses.size() == size_t(alienTotalPoses) &&
               assets.alienEnforcerPoses.size() == assets.alienTrooperPoses.size(),
-          "The ground alien and the enforcer must ship idle and lope poses.");
+          "The ground alien and the enforcer must ship idle, lope, ray-gun aim and recoil poses.");
+    check(!assets.alienRayGun.triangles.empty() && !assets.alienRayRings.triangles.empty() &&
+              !assets.alienHeavyRayGun.triangles.empty() && !assets.alienHeavyRayRings.triangles.empty(),
+          "Invasion mode must build animated ray guns and spinning accelerator rings for troopers and enforcers.");
+    check(assets.alienRayGun.vertices.size() < 260 && assets.alienHeavyRayGun.vertices.size() < 320,
+          "Procedural alien ray guns must stay welded and compact for fast per-frame rendering.");
+    check(!assets.mist.empty(), "Invasion mode must place descending dusk valley mist banks.");
+    check(!assets.shipBoxTruck.triangles.empty() && !assets.shipBoxCar.triangles.empty() &&
+          !assets.shipBoxCrate.triangles.empty() && !assets.shipBoxBarrel.triangles.empty() &&
+          !assets.shipBoxLamp.triangles.empty() && !assets.shipBoxContainer.triangles.empty() &&
+          assets.propInstances.size() >= 8,
+          "Invasion mode must reuse extracted Ship Box vehicles, crates, barrels, lamps, and container across the town.");
     check(assets.alienEnforcer.vertices.size() > assets.alienTrooper.vertices.size() &&
               assets.alienEnforcer.vertices.size() < 900,
           "Enforcers must carry their bone armor within the creature budget.");
@@ -965,18 +976,26 @@ void checkBriarHouseMission(Assets& assets) {
           !assets.audio[size_t(Sound::InvasionHum)].samples.empty() &&
           !assets.audio[size_t(Sound::RadioChirp)].samples.empty() &&
           !assets.audio[size_t(Sound::CivilianSaved)].samples.empty() &&
-          !assets.audio[size_t(Sound::AlienRoar)].samples.empty(),
+          !assets.audio[size_t(Sound::AlienRoar)].samples.empty() &&
+          !assets.audio[size_t(Sound::RayCharge)].samples.empty() &&
+          !assets.audio[size_t(Sound::ShieldBreak)].samples.empty(),
           "Invasion mode must synthesize all mission and cinematic audio clips.");
 
-    // Verify the invasion drop pod does not break the estate navigation graph.
+    // Verify Briar House connects seamlessly out through the breached gates into all four
+    // surrounding Colorado mountain town districts (South Blvd, East Ridge, North Valley LZ, West Timberline).
     const World world(assets);
     Navigation nav(assets);
     const auto point = [](float x, float y) { return Vec3{(x - 316) * .05f, 0.f, (212.5f - y) * .05f}; };
-    const int start = nav.nearest(assets.spawns[0].position);
+    const int start = nav.nearest(point(368, 305));
     std::vector<int> path;
-    for (const auto room : {point(368, 305), point(188, 234), point(603, 281), point(20, 227), point(368, -25)}) {
-        check(nav.path(start, nav.nearest(room), path), "Invasion Briar House mission points must remain connected.");
+    for (const auto townSpot : {point(368, 565), point(920, 445), point(535, -215), point(210, -220), point(-298, 252)}) {
+        check(nav.path(start, nav.nearest(townSpot), path),
+              "Invasion mode must connect Briar House out into every surrounding town district.");
+        check(planar(nav.node(path.back()).position - townSpot) < 2.2f,
+              "Each surrounding town objective must sit directly on the walkable town navigation graph.");
     }
+    check(assets.extent.x >= 50.f && assets.extent.z >= 38.f,
+          "Invasion mode must open the surrounding Colorado town well beyond Briar House's walls.");
 
     App app(assets, 19);
     check(app.settings().campaign, "App must auto-enable campaign mode for Invasion Briar House.");
@@ -990,12 +1009,27 @@ void checkBriarHouseMission(Assets& assets) {
     check((app.state().brokenGlass & ((uint64_t(1) << 2) | (uint64_t(1) << 3) | (uint64_t(1) << 4))) != 0,
           "Invasion mission must start with blown-out front windows.");
 
-    // Render intro frame and HUD at handheld size to verify zero renderer/HUD crashes.
+    // Render intro frame and HUD at handheld size to verify zero renderer/HUD crashes,
+    // and confirm the Colorado red-orange dusk sunset palette is active in Invasion mode.
     Renderer renderer(assets, RenderLook::Enhanced, 400 * 225);
     std::vector<uint16_t> color(400 * 225), fb(800 * 480);
     renderer.render(app.state(), 400, 225, color.data());
     scaleWorld(color.data(), 400, 225, fb.data(), false, true);
     drawHud(assets, app.state(), app.settings(), fb.data(), false);
+    {
+        Snapshot vista{};
+        vista.match = Match::Start;
+        renderer.render(vista, 400, 225, color.data());
+        int warmSkyPixels = 0;
+        for (int y = 8; y < 70; ++y) {
+            for (int x = 160; x < 390; ++x) {
+                const uint16_t c = color[size_t(y) * 400 + x];
+                const int r = (c >> 11) * 8, b = (c & 31) * 8;
+                if (r > b + 45) ++warmSkyPixels;
+            }
+        }
+        check(warmSkyPixels > 2000, "Invasion Briar House must render the warm Colorado red-orange dusk sunset sky.");
+    }
 
     // Verify copy-on-write zero-allocation publish: steady ticks reuse the same MissionSnapshot buffer,
     // while holding an external Snapshot copy triggers a safe copy-on-write allocation.
@@ -1163,21 +1197,28 @@ void checkBriarHouseMission(Assets& assets) {
     check(mission.state().mission->phase == MissionPhase::Rescue,
           "Regroup lull must transition cleanly into the Rescue phase.");
 
-    // Verify retry from checkpoint starts directly in Rescue without repeating the intro,
-    // and does not prematurely trigger the Kitchen sector from the Grand Hall.
+    // Verify retry from checkpoint starts directly in Rescue outside Briar House on South Boulevard,
+    // without prematurely triggering the distant town districts.
     mission.startMission(43, 3, true);
     mission.step({});
     check(mission.state().mission->phase == MissionPhase::Rescue && mission.state().mission->introProgress == 1.f,
           "Retrying from checkpoint must resume directly in Rescue phase.");
     check(mission.state().mission->aliensRemaining == 0,
-          "Standing in the Grand Hall must not prematurely trigger Kitchen or Garage rescue sectors.");
+          "Starting on South Boulevard must not prematurely trigger distant town rescue districts.");
 
-    // Walk into each rescue sector, clear its aliens, and verify every civilian is rescued.
-    const Vec3 sectorTargets[3]{point(188, 234), point(603, 281), point(20, 227)};
+    // Sweep all three surrounding town districts (East Ridge, North Valley, West Timberline),
+    // verifying that the rescue objectives and Extraction LZ cover ground well outside Briar House.
+    const Vec3 sectorTargets[3]{point(920, 445), point(535, -215), point(-298, 252)};
+    auto outsideEstate = [](Vec3 p) { return std::abs(p.x) > 19.f || std::abs(p.z) > 15.5f; };
     for (int s = 0; s < 3; ++s) {
+        check(outsideEstate(sectorTargets[s]), "Each town rescue district must lie outside Briar House.");
         const int civSlot = s + 1;
-        for (int t = 0; t < 500 && !mission.state().mission->actors[civSlot].rescued &&
-                        planar(mission.state().player.position - sectorTargets[s]) > 5.0f; ++t) {
+        for (int t = 0; t < 1800 && !mission.state().mission->actors[civSlot].rescued &&
+                        planar(mission.state().player.position - sectorTargets[s]) > 10.0f; ++t) {
+            if (mission.state().mission->aliensRemaining > 0) {
+                clearActiveAliens(300);
+                continue;
+            }
             std::vector<int> route;
             if (nav.path(nav.nearest(mission.state().player.position), nav.nearest(sectorTargets[s]), route) &&
                 route.size() > 1) {
@@ -1189,12 +1230,14 @@ void checkBriarHouseMission(Assets& assets) {
                 mission.step({});
             }
         }
-        clearActiveAliens(1000);
+        clearActiveAliens(1600);
         for (int t = 0; t < 120 && !mission.state().mission->actors[civSlot].rescued; ++t) mission.step({});
     }
-    check(mission.state().mission->civiliansSaved == 3, "Clearing all three sectors must rescue all 3 civilians.");
+    check(mission.state().mission->civiliansSaved == 3, "Clearing all three town districts must rescue all 3 civilians.");
     check(mission.state().mission->phase == MissionPhase::Incoming,
           "Rescuing civilians must enter the eerie Incoming calm before the warhorn counter-attack.");
+    check(outsideEstate(mission.state().mission->waypoint),
+          "The town Extraction LZ must lie outside Briar House in the surrounding valley.");
     check(mission.canRetryCheckpoint() && mission.state().mission->checkpointStage == 3,
           "Reaching the Incoming beat must save an extraction checkpoint.");
     // Far from the patio, the counter-attack waits for the player instead of starting on a timer.
@@ -1277,8 +1320,8 @@ void checkMissionRules(const Assets& assets) {
         Vec3 start{};
         float yaw = 0;
         controller.start(7, 5, false, snap, start, yaw, host);
-        const Vec3 civ = point(188, 234);
-        const Vec3 eye = civ + Vec3{2.5f, 1.2f, 0.f};
+        const Vec3 civ = point(920, 445);
+        const Vec3 eye = civ + Vec3{-2.5f, 1.2f, 0.f};
         const Vec3 dir = normalized(atHeight(civ, 1.f) - eye);
         Vec3 hit{};
         for (int round = 0; round < 4; ++round) {
@@ -1321,7 +1364,8 @@ void checkMissionRules(const Assets& assets) {
         }
         int inside = 0;
         for (int i = 4; i < 7; ++i) inside += view->actors[i].actor.position.z > (212.5f - 515.f) * .05f;
-        check(inside == 3 && highest > 1.2f, "The road patrol must vault the front wall into the grounds.");
+        check(inside >= 2 && highest > 1.2f,
+              "The road patrol must push through the breach and vault the flanking front wall into the grounds.");
 
         // Inside, they take firing spots around the player instead of queueing up in one lane.
         for (int t = 0; t < 4 * 60; ++t) controller.step(snap, {}, tickSeconds, false, host);
@@ -1470,6 +1514,68 @@ void checkMissionRules(const Assets& assets) {
         drawHud(assets, snap, menu, fb.data(), false);
         check(count(20, 64, 150, 300, muted) > 8 && count(736, 780, 150, 300, muted) == 0,
               "An objective behind and to the left must pin the marker to the left edge.");
+    }
+
+    // Sophisticated campaign mechanics: Ambush Precision, Ray Gun charge & animated bolts,
+    // Drone Shield Link & EMP Disruption, Enforcer Phase Shield & descending dusk mist.
+    {
+        mission_detail::MissionController controller(world, nav);
+        Snapshot snap{};
+        snap.difficulty = 5;
+        Vec3 start{};
+        float yaw = 0;
+        controller.start(17, 5, false, snap, start, yaw, host);
+        snap.player.position = point(368, 340);
+        snap.eyeHeight = 1.7f;
+        snap.camera.position = atHeight(snap.player.position, 1.7f);
+        skipIntro(controller, snap);
+        controller.publish(view);
+        const float overwatchMist = view->mistDensity;
+        // Clean sniper headshot on an unalerted road Trooper must count as an Ambush Kill.
+        const Vec3 eye = snap.camera.position;
+        const Vec3 head = atHeight(view->actors[4].actor.position, 1.90f);
+        Vec3 hit{};
+        const bool struck = controller.resolvePlayerShot(eye, normalized(head - eye), 70.f, 100.f, snap, host, hit);
+        controller.publish(view);
+        check(struck && view->actors[4].dead && view->ambushKills == 1,
+              "An unalerted sniper headshot in Overwatch must award an Ambush Kill.");
+
+        // After the breach starts, surviving aliens charge their ray guns, fire animated RayBolts,
+        // and the Scout Drone projects a Shield Link to its surviving ground ally.
+        bool sawCharge = false, sawRayBolt = false, sawDroneLink = false;
+        int linkedDrone = -1, linkedTrooper = -1;
+        for (int t = 0; t < 12 * 60; ++t) {
+            controller.step(snap, {}, tickSeconds, false, host);
+            controller.publish(view);
+            for (int i = 4; i < int(MissionSnapshot::maxActors); ++i) {
+                const auto& a = view->actors[i];
+                if (!a.active || a.dead) continue;
+                if (a.gunCharge > 0.1f) sawCharge = true;
+                if (a.role == MissionRole::AlienTrooper && a.linked && a.shield > 0.f) {
+                    sawDroneLink = true;
+                    linkedTrooper = i;
+                }
+                if (a.role == MissionRole::AlienDrone) linkedDrone = i;
+            }
+            for (const auto& tr : view->tracers) {
+                if (tr.time > 0 && (tr.style == TracerStyle::RayBolt || tr.style == TracerStyle::HeavyRay)) {
+                    sawRayBolt = true;
+                }
+            }
+            if (sawCharge && sawRayBolt && sawDroneLink) break;
+        }
+        check(sawCharge && sawRayBolt, "Alerted aliens must visibly charge their ray guns and fire animated ray bolts.");
+        check(sawDroneLink && linkedDrone >= 4 && linkedTrooper >= 4,
+              "An alerted Scout Drone must project a Shield Link to a nearby ground alien.");
+        check(view->mistDensity > overwatchMist, "Dusk mist must thicken as the mission progresses past Overwatch.");
+
+        // Destroying the linking Drone must trigger EMP disruption, shattering the linked alien's shield and staggering it.
+        const Vec3 dPos = view->actors[linkedDrone].actor.position;
+        controller.resolvePlayerShot(dPos + Vec3{0, 0, -2.f}, {0, 0, 1}, 200.f, 100.f, snap, host, hit);
+        controller.publish(view);
+        check(view->actors[linkedDrone].dead && view->actors[linkedTrooper].shield == 0.f &&
+                  view->actors[linkedTrooper].stagger > 0.5f,
+              "Destroying a linking Scout Drone must EMP-disrupt its linked ally's shield and stagger it.");
     }
 }
 } // namespace

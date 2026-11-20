@@ -10,18 +10,28 @@ namespace {
 constexpr float ambient = 0.74f, bounce = 0.78f, direct = 0.308f, exposure = 1.12f;
 constexpr Vec3 sunward{0.4225f, 0.8450f, -0.3286f};
 
+struct LightProfile {
+    float ambient, bounce, direct, exposure;
+    Vec3 sun;
+};
+constexpr LightProfile daylightProfile{ambient, bounce, direct, exposure, sunward};
+// Colorado dusk sunset: low west-northwest sun casting long alpenglow light against moody twilight shadows.
+constexpr LightProfile duskProfile{0.55f, 0.74f, 0.42f, 1.08f, {-0.8190f, 0.3396f, 0.4594f}};
+
 // Turf, kerbs and floor slabs stay below the clutter height and never shade the yard.
 // A column that starts below the grounded height stands on the yard.
 constexpr float clutter = 0.4f, grounded = 0.75f, eye = 0.12f, pad = 0.08f;
 constexpr float groundTop = 0.08f, largeFace = 0.06f;
 constexpr float escaped = std::numeric_limits<float>::infinity();
 
-float shade(Vec3 normal, float sky, float sun) {
-    const float hemisphere = bounce + (1 - bounce) * (0.5f + 0.5f * normal.y);
-    return ambient * hemisphere * sky + direct * std::max(0.0f, dot(normal, sunward)) * sun;
+float shade(Vec3 normal, float sky, float sun, const LightProfile& p) {
+    const float hemisphere = p.bounce + (1 - p.bounce) * (0.5f + 0.5f * normal.y);
+    return p.ambient * hemisphere * sky + p.direct * std::max(0.0f, dot(normal, p.sun)) * sun;
 }
 
-uint8_t level(float light) { return uint8_t(std::clamp(light * exposure * 255 + 0.5f, 1.0f, 255.0f)); }
+uint8_t level(float light, const LightProfile& p) {
+    return uint8_t(std::clamp(light * p.exposure * 255 + 0.5f, 1.0f, 255.0f));
+}
 
 // Each column of the yard holds the height span its geometry occupies. A roof
 // leaves the air below it open, and a wall or a crate reaches down to the ground.
@@ -92,9 +102,9 @@ struct Field {
         return ground < last ? ground : escaped;
     }
 
-    bool sunlit(Vec3 from) const {
+    bool sunlit(Vec3 from, Vec3 sunDir) const {
         if (!size || from.y > top + pad) return true;
-        return reach(from, sunward, 0, (top + pad - from.y) / sunward.y + cell) == escaped;
+        return reach(from, sunDir, 0, (top + pad - from.y) / sunDir.y + cell) == escaped;
     }
 };
 
@@ -156,13 +166,13 @@ float occlusion(const Field& field, Vec3 point, Vec3 normal, bool thorough) {
     return sum / weight;
 }
 
-float faceLight(const Field& field, Vec3 point, Vec3 normal, bool thorough) {
+float faceLight(const Field& field, Vec3 point, Vec3 normal, bool thorough, const LightProfile& p) {
     constexpr float strength = 0.5f, enclosed = 0.75f;
     const Vec3 lifted = point + normal * 0.3f;
     float sky = 1 - strength * occlusion(field, point, normal, thorough);
     if (field.size && field.covered(lifted)) sky *= enclosed;
-    const bool sun = dot(normal, sunward) > 0 && field.sunlit(lifted);
-    return shade(normal, sky, sun ? 1.0f : 0.0f);
+    const bool sun = dot(normal, p.sun) > 0 && field.sunlit(lifted, p.sun);
+    return shade(normal, sky, sun ? 1.0f : 0.0f, p);
 }
 
 float lampLight(const Field& field, const std::vector<BakedLight>& lamps, Vec3 point, Vec3 normal) {
@@ -197,7 +207,9 @@ uint64_t SceneLight::bytes() const {
 }
 
 void SceneLight::bake(const Assets& assets) {
-    sun = sunward;
+    const bool dusk = assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion;
+    const LightProfile& profile = dusk ? duskProfile : daylightProfile;
+    sun = profile.sun;
     const auto& world = assets.world;
     Field field;
 
@@ -223,6 +235,21 @@ void SceneLight::bake(const Assets& assets) {
             if (triangle.glass >= 0 || assets.materials[triangle.material].alpha < 255) continue;
             field.add(world.vertices[triangle.a].position, world.vertices[triangle.b].position,
                       world.vertices[triangle.c].position);
+        }
+        // Let instanced Ship Box trucks and cars cast real directional sunset shadows onto roads & lawns.
+        for (const auto& inst : assets.propInstances) {
+            const float cs = std::cos(inst.yaw), sn = std::sin(inst.yaw);
+            const Vec3 along{cs, 0, -sn}, side{sn, 0, cs};
+            const float hl = inst.halfLen * 0.92f, hw = inst.halfWidth * 0.88f, h = inst.height;
+            const Vec3 p0 = inst.position - along * hl - side * hw + Vec3{0, h, 0};
+            const Vec3 p1 = inst.position + along * hl - side * hw + Vec3{0, h, 0};
+            const Vec3 p2 = inst.position + along * hl + side * hw + Vec3{0, h, 0};
+            const Vec3 p3 = inst.position - along * hl + side * hw + Vec3{0, h, 0};
+            const Vec3 g0{p0.x, 0.42f, p0.z}, g1{p1.x, 0.42f, p1.z}, g2{p2.x, 0.42f, p2.z}, g3{p3.x, 0.42f, p3.z};
+            field.add(p0, p1, p2);
+            field.add(p0, p2, p3);
+            field.add(g0, g1, g2);
+            field.add(g0, g2, g3);
         }
         field.settle();
     }
@@ -252,7 +279,7 @@ void SceneLight::bake(const Assets& assets) {
                 float sky = openSky(field, x, z, directions[turn & 15]);
                 // A roof hides the zenith. Low cover hides more of the sky than a lamp arm.
                 if (field.high[i] > eye) sky *= std::clamp((field.low[i] - eye) / 8, 0.45f, 1.0f);
-                light[i] = shade({0, 1, 0}, sky, field.sunlit(point) ? 1.0f : 0.0f);
+                light[i] = shade({0, 1, 0}, sky, field.sunlit(point, profile.sun) ? 1.0f : 0.0f, profile);
                 if (!assets.lamps.empty()) light[i] += lampLight(field, assets.lamps, point, {0, 1, 0});
             }
         }
@@ -268,7 +295,7 @@ void SceneLight::bake(const Assets& assets) {
             for (int x = 0; x < size; ++x) {
                 // Open ground continues past the rim of the map.
                 const bool rim = x == 0 || z == 0 || x == size - 1 || z == size - 1;
-                map_[z * size + x] = rim ? 255 : level(light[z * size + x]);
+                map_[z * size + x] = rim ? (dusk ? 220 : 255) : level(light[z * size + x], profile);
             }
         }
         for (int l = 1; l < levels; ++l) {
@@ -297,7 +324,8 @@ void SceneLight::bake(const Assets& assets) {
         const Vec3 turned = cross(b - a, c - a);
         const float doubled = length(turned);
         if (doubled < 1e-9f) {
-            face = {{level(ambient), level(ambient), level(ambient)}, level(ambient)};
+            face = {{level(profile.ambient, profile), level(profile.ambient, profile), level(profile.ambient, profile)},
+                    level(profile.ambient, profile)};
             continue;
         }
         const Vec3 normal = turned * (-1 / doubled);
@@ -324,8 +352,8 @@ void SceneLight::bake(const Assets& assets) {
 
         const Vec3 center = (a + b + c) / 3;
         const auto lit = [&](Vec3 point, Vec3 direction, bool thorough) {
-            const float daylight = faceLight(field, point, direction, thorough);
-            return level(daylight + lampLight(field, assets.lamps, point, direction));
+            const float daylight = faceLight(field, point, direction, thorough, profile);
+            return level(daylight + lampLight(field, assets.lamps, point, direction), profile);
         };
         if (doubled * 0.5f >= largeFace) {
             // Corners carry their own light so a wall darkens toward the ground.

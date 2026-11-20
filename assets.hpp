@@ -135,11 +135,32 @@ struct SmokeSource {
     float size, rate;
 };
 
+// Low-lying valley mist bank that rolls gently across the grounds at dusk.
+struct MistBank {
+    Vec3 base;
+    float width, height;
+    Vec3 drift;
+    float rate;
+};
+
+enum class PropKind : uint8_t { Truck, Car };
+
+// Instanced high-detail Ship Box vehicle placed across the town without duplicating mesh RAM.
+struct PropInstance {
+    PropKind kind = PropKind::Car;
+    Vec3 position{};
+    float yaw = 0;
+    float scale = 1.f;
+    Bounds bounds{};
+    float halfLen = 0, halfWidth = 0, height = 0;
+};
+
 // Where the transport's rotor sits on its airframe.
 constexpr Vec3 transportRotorMount{0, 3.35f, .15f};
 
 // Layout of Assets::alienTrooperPoses and Assets::civilianPoses.
-constexpr uint16_t alienIdlePoses = 2, alienStridePoses = 6;
+constexpr uint16_t alienIdlePoses = 2, alienStridePoses = 6, alienAimPoses = 2, alienRecoilPoses = 2;
+constexpr uint16_t alienTotalPoses = alienIdlePoses + alienStridePoses + alienAimPoses + alienRecoilPoses;
 constexpr uint16_t civilianCowerPoses = 2, civilianRunPoses = 6, civilianStandPose = civilianCowerPoses + civilianRunPoses;
 
 struct Assets {
@@ -152,18 +173,26 @@ struct Assets {
     std::vector<Mesh> hanzFrames;
     Mesh playerBody;
     Mesh alienTrooper, alienDrone;
-    // Position-only poses that share alienTrooper's topology: idle breaths, then the lope cycle.
+    // Position-only poses that share alienTrooper's topology: idle breaths, lope, ray-gun aim, recoil.
     std::vector<Mesh> alienTrooperPoses;
     // Enforcers: the same body armored with bone crest, spikes and blades, on the same pose layout.
     Mesh alienEnforcer;
     std::vector<Mesh> alienEnforcerPoses;
+    // Sculpted alien ray guns held by troopers and enforcers, with spinning accelerator rings.
+    Mesh alienRayGun, alienRayRings;
+    Mesh alienHeavyRayGun, alienHeavyRayRings;
     // Unarmed civilian: cower, run cycle, then a standing pose; outfits come from civilianUniforms.
     Mesh civilianMesh;
     std::vector<Mesh> civilianPoses;
     // Utility helicopter for the campaign's evac bird; the rotor spins about its own origin.
     Mesh transportHelo, transportRotor;
     std::vector<SmokeSource> smoke;
+    std::vector<MistBank> mist;
     std::array<Mesh, 3> alienFleet;
+    // Reusable high-detail Ship Box props extracted before arena switch (vehicles instanced; clutter stamped).
+    Mesh shipBoxTruck, shipBoxCar;
+    Mesh shipBoxCrate, shipBoxPallet, shipBoxBarrel, shipBoxLamp, shipBoxContainer;
+    std::vector<PropInstance> propInstances;
     std::vector<Material> materials;
     std::vector<uint16_t> playerUniform;
     std::vector<uint16_t> commanderUniform;
