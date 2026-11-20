@@ -253,7 +253,7 @@ int runDesktop(const fod::Assets& assets, bool compact, fod::RenderLook look) {
             frameElapsed = std::fmod(frameElapsed, 1.0 / 30);
             const auto& menu = app.settings();
             renderer.render(app.state(), menu.width(), menu.height(), world.data());
-            scaleWorld(world.data(), menu.width(), menu.height(), framebuffer.data(), false);
+            scaleWorld(world.data(), menu.width(), menu.height(), framebuffer.data(), false, look == RenderLook::Enhanced);
             drawHud(assets, app.state(), menu, framebuffer.data(), false, sdl.audio ? app.audio.speaking() : Speaker::None);
             SDL_UpdateTexture(sdl.texture, nullptr, framebuffer.data(), 800 * sizeof(uint16_t));
             SDL_RenderClear(sdl.renderer);

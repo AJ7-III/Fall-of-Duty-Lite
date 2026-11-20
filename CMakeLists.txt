@@ -5,7 +5,7 @@ include(CTest)
 option(FOD_DESKTOP "Build the interactive SDL2 host application" ON)
 find_package(ZLIB 1.2.9 REQUIRED)
 
-add_library(fod_core app.cpp assets.cpp audio.cpp game.cpp hud.cpp render.cpp trace.cpp)
+add_library(fod_core app.cpp assets.cpp audio.cpp game.cpp hud.cpp light.cpp render.cpp trace.cpp)
 target_link_libraries(fod_core PRIVATE ZLIB::ZLIB)
 target_include_directories(fod_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_features(fod_core PUBLIC cxx_std_17)

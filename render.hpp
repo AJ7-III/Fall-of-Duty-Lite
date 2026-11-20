@@ -34,6 +34,7 @@ void drawHud(const Assets& assets, const Snapshot& snapshot, const MenuState& me
              Speaker speaker = Speaker::None);
 void drawRecovery(const char* message, uint16_t* framebuffer, bool rotated);
 void drawNumberedFrame(uint32_t sequence, uint16_t* framebuffer, bool rotated);
-void scaleWorld(const uint16_t* source, int width, int height, uint16_t* framebuffer, bool rotated);
+// The CPU scaler for desktops and captures. Smooth scaling filters the way the handheld's PPA does.
+void scaleWorld(const uint16_t* source, int width, int height, uint16_t* framebuffer, bool rotated, bool smooth = false);
 
 } // namespace fod

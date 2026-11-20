@@ -1,6 +1,6 @@
 set(core_sources)
 if(NOT CONFIG_FOD_BOARD_DIAGNOSTIC)
-    set(core_sources "../../app.cpp" "../../audio.cpp" "../../game.cpp" "../../assets.cpp" "../../render.cpp" "../../hud.cpp" "../../trace.cpp")
+    set(core_sources "../../app.cpp" "../../audio.cpp" "../../game.cpp" "../../assets.cpp" "../../light.cpp" "../../render.cpp" "../../hud.cpp" "../../trace.cpp")
 endif()
 idf_component_register(
     SRCS "board.cpp" "display.cpp" "gamepad.cpp" "audio.cpp" "main.cpp" ${core_sources}

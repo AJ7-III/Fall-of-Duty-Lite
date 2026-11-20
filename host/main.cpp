@@ -157,7 +157,8 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
             const auto& state = imageCaptured ? imageState : app.state();
             render.render(state, width, height, color.data());
             const auto rendered = Clock::now();
-            scaleWorld(color.data(), width, height, framebuffer.data(), false);
+            // Benchmarks keep the plain scaler. A capture shows the filtered picture the handheld presents.
+            scaleWorld(color.data(), width, height, framebuffer.data(), false, !out.benchmark && out.look == RenderLook::Enhanced);
             drawHud(assets, state, menu, framebuffer.data(), false, imageCaptured ? imageSpeaker : speaker);
             const auto presented = Clock::now();
             if (out.benchmark && frame >= out.warmup) {

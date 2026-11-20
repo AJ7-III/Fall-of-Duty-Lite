@@ -4,6 +4,7 @@
 #include "game_world.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <string_view>
 
@@ -468,7 +469,47 @@ void drawNumberedFrame(uint32_t sequence, uint16_t* framebuffer, bool rotated) {
     p.rect(int((sequence * 31) % 737), 278, 63, 50, accent);
 }
 
-void scaleWorld(const uint16_t* source, int width, int height, uint16_t* framebuffer, bool rotated) {
+void scaleWorld(const uint16_t* source, int width, int height, uint16_t* framebuffer, bool rotated, bool smooth) {
+    if (smooth) {
+        // Positions are in thirty-seconds of a source pixel, measured between pixel centers.
+        struct Tap { int index, weight; };
+        const auto tap = [](int output, int outputs, int inputs) {
+            const int position = std::clamp((2 * output + 1) * inputs * 16 / outputs - 16, 0, (inputs - 1) * 32);
+            const int index = std::min(position >> 5, inputs - 2);
+            return Tap{index, position - index * 32};
+        };
+        const auto mix = [](uint16_t a, uint16_t b, int weight) {
+            constexpr uint32_t mask = 0x07e0f81f;
+            const uint32_t from = ((uint32_t(a) << 16) | a) & mask, to = ((uint32_t(b) << 16) | b) & mask;
+            const uint32_t value = ((from * (32 - weight) + to * weight) >> 5) & mask;
+            return uint16_t(value | (value >> 16));
+        };
+        std::array<Tap, 800> columns;
+        for (int x = 0; x < 800; ++x) columns[x] = tap(x, 800, width);
+        // Stretch each source row once, then blend the two rows around every output row.
+        std::array<uint16_t, 800> lines[2];
+        int held[2]{-1, -1};
+        for (int y = 0; y < 450; ++y) {
+            const Tap row = tap(y, 450, height);
+            const uint16_t* pair[2];
+            for (int i = 0; i < 2; ++i) {
+                const int wanted = row.index + i, slot = wanted & 1;
+                if (held[slot] != wanted) {
+                    const auto* from = source + wanted * width;
+                    for (int x = 0; x < 800; ++x)
+                        lines[slot][x] = mix(from[columns[x].index], from[columns[x].index + 1], columns[x].weight);
+                    held[slot] = wanted;
+                }
+                pair[i] = lines[slot].data();
+            }
+            for (int x = 0; x < 800; ++x) {
+                const uint16_t pixel = mix(pair[0][x], pair[1][x], row.weight);
+                if (rotated) framebuffer[size_t(x) * 480 + 15 + 449 - y] = pixel;
+                else framebuffer[(y + 15) * 800 + x] = pixel;
+            }
+        }
+        return;
+    }
     if (rotated) {
         for (int x = 0; x < 800; ++x) {
             const int sourceX = x * width / 800;

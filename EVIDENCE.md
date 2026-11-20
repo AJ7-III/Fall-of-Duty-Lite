@@ -22,6 +22,16 @@ The current pack occupies 3,723,292 bytes, including greener turf and 300 grass 
 
 The renderer uses a 640- or 800-byte row buffer for diagonal edge smoothing. In three paired desktop trials per scene, the new renderer and pack added 0.00–0.14 ms to median p95 frame work over the brush build across the Apache and long-lane traces at 320×180 and 400×225. These timings exclude live scanout. The ESP-IDF cross-build produced an 854,240-byte app image, and the verified local firmware and SD archive occupies 4,245,666 bytes.
 
+## Baked daylight
+
+The daylight bake reads the existing pack, which keeps its 3,723,292 bytes and SHA-256. Renderer working memory rose from 1,074,242 to 1,281,456 bytes at 400×225. The increase holds the ground light map and four bytes of light for each world triangle. Constructing the renderer takes 35.7 ms on the desktop, up from 1.2 ms.
+
+Across five paired desktop trials per scene and resolution, median frame work rose 8.6–10.5% and p95 frame work rose 1.8–9.7% on the Apache and long-lane traces. Median geometry setup rose 6.6–12.3% and median raster time rose 8.9–12.6%. These timings exclude live scanout. The handheld cost of the bake and of the added frame work is unmeasured.
+
+The ESP-IDF cross-build produced an 878,912-byte app image, up from 854,240, and the local firmware and SD archive occupies 4,263,727 bytes. Native replay journals still match across both render sizes for all eight fixtures. Fourteen classic-look viewpoints rendered byte-identical images before and after the change.
+
+The Release and sanitizer test suites pass. All eight replays rendered 200 frames at each size under the address and undefined-behavior sanitizers without a report. An earlier sanitizer replay reported an out-of-range integer conversion where a nearly level triangle edge crosses a row far off screen. That code predates the daylight work, and the renderer now bounds the crossing before converting it.
+
 ## Replay fixtures
 
 The [checked-in traces](reference/fixtures) cover long-lane combat, glass breakage, movement, weapon cycles, the airstrike laptop, the Apache fly-in, death timing, and match point across 3,076 steps. The accompanying browser journals record gameplay random draws, positions, ammo, shots, and scores. Native replay journals match across both render sizes. The known Apache browser discrepancy at tick 564 concerns the vertical root position of the dead rival. The browser uses the model's foot placement, and Lite renders a sampled body pose.

@@ -15,6 +15,7 @@ The microSD game pack is **11% smaller than the Doom v1.9 shareware WAD**. [Curr
 - **Three weapons with first-person arms** — MP44 rifle, M40A3 bolt-action rifle with scope, and USP .45 sidearm with weapon motion tracks from the browser edition.
 - **Killstreaks and rival voice comms** — Three consecutive kills activate UAV radar. Five unlock a targeted airstrike and seven unlock Apache support. The shared 27-line voice bank decodes mono 24 kHz IMA ADPCM on demand.
 - **Ship Box yard** — Green turf and 300 low-poly grass tufts fill the yard between the stone paths. Mild texture sharpening keeps lettering and surface edges legible at both render sizes.
+- **Baked daylight** — While the pack loads, the renderer works out soft sun shadows and ambient shade from the yard's own geometry. Containers darken toward the ground, the rival casts a contact shadow, and distant buildings fade into rain haze. The pack stays byte for byte the same.
 - **Enhanced software renderer** — Perspective-aware mip blending, diagonal edge smoothing, 16-bit reciprocal depth, and a dithered sky cubemap. Desktop `--look classic` runs the earlier renderer for comparisons. [Rendering notes](QUALITY.md)
 - **Lossless asset compression** — The schema 7 pack stores independently compressed blocks and decodes them as it loads.
 
@@ -26,7 +27,7 @@ Grab the prebuilt v1.0.0 handheld package from the [GitHub release page](https:/
 - [Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256)
 - [Latest releases](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/latest)
 
-For the renderer and gameplay updates shown here, [build the handheld package from this checkout](#build-and-package-handheld-firmware). The verified archive is **4.25 MB**.
+For the renderer and gameplay updates shown here, [build the handheld package from this checkout](#build-and-package-handheld-firmware). The verified archive is **4.26 MB**.
 
 The archive bundles the bootloader, partition table, application binary, schema 7 SD pack, reference replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`. Keep the firmware and SD pack from the same archive together because schema 7 packs require firmware with schema 7 support.
 
@@ -53,7 +54,7 @@ ctest --test-dir build/host --output-on-failure
 build/host/fod_host
 ```
 
-Pass `--mode 320` to launch in compact resolution, `--look classic` to compare with the earlier visual path, or `--pack PATH` to load another `.fodp` file. Pass `-DFOD_DESKTOP=OFF` when configuring CMake for a headless CLI and test build without SDL2.
+Pass `--mode 320` to launch in compact resolution, `--look classic` to compare with the earlier visual path, or `--pack PATH` to load another `.fodp` file. The enhanced look scales the picture with bilinear filtering, as the handheld's scaler does. The classic look keeps flat lighting and nearest-neighbor scaling. Pass `-DFOD_DESKTOP=OFF` when configuring CMake for a headless CLI and test build without SDL2.
 
 ### Controls
 
@@ -96,7 +97,8 @@ Host verification and cross-build checks are recorded in [EVIDENCE.md](EVIDENCE.
 | Replay parity | Verified on desktop | Eight [reference fixtures](reference/fixtures) cover 3,076 steps. The current renderer and pack produce the same gameplay journals as the original at both render sizes. |
 | Asset memory | Verified on desktop | The loader reports 9,621,947 resident asset bytes and an estimated 9,703,867-byte loading peak (12 MiB limit). |
 | Desktop frame timings | Measured on desktop | Projection reuse reduced geometry setup p95 by 29–33% and whole-frame p95 by 1.6–14.6%, while the later runtime geometry pass lowered resident memory with an inconclusive frame-time spread between 2.3% faster and 0.1% slower |
-| Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 854,240-byte application image. The local package passed flash layout and checksum checks. |
+| Baked daylight | Measured on desktop | The bake adds 36 ms to renderer start and 207,214 bytes of working memory. Median frame work rose 8.6–10.5% on the benchmark replays. Handheld timings are pending. |
+| Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 878,912-byte application image. The local package passed flash layout and checksum checks. |
 | Guition hardware | Qualification pending | See the [on-device test procedure](BOARD.md#replay-and-measurement) for scanout, input, audio, latency, and full hardware duels. |
 
 The Apache comparison has a known browser-to-native difference at tick 564 in the dead rival’s vertical root position. [See the replay evidence.](EVIDENCE.md#replay-fixtures)

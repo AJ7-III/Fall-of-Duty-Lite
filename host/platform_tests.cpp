@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "assets.hpp"
+#include "light.hpp"
 #include "render.hpp"
 
 #include <algorithm>
@@ -22,17 +23,25 @@ void checkOrientation(const Assets& assets) {
         const int height = width * 9 / 16;
         std::vector<uint16_t> image(width * height);
         for (size_t i = 0; i < image.size(); ++i) image[i] = uint16_t(i * 53);
-        std::vector<uint16_t> landscape(800 * 480), native(480 * 800);
-        scaleWorld(image.data(), width, height, landscape.data(), false);
-        scaleWorld(image.data(), width, height, native.data(), true);
-        App app(assets);
-        drawHud(assets, app.state(), app.settings(), landscape.data(), false);
-        drawHud(assets, app.state(), app.settings(), native.data(), true);
-        for (size_t x = 0; x < 800; ++x) {
-            for (size_t y = 0; y < 480; ++y) {
-                check(landscape[y * 800 + x] == native[x * 480 + 479 - y], "Rotated HUD or viewport pixel mismatch.");
+        for (const bool smooth : {false, true}) {
+            std::vector<uint16_t> landscape(800 * 480), native(480 * 800);
+            scaleWorld(image.data(), width, height, landscape.data(), false, smooth);
+            scaleWorld(image.data(), width, height, native.data(), true, smooth);
+            App app(assets);
+            drawHud(assets, app.state(), app.settings(), landscape.data(), false);
+            drawHud(assets, app.state(), app.settings(), native.data(), true);
+            for (size_t x = 0; x < 800; ++x) {
+                for (size_t y = 0; y < 480; ++y) {
+                    check(landscape[y * 800 + x] == native[x * 480 + 479 - y], "Rotated HUD or viewport pixel mismatch.");
+                }
             }
         }
+    }
+    // Smooth scaling must leave an even picture unchanged from edge to edge.
+    std::vector<uint16_t> even(400 * 225, 0x8410), frame(800 * 480);
+    scaleWorld(even.data(), 400, 225, frame.data(), false, true);
+    for (size_t y = 15; y < 465; ++y) {
+        for (size_t x = 0; x < 800; ++x) check(frame[y * 800 + x] == 0x8410, "Smooth scaling changed an even picture.");
     }
 }
 
@@ -203,8 +212,66 @@ void checkDepthPrecision() {
     check(image[center] & 0x07e0, "The classic buffer should reproduce the distant depth tie.");
     Renderer enhanced(assets);
     enhanced.render(snap, 320, 180, image.data());
-    check((image[center] & 0xf800) && !(image[center] & 0x07e0),
+    // Haze tints the surface at this distance, so compare the two channels.
+    check((image[center] >> 11) > ((image[center] >> 5) & 63),
           "Enhanced depth should resolve two-centimeter separation at 30 meters.");
+}
+
+void checkBakedLight() {
+    // A two-meter crate on a textured yard.
+    Assets assets;
+    assets.materials = {{0xffff, 0, 255, true}};
+    assets.textures = {{2, 2, std::vector<uint16_t>(4, 0xffff)}};
+    assets.navNodes = {{{-5, 0, -5}, 0, 0, false, true}, {{5, 0, 5}, 0, 0, false, true}};
+    auto& world = assets.world;
+    const auto quad = [&world](Vec3 a, Vec3 b, Vec3 c, Vec3 d) {
+        const uint32_t first = uint32_t(world.vertices.size());
+        world.vertices.insert(world.vertices.end(), {{a, 0, 0}, {b, 1, 0}, {c, 1, 1}, {d, 0, 1}});
+        world.triangles.push_back({first, first + 1, first + 2, 0});
+        world.triangles.push_back({first, first + 2, first + 3, 0});
+    };
+    quad({-10, 0, -10}, {10, 0, -10}, {10, 0, 10}, {-10, 0, 10});
+    quad({1, 0, -1}, {1, 0, 1}, {1, 2, 1}, {1, 2, -1});
+    quad({-1, 0, 1}, {-1, 0, -1}, {-1, 2, -1}, {-1, 2, 1});
+    quad({1, 0, 1}, {-1, 0, 1}, {-1, 2, 1}, {1, 2, 1});
+    quad({-1, 0, -1}, {1, 0, -1}, {1, 2, -1}, {-1, 2, -1});
+    quad({-1, 2, -1}, {1, 2, -1}, {1, 2, 1}, {-1, 2, 1});
+
+    SceneLight light;
+    light.bake(assets);
+    check(light.mapped() && light.patches.size() == 2 && !light.faces[0].back && !light.faces[1].back,
+          "The yard should take its light from the ground map.");
+    const unsigned open = light.at(6, -6), shaded = light.at(-1.7f, 0.8f), sunny = light.at(1.9f, -1.9f);
+    check(open > 240, "Open ground should be fully lit.");
+    check(shaded + 50 < open, "The crate should shade the ground on the side away from the sun.");
+    check(sunny > shaded + 30, "Ground toward the sun should stay brighter than the crate's shadow.");
+    const auto& wall = light.faces[2];
+    check(wall.back && wall.front[0] < wall.front[2] && wall.front[1] < wall.front[2],
+          "A wall should darken toward the ground.");
+
+    // The same yard without navigation data has no map, and its faces still receive light.
+    assets.navNodes.clear();
+    SceneLight bare;
+    bare.bake(assets);
+    check(!bare.mapped() && bare.patches.empty() && bare.at(0, 0) == 255 && bare.faces[0].back,
+          "A world without a yard should skip the ground map.");
+
+    // Render the crate's shadow from above with both looks.
+    assets.navNodes = {{{-5, 0, -5}, 0, 0, false, true}, {{5, 0, 5}, 0, 0, false, true}};
+    Snapshot snap;
+    snap.match = Match::Playing;
+    snap.camera = {{0, 9, 0}, 0, pi / 2 - 0.001f, pi / 3};
+    snap.rival.visible = false;
+    snap.device = Device::Laptop;
+    std::vector<uint16_t> image(320 * 180);
+    const auto green = [&image](int x, int y) { return (image[y * 320 + x] >> 5) & 63; };
+    Renderer enhanced(assets);
+    enhanced.render(snap, 320, 180, image.data());
+    // The view looks straight down with north at the top. The shadow falls to the upper left.
+    check(green(130, 80) + 8 < green(260, 150), "The enhanced look should draw the crate's shadow.");
+    Renderer classic(assets, RenderLook::Classic);
+    classic.render(snap, 320, 180, image.data());
+    check(green(130, 80) == green(260, 150), "The classic look should keep the yard evenly lit.");
 }
 
 void checkProjectionCache() {
@@ -404,6 +471,7 @@ int main(int argc, char** argv) {
     checkResumeLatch(assets);
     checkTranslucentPass();
     checkDepthPrecision();
+    checkBakedLight();
     checkProjectionCache();
     checkPlayerUniform();
     checkMixer(assets);

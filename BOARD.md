@@ -66,7 +66,7 @@ When a late submission is waiting for scanout, the producer waits for the next s
 
 ## Replay and measurement
 
-Copy the desired `.fodtrace` files to the SD root with the pack. To run a looped trace at 400×225, create a Kconfig overlay and flash that build. Use `apache` for the other scene and set `CONFIG_FOD_REPLAY_COMPACT=y` for 320×180. Use a fresh build directory and a new overlay for each combination. The default renderer includes the new sky, improved depth precision and texture mipmaps. Add `CONFIG_FOD_CLASSIC_VISUALS=y` to an overlay for the prior render path and the same two selectable resolutions.
+Copy the desired `.fodtrace` files to the SD root with the pack. To run a looped trace at 400×225, create a Kconfig overlay and flash that build. Use `apache` for the other scene and set `CONFIG_FOD_REPLAY_COMPACT=y` for 320×180. Use a fresh build directory and a new overlay for each combination. The default renderer includes baked daylight, the new sky, improved depth precision and texture mipmaps. Add `CONFIG_FOD_CLASSIC_VISUALS=y` to an overlay for the prior render path and the same two selectable resolutions.
 
 ```sh
 printf '%s\n' 'CONFIG_FOD_REPLAY_SCENE="long-lane"' > /tmp/fod-lane-400.defaults
@@ -87,4 +87,4 @@ For parity replay, add `CONFIG_FOD_REPLAY_JOURNAL=y` with the desired scene in a
 
 ## Qualification status
 
-No Guition appeared in the local USB registry or serial inventory. No hardware result is recorded. The remaining checks are panel orientation and optical frame ownership, all four touch corners, USB report and reconnect behavior, audio and SD recovery under scanout, four scene and resolution performance captures, optical latency, and full packaged first-to-ten play on both passing modes. Record measured PSRAM and internal memory at boot, pack load, peak action and after ten completed rematches. The default mode is 400×225 pending these measurements.
+No Guition appeared in the local USB registry or serial inventory. No hardware result is recorded. The remaining checks are panel orientation and optical frame ownership, all four touch corners, USB report and reconnect behavior, audio and SD recovery under scanout, four scene and resolution performance captures, optical latency, and full packaged first-to-ten play on both passing modes. Record measured PSRAM and internal memory at boot, pack load, peak action and after ten completed rematches. Record the time from pack load to `renderer-ready`, which includes the daylight bake. The default mode is 400×225 pending these measurements.
