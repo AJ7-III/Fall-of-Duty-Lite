@@ -46,6 +46,7 @@ struct Material {
     uint8_t alpha = 255;
     bool doubleSided = true;
     bool emissive = false;
+    uint8_t hazeShift = 0;
 };
 
 struct Texture {
@@ -158,6 +159,7 @@ struct PropInstance {
     float scale = 1.f;
     Bounds bounds{};
     float halfLen = 0, halfWidth = 0, height = 0;
+    std::vector<uint16_t> paintMaterials;
 };
 
 // Where the transport's rotor sits on its airframe.
@@ -192,6 +194,7 @@ struct Assets {
     Mesh alienHeavyRayGun, alienHeavyRayRings;
     std::array<Vec3, alienTotalPoses> alienGunSockets{};
     Mesh alienUplink, alienUplinkCore;
+    Mesh relayTerminal; // Nora's emitter kit and the dish console
     // Unarmed civilian: cower, run cycle and breathing poses share the same mesh and outfit remaps.
     Mesh civilianMesh;
     std::vector<Mesh> civilianPoses;

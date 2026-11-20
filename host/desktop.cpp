@@ -28,6 +28,7 @@ uint32_t key(SDL_Scancode k) {
     case SDL_SCANCODE_C: return Stance;
     case SDL_SCANCODE_R: return Reload;
     case SDL_SCANCODE_X: return Swap;
+    case SDL_SCANCODE_F: return Signal;
     case SDL_SCANCODE_4: return Streak;
     case SDL_SCANCODE_SPACE: return Aim;
     case SDL_SCANCODE_UP: return Up | Streak;

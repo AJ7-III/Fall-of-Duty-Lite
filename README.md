@@ -59,17 +59,49 @@ build/host/fod_host
 
 Solo targets 60 fps and renders at **1280×720** by default on macOS. Use **Render Size** in Match Setup or the pause menu, or pass `--mode 800`, `--mode 400`, or `--mode 320` to start at a lower resolution. Pass `--look classic` to use flat lighting and nearest-neighbor scaling, or `--pack PATH` to load another `.fodp` file. The enhanced look uses bilinear filtering when scaling. Pass `-DFOD_DESKTOP=OFF` when configuring CMake for a headless CLI and test build without SDL2.
 
-### Briar House playtest and Mission 1 (Campaign)
+### Operation Briar campaign
 
-Run `build/host/fod_host --mission briar-house` for **Mission 1: Briar House**. Delta Squad was sent to extract Dr. Nora Marsh, the astronomer whose radio array tracked the alien fleet, and her family. Their helicopter, Warhorse 2-1, was shot down on approach to the Colorado Front Range.
+Choose **Campaign** on the title screen, or run `build/host/fod_host --mission briar-house` on desktop. **Operation Briar** is a three-mission campaign across the Colorado valley. Choose **Next Mission** on the results screen to continue.
 
-Wake up in the Grand Hall, take the first shot at the crash-site patrol from the portico, then break out onto South Boulevard. Sweep the town in any order. Two riflemen cover Ben's pickup on East Ridge, and an Enforcer and shield drone pin Dr. Marsh on North Valley Avenue. At West Timberline, crouch near Walt and escort him to the stone wall while the scout patrol is quiet, or clear the area before approaching him. If the patrol detects you mid-escort, Walt waits for you to clear it. Shoot the uplink's glowing core to clear Dustoff's approach, then defend the North Town Clearing with Apache support. The evacuation timer pauses outside the perimeter drawn on the minimap. The results count the survivors who board Dustoff, including when you skip the exfil.
+The fleet came down on Briar House because Nora Marsh's radio dish was transmitting. The campaign follows what she does with that.
+
+1. **Briar House.** Break out after Warhorse 2-1 goes down, find Nora and her family across town, and hold North Town Clearing until Dustoff lands. Then send the family across to the bird. Nora stays behind with her dish.
+2. **Timberline.** Take Nora's portable emitter to her father's lane. Hold **Signal** on open ground and the small saucer flies there and lands its drop, unaware of you. Four answered calls give her the calibration she needs.
+3. **The Array.** Fight back through Briar House to the rear door. Hold **Signal** to steer the mothership's landing beam off the valley to the west saddle. If the beam crosses the clearing, Dustoff has nowhere to land.
+
+**Signal** (`F`, `L1` or `LB`) is the campaign's one new control. It calls people, then drops, then ships. While you hold it you cannot fire. The prompt below the reticle says what it will do. Without Nora, Delta-1 works from her notes in the later missions, and Timberline and The Array play out without her warnings.
+
+#### Briar House
+
+Wake up in the Grand Hall. Delta-1 says what happened and then leaves the opening shot to you. From the portico, take the first shot at the patrol by the wreck, then break out onto South Boulevard. Sweep the town in any order.
+
+- **East Ridge.** Two riflemen cover Ben's pickup. When nothing can see him, signal him across from where you stand. Signal too early and he draws fire and ducks back.
+- **North Valley Avenue.** An Enforcer and a shield drone pin Nora. Each pulse from her dish turns the drone toward the house and drops the Enforcer's shield for a moment.
+- **West Timberline.** Crouch near Walt and he leads you to the stone wall, waiting while the scout's scanner faces his way. If the patrol detects you, he waits for you to clear it.
+
+Shoot the receiver tower on North Avenue that is listening to Nora's dish, then hold the North Town Clearing with Apache support. The evacuation timer pauses outside the perimeter drawn on the minimap. When it runs out, Dustoff lands while the fight goes on. Signal when nothing can see the stone wall. Survivors who are seen break cover, draw a shot and duck back. The results count everyone saved, including Nora.
 
 Ground aliens have four recessed eyes and split, fanged jaws in the torso. Aim at that chest weak point for critical hits and to interrupt a charging Enforcer. Their guns launch basketball-sized clouds of blue plasma along the barrel. You can dodge the clouds or get behind cover first. A hit crackles across the screen and briefly slows your movement. Wounded aliens fall back into cover and return from a new angle. Destroying a scout drone can collapse the shield it projects onto a nearby rifleman.
 
 The Warhorse wreck and burning rooftops throw off windblown smoke and sparks. Valley mist gathers close to the ground, and slanting rain moves in during the extraction hold. Ben wears a navy work jacket, Nora wears burgundy and glasses, and Walt wears a canvas coat and knit cap.
 
-The route marker follows the district you engage and points down a walkable street when a building blocks the direct approach. Checkpoints save at overwatch, after the breakout, before the uplink, and when the uplink goes down. A retry restores civilian outcomes, kills and time from that checkpoint. Delta-1 tops up low ammo after the sweep so you can fight through to the uplink. Tap Swap to return to your previous weapon or hold it to reach the third. Mission subtitles stay visible with **Radio Sound** off. Rank S needs all three civilians, no checkpoint reloads, and a time under 4:30.
+The route marker follows the district you engage. When a building blocks the direct approach, it points down a walkable street. Checkpoints save at the overwatch, after the breakout, before the receiver and when the receiver goes down. A retry restores civilian outcomes, kills and time from that checkpoint. Delta-1 tops up low ammo after the sweep. Tap Swap to return to your previous weapon or hold it to reach the third. Subtitles stay visible with **Radio Sound** off. Rank S needs all three civilians, no checkpoint reloads, and a time under 5:00.
+
+#### Timberline and The Array
+
+**Timberline:**
+
+- **The emitter.** It only accepts ground you can see that is clear of Nora's kit. The landing spot and range show over the world.
+- **The calls.** The third call brings a jammer that drags the saucer down onto the emitter unless you shoot it first. The fourth call fights the pointer and creeps toward Nora unless you keep holding Signal.
+- **Drops.** A drop nobody engages goes looking for the emitter.
+
+**The Array:**
+
+- **The beam.** At the rear door the dish follows your bearing. Look at the hills to send the beam out, or lower to bring it closer. Let go and the mothership drifts toward the dish. If it reaches the house, the mission fails.
+- **The house.** Riflemen and Enforcers come over the rear lawn and Delta-1 holds the door. Jammers hover beside the east wing, so step onto the patio to shoot them.
+- **The saddle.** Hold the beam there to fill the lock. The last jammer holds the dish from across the lawn, a scoped shot through the doorway.
+
+Checkpoints save at the start of each mission, after each answered call, and at the rear door. The results show the campaign clock, and a retry restores the saved time.
 
 Run `build/host/fod_host --map briar-house` for the standard mansion duel playtest (or add `--local-duel` for two-player split-screen). The grand hall is the direct route between the lobbies, with the service wing, portrait gallery, and open garage bay offering covered flanks and a fallen bookcase sealing the stairs.
 
@@ -102,6 +134,7 @@ The Nintendo controller profile, which includes the 8BitDo Pro 2 in Switch mode,
 | Crouch (tap) or prone (hold) | `C` | `Circle` / `B` | `A` |
 | Reload | `R` | `Square` / `X` | `Y` |
 | Swap weapon (campaign: tap for previous, hold for third) | `X` | `Triangle` / `Y` | `X` |
+| Signal (campaign) | `F` | `L1` / `LB` | `L` |
 | Deploy banked streak or close laptop | `Up` arrow or `4` | D-pad Up | D-pad Up |
 | Confirm or start duel | `Enter` or click menu | `Cross` / `A` | `B` |
 | Navigate menus | Arrow keys | D-pad | D-pad |
@@ -140,7 +173,7 @@ The Apache comparison has a known browser-to-native difference at tick 564 in th
 
 ## Replay, benchmarks, and testing
 
-The repository includes eight browser [reference fixtures](reference/fixtures) covering long-lane combat, glass breakage, movement, weapon cycles, the airstrike laptop, the Apache fly-in, death timing, and match point. The native `ffa-apache` trace exercises both live rivals during an Apache fly-in. The `briar-breakout` and `briar-landing-zone` traces load Invasion Briar House and exercise the first firefight and the active LZ hold. CTest checks that both render sizes produce identical gameplay journals when Python 3.9 or later is available. Run these commands from the repository root with the checked-in asset pack.
+The repository includes eight browser [reference fixtures](reference/fixtures) covering long-lane combat, glass breakage, movement, weapon cycles, the airstrike laptop, the Apache fly-in, death timing, and match point. The native `ffa-apache` trace exercises both live rivals during an Apache fly-in. The campaign traces exercise the first firefight, the active landing-zone hold, and the rear-door defense in The Array. CTest checks that both render sizes produce identical gameplay journals when Python 3.9 or later is available. Run these commands from the repository root with the checked-in asset pack.
 
 ```sh
 ctest --test-dir build/host --output-on-failure
@@ -149,6 +182,7 @@ build/host/fod_host --bench reference/fixtures/apache.fodtrace --mode both
 build/host/fod_host --bench reference/fixtures/ffa-apache.fodtrace --mode both
 build/host/fod_host --bench reference/fixtures/briar-breakout.fodtrace --mode both
 build/host/fod_host --bench reference/fixtures/briar-landing-zone.fodtrace --mode both
+build/host/fod_host --bench reference/fixtures/briar-finale.fodtrace --mode both
 python3 tools/run-evidence.py \
   --host build/host/fod_host --pack assets/fall-of-duty.fodp \
   --reference reference/fixtures --out out/evidence

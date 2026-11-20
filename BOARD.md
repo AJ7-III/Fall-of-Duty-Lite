@@ -35,6 +35,7 @@ A missing, malformed or incompatible pack shows the recovery screen. Insert the 
 | Left and right sticks | Move and look |
 | L3 | Sprint |
 | L2 and R2 | Aim and fire |
+| L1 | Signal in Campaign |
 | Cross | Jump or confirm |
 | Circle | Tap crouch, hold prone, menu back |
 | Square | Reload |
@@ -68,7 +69,13 @@ When a late submission is waiting for scanout, the producer waits for the next s
 
 Copy the desired `.fodtrace` files to the SD root with the pack. Run `long-lane`, `apache`, and `ffa-apache` at both sizes. The Free-for-all trace puts both active rivals in view during the Apache fly-in. To run a looped trace at 400×225, create a Kconfig overlay and flash that build. Set `CONFIG_FOD_REPLAY_COMPACT=y` for 320×180. Use a fresh build directory and a new overlay for each combination. The default renderer includes baked daylight, the new sky, improved depth precision and texture mipmaps. Add `CONFIG_FOD_CLASSIC_VISUALS=y` to an overlay for the prior render path and the same two selectable resolutions.
 
-Run `briar-breakout` and `briar-landing-zone` at both sizes for campaign qualification. The first starts from the title and opens fire during overwatch. The second starts at the extraction checkpoint and calls Apache during the hold. Each file selects Invasion Briar House automatically. Use the `arena-built`, `renderer-ready`, and `replay-end` memory lines to compare internal RAM and PSRAM headroom. Record presentation misses and audio underruns with each capture.
+Run `briar-breakout`, `briar-landing-zone` and `briar-finale` at both sizes for campaign qualification:
+
+- **`briar-breakout`.** Starts from the title and opens fire during overwatch.
+- **`briar-landing-zone`.** Starts at the extraction checkpoint and calls Apache during the hold.
+- **`briar-finale`.** Starts The Array at the rear door with the mothership's beam under the pointer and riflemen coming over the lawn. It is the heaviest campaign scene.
+
+Each file selects Invasion Briar House automatically. Use the `arena-built`, `renderer-ready`, and `replay-end` memory lines to compare internal RAM and PSRAM headroom. Record presentation misses and audio underruns with each capture.
 
 ```sh
 printf '%s\n' 'CONFIG_FOD_REPLAY_SCENE="long-lane"' > /tmp/fod-lane-400.defaults
@@ -95,4 +102,11 @@ For parity replay, add `CONFIG_FOD_REPLAY_JOURNAL=y` with the desired scene in a
 
 No Guition appeared in the local USB registry or serial inventory. No hardware result is recorded. The remaining checks are panel orientation and optical frame ownership, all four touch corners, USB report and reconnect behavior, audio and SD recovery under scanout, six scene and resolution performance captures, optical latency, and full packaged first-to-ten play on both passing modes. Record measured PSRAM and internal memory at boot, pack load, peak action and after ten completed rematches. Record the time from pack load to `renderer-ready`, which includes the daylight bake. The default mode is 400×225 pending these measurements.
 
-The campaign adds its own checks. Choose **Campaign** from the title screen and confirm the board restarts to the loading card, logs `arena=MISSION 1: BRIAR HOUSE build_us=…` and `arena-built` memory, and returns to the title screen with Campaign selected. Play Mission 1 through the exfil at both render sizes. Record frame timings during the breakout and the North Town Clearing hold. Verify that shooting the glowing uplink core opens the route to extraction and that the countdown pauses outside the landing zone. Then pick a Ship Box bot match from the campaign title screen to confirm the restart back.
+The campaign adds its own checks. Choose **Campaign** from the title screen and confirm the board restarts to the loading card, logs `arena=MISSION 1: BRIAR HOUSE build_us=…` and `arena-built` memory, and returns to the title screen with Campaign selected. Play through Briar House, Timberline and The Array at both render sizes. Confirm that `L1` works as Signal: waving Ben over, sending the family to Dustoff, marking ground at Timberline and steering the beam. Record frame timings during:
+
+- the breakout
+- the North Town Clearing hold, with Dustoff on the ground
+- a Timberline drop
+- the rear-door finale
+
+Check the **Next Mission** transition after each of the first two missions and a field checkpoint retry after leaving Briar House. Then pick a Ship Box bot match from the campaign title screen to confirm the restart back.

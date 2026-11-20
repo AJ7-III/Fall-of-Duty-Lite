@@ -15,29 +15,31 @@ constexpr float commanderLz[2]{152, -195};
 constexpr float uplinkMaxHealth = 135.f;
 constexpr float civilianHealth = 85.f;
 constexpr float assemblyRadius = 8.f, holdRadius = 15.f, lzThreatRadius = 24.f;
-// The Marsh family scattered into three surrounding Colorado mountain town districts when the
-// alien fleet struck Briar House. Delta Squad breaks out of Briar House to sweep the valley town.
+// The Marsh family scattered into three town districts when the fleet struck Briar House.
+// Their first words depend on what has happened to Nora by the time the player reaches them.
 struct Survivor {
     float x, y, yaw;
     const char* objective;
-    const char* name;      // Subtitle speaker
-    const char* callout;   // Delta-1 as you reach the district
-    const char* underFire; // Delta-1 when the aliens turn on them
-    const char* rescued;   // Their own words once the block is clear
-    const char* worried;   // Said instead while Nora is still pinned
-    const char* lost;
+    const char* name;       // Subtitle speaker
+    const char* callout;    // Delta-1 as you reach the district
+    const char* underFire;  // Delta-1 when the aliens turn on them
+    const char* noraPinned; // Their words once safe, while Nora is still out there (Nora's own line for her)
+    const char* noraSafe;   // ...once Nora is safe
+    const char* noraLost;   // ...once Nora is gone
+    const char* lost;       // Delta-1 when they die
 };
 constexpr Survivor family[3]{
-    {920, 445, -pi / 2, "BEN / EAST RIDGE", "BEN MARSH", "EAST RIDGE. TWO RIFLES COVER THE PICKUP. BEN IS BEHIND IT.",
-     "THEY'RE FIRING ON BEN - PUSH UP EAST RIDGE!", "WE RAN WHEN THE SKY LIT UP... THANK YOU. THANK YOU.",
-     "WE RAN WHEN THE SKY LIT UP... IS MY MOM OKAY? SHE HEADED UP NORTH AVENUE!", "WE LOST BEN! LOCK IT DOWN, DELTA!"},
-    {535, -215, pi, "NORA / NORTH VALLEY", "DR. NORA MARSH", "NORTH VALLEY. DROP THE SHIELD DRONE, THEN HIT THE ENFORCER.",
-     "THEY'RE FIRING ON DR. MARSH - MOVE!", "MY ARRAY LOGGED THEIR ROUTE. I HAVE THE DATA. GET US TO DUSTOFF!",
-     "MY ARRAY LOGGED THEIR ROUTE. I HAVE THE DATA. GET US TO DUSTOFF!", "DR. MARSH IS DOWN! WE LOST THE PACKAGE!"},
-    {-298, 252, pi / 2, "WALT / WEST TIMBERLINE", "WALT MARSH", "WEST TIMBERLINE. WATCH ABOVE THE TREES. WALT IS BY THE CABIN.",
-     "THEY'RE HITTING WEST TIMBERLINE - GET EYES ON WALT!", "TOOK YOU LONG ENOUGH, SON. HELL OF A SUNSET FOR AN INVASION.",
-     "TOOK YOU LONG ENOUGH, SON. WHERE'S MY DAUGHTER?", "WE LOST THE OLD MAN! LOCK IT DOWN!"},
+    {920, 445, -pi / 2, "BEN / EAST RIDGE", "BEN MARSH", "THAT'S HER SON BEHIND THE PICKUP.",
+     "THEY'RE SHOOTING AT BEN.", "MY MOM WENT UP NORTH AVENUE. IS SHE OKAY?", "YOU FOUND MY MOM? OKAY. OKAY.",
+     "WHERE'S MY MOM?", "WE LOST BEN."},
+    {535, -215, pi, "NORA / NORTH VALLEY", "NORA MARSH", "THERE'S THE PACKAGE. THE BIG ONE HAS HER PINNED.",
+     "THEY'RE ON THE PACKAGE.", "THEY CAME STRAIGHT DOWN ON MY ARRAY. THAT WASN'T LUCK.",
+     "THEY CAME STRAIGHT DOWN ON MY ARRAY. THAT WASN'T LUCK.", "THEY CAME STRAIGHT DOWN ON MY ARRAY. THAT WASN'T LUCK.",
+     "WE LOST DR. MARSH."},
+    {-298, 252, pi / 2, "WALT / WEST TIMBERLINE", "WALT MARSH", "THE OLD MAN'S BY THE CABIN. STAY LOW.",
+     "THEY'VE FOUND WALT.", "HAVE YOU SEEN MY DAUGHTER?", "YOU FOUND NORA. GOOD.", "WHERE'S NORA?", "WE LOST WALT."},
 };
+constexpr int ben = 0;
 constexpr int nora = 1;
 constexpr int walt = 2;
 constexpr Vec3 waltPickupApproach = mapPoint(-250, 225);
@@ -80,7 +82,13 @@ constexpr Vec3 lzDroneDrops[]{
     mapPoint(225, -265, 2.4f), mapPoint(560, -210, 2.3f),
 };
 
-constexpr double exfilArrive = 4.4, exfilClimb = 3.2;
+// North Avenue: Nora's dish pulses on a timer and pulls the shield drone's attention for a moment.
+constexpr double dishPulseInterval = 7.0, dishDistraction = 2.2;
+// How far away Ben can see the player wave him over, and how far a watcher can see a survivor break cover.
+constexpr float benSignalRange = 26.f, watcherRange = 30.f;
+constexpr double signalCooldown = 2.5;
+
+constexpr double exfilArrive = 4.4, exfilClimb = 3.2, liftDuration = 5.8;
 constexpr Vec3 exfilHover = mapPoint(210, -235, 2.4f), exfilApproach = mapPoint(60, -560, 19.f);
 constexpr Vec3 exfilAway = mapPoint(420, -680, 34.f), exfilEye = mapPoint(268, -162, 1.75f);
 

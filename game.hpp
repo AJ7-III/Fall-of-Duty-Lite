@@ -10,6 +10,7 @@ namespace fod {
 
 struct Assets;
 struct MissionSnapshot;
+enum class MissionChapter : uint8_t;
 enum class Match : uint8_t { Start, Playing, Paused, Results };
 enum class Device : uint8_t { None, Laptop, Transmitter };
 enum class Weapon : uint8_t { Mp44, Sniper, Pistol };
@@ -131,7 +132,13 @@ public:
     void start(uint32_t seed, int difficulty, bool alternateRival = false);
     void start(uint32_t seed, int difficulty, Opponent opponent);
     void startMission(uint32_t seed, int difficulty, bool fromCheckpoint = false);
+    void startCampaign(uint32_t seed, int difficulty);
+    bool advanceCampaign(uint32_t seed, int difficulty);
     void startExtractionReplay(uint32_t seed, int difficulty);
+    // Begin a later campaign mission directly, with Nora alive, for replays and qualification.
+    void startChapterReplay(uint32_t seed, int difficulty, MissionChapter chapter);
+    // Begin The Array at the rear door with the mothership's beam under the player's pointer.
+    void startFinaleReplay(uint32_t seed, int difficulty);
     bool isMission() const;
     bool canRetryCheckpoint() const;
     void pause();

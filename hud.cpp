@@ -104,11 +104,26 @@ struct Painter {
     }
 
     void text(int x, int y, std::string_view text, uint16_t color, int scale = 2) const {
+        if (rotated) {
+            for (char c : text) {
+                const auto* rows = hud::glyph(c);
+                for (int col = 0; col < 5; ++col) {
+                    const uint8_t bit = uint8_t(16 >> col);
+                    for (int row = 0; row < 7; ++row) {
+                        if (rows[row] & bit) rect(x + col * scale, y + row * scale, scale, scale, color);
+                    }
+                }
+                x += 6 * scale;
+            }
+            return;
+        }
         for (char c : text) {
             const auto* rows = hud::glyph(c);
             for (int row = 0; row < 7; ++row) {
+                const uint8_t mask = rows[row];
+                if (!mask) continue;
                 for (int col = 0; col < 5; ++col) {
-                    if (rows[row] & (16 >> col)) rect(x + col * scale, y + row * scale, scale, scale, color);
+                    if (mask & (16 >> col)) rect(x + col * scale, y + row * scale, scale, scale, color);
                 }
             }
             x += 6 * scale;
@@ -117,6 +132,29 @@ struct Painter {
 };
 
 struct MapPoint { int x, y; };
+
+uint16_t operationColor(const OperationView& op) {
+    if (op.jammer >= 0) return rgb(255, 92, 191);
+    if (op.pulled && (op.stage == OperationStage::Call || op.stage == OperationStage::Steer)) return rgb(255, 133, 54);
+    if (op.stage == OperationStage::Steer && op.lock > 0.f) return rgb(110, 234, 146);
+    return rgb(104, 232, 250);
+}
+
+// The Signal button as printed on the controller in use.
+const char* signalButton(const MenuState& menu) {
+#ifdef FOD_LOCAL_DUEL
+    switch (menu.controls) {
+    case MenuControls::Keyboard: return "F";
+    case MenuControls::Xbox: return "LB";
+    case MenuControls::Nintendo: return "L";
+    case MenuControls::Default: return "F / L1";
+    default: return "L1";
+    }
+#else
+    (void)menu;
+    return "L1";
+#endif
+}
 
 void map(const Painter& p, const Assets& assets, const Snapshot& snap, int x, int y, int size, bool laptop) {
     const bool scanning = !laptop && snap.uavSeconds > 0;
@@ -178,26 +216,45 @@ void map(const Painter& p, const Assets& assets, const Snapshot& snap, int x, in
     if (snap.mission && snap.mission->active) {
         constexpr uint16_t alienCyan = rgb(72, 248, 255);
         const auto& m = *snap.mission;
-        if (m.holdRadius > 0 && game_detail::planarSquared(m.holdCenter - origin) <=
-                (radarHalf + m.holdRadius) * (radarHalf + m.holdRadius)) {
+        const auto drawRing = [&](Vec3 center, float radius, uint16_t edge) {
+            if (game_detail::planarSquared(center - origin) > (radarHalf + radius) * (radarHalf + radius)) return;
             constexpr float c = .92388f, s = .38268f, d = .70711f;
             constexpr float ring[][2]{{1, 0}, {c, s}, {d, d}, {s, c}, {0, 1}, {-s, c}, {-d, d}, {-c, s},
                                       {-1, 0}, {-c, -s}, {-d, -d}, {-s, -c}, {0, -1}, {s, -c}, {d, -d}, {c, -s}};
-            const uint16_t edge = game_detail::planarSquared(m.holdCenter - origin) < m.holdRadius * m.holdRadius
-                ? playerColor : alert;
-            auto from = project(m.holdCenter.x + m.holdRadius * c, m.holdCenter.z - m.holdRadius * s);
+            auto from = project(center.x + radius * c, center.z - radius * s);
             for (const auto& offset : ring) {
-                const auto to = project(m.holdCenter.x + m.holdRadius * offset[0], m.holdCenter.z + m.holdRadius * offset[1]);
+                const auto to = project(center.x + radius * offset[0], center.z + radius * offset[1]);
                 clipped.line(from.x, from.y, to.x, to.y, edge);
                 from = to;
             }
+        };
+        if (m.holdRadius > 0.f) {
+            const bool inside = game_detail::planarSquared(m.holdCenter - origin) < m.holdRadius * m.holdRadius;
+            const auto edge = m.phase == MissionPhase::Operation ? operationColor(m.operation) : playerColor;
+            drawRing(m.holdCenter, m.holdRadius, inside ? edge : alert);
         }
-        for (const auto& ma : snap.mission->actors) {
+        const auto& op = m.operation;
+        if (m.phase == MissionPhase::Operation) {
+            if (op.stage == OperationStage::Steer) {
+                drawRing(op.clearing, op.clearingRadius, op.clearingBurned ? muted : alert);
+                drawRing(op.saddle, op.saddleRadius, playerColor);
+                drawRing(op.ship, 1.5f, operationColor(op));
+                drawRing(op.ship, 3.f, operationColor(op));
+            } else if (op.stage == OperationStage::Call && op.targetSet) {
+                drawRing(op.target, 2.2f, operationColor(op));
+            }
+            if (op.kitVisible) drawRing(op.kit, .8f, op.jammer >= 0 ? operationColor(op) : gold);
+        }
+        for (size_t i = 0; i < m.actors.size(); ++i) {
+            const auto& ma = m.actors[i];
             if (!ma.active || ma.dead) continue;
-            if (ma.role == MissionRole::Commander) {
+            if (int(i) == op.jammer) {
+                drawContact(ma.actor, operationColor(op));
+            } else if (ma.role == MissionRole::Commander) {
                 drawContact(ma.actor, playerColor);
             } else if (ma.role == MissionRole::Civilian) {
-                if (!civilianRescued(ma.civilian)) drawContact(ma.actor, gold);
+                if (!civilianRescued(ma.civilian) || m.phase == MissionPhase::Operation ||
+                    m.phase == MissionPhase::Boarding) drawContact(ma.actor, gold);
             } else if (ma.radar > 0 || ma.alerted || scanning) {
                 drawContact(ma.actor, ma.variant > 0 ? alert : alienCyan);
             }
@@ -376,7 +433,7 @@ void startScreen(const Painter& p, const MenuState& menu, Arena arena) {
 #else
     std::snprintf(lanSub, sizeof(lanSub), "LOCAL SPLIT-SCREEN ON DESKTOP");
 #endif
-    const char* descriptions[]{"MISSION 1 / BRIAR HOUSE", botSub, lanSub, "DIFFICULTY, RIVAL, AUDIO & DISPLAY"};
+    const char* descriptions[]{"OPERATION BRIAR / 3 MISSIONS", botSub, lanSub, "DIFFICULTY, RIVAL, AUDIO & DISPLAY"};
     for (size_t i = 0; i < startCards.size(); ++i) {
         const auto& card = startCards[i];
         const bool selected = menu.selection == int(i);
@@ -451,10 +508,12 @@ void lanScreen(const Painter& p, const MenuState& menu) {
 #endif
 }
 
+constexpr float sRankSeconds = 5 * 60.f;
+
 char missionGrade(const MissionSnapshot& m) {
     if (m.phase != MissionPhase::Victory) return 'F';
-    // S rank: every civilian, no checkpoint reloads, under four and a half minutes.
-    if (m.civiliansSaved == m.civiliansTotal && m.retries == 0 && m.missionSeconds < 270.f) return 'S';
+    // S rank: every civilian, no checkpoint reloads, under five minutes.
+    if (m.civiliansSaved == m.civiliansTotal && m.retries == 0 && m.missionSeconds < sRankSeconds) return 'S';
     if (m.civiliansSaved == m.civiliansTotal) return 'A';
     if (m.civiliansSaved >= 2) return 'B';
     return 'C';
@@ -470,9 +529,13 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
         return;
     }
     const bool isCampaign = s.match != Match::Start && (menu.campaign || (s.mission && s.mission->active));
+    const auto chapter = s.mission ? s.mission->chapter : MissionChapter::BriarHouse;
+    const bool campaignWon = s.mission && s.mission->campaign && chapter == MissionChapter::Array &&
+                             s.mission->phase == MissionPhase::Victory;
     const char* title = s.match == Match::Start ? (isCampaign ? "MISSION SETUP" : "MATCH SETUP")
         : s.match == Match::Paused ? "PAUSED"
-        : isCampaign ? (s.mission && s.mission->phase == MissionPhase::Victory ? "MISSION COMPLETE"
+        : isCampaign ? (campaignWon ? "CAMPAIGN COMPLETE"
+                        : s.mission && s.mission->phase == MissionPhase::Victory ? "MISSION COMPLETE"
                         : s.mission && s.mission->phase == MissionPhase::Failed ? "MISSION FAILED" : "MISSION ENDED")
         : (s.playerScore >= 10 ? "VICTORY" : s.leadingRivalScore() >= 10 ? "DEFEAT" : "MATCH ENDED");
     p.rect(menuX - 8, 46, menuWidth + 16, 387, ink);
@@ -483,12 +546,19 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
         const auto& m = *s.mission;
         char summary[112];
         const int mins = int(m.missionSeconds) / 60, secs = int(m.missionSeconds) % 60;
-        if (m.phase == MissionPhase::Failed) {
+        if (chapter != MissionChapter::BriarHouse && m.phase == MissionPhase::Failed) {
+            std::snprintf(summary, sizeof(summary), "%s  /  %s %d/3",
+                          m.failReason, missionName(chapter), int(chapter) + 1);
+        } else if (chapter != MissionChapter::BriarHouse) {
+            const int total = int(m.earlierMissionSeconds + m.missionSeconds);
+            std::snprintf(summary, sizeof(summary), "%s %d/3  /  %02d:%02d  /  CAMPAIGN %02d:%02d",
+                          missionName(chapter), int(chapter) + 1, mins, secs, total / 60, total % 60);
+        } else if (m.phase == MissionPhase::Failed) {
             std::snprintf(summary, sizeof(summary), "%s  /  RESCUED %d/%d  /  KILLS %d",
                           m.failReason[0] ? m.failReason : "MISSION FAILED", m.civiliansSaved, m.civiliansTotal, m.aliensKilled);
         } else {
-            std::snprintf(summary, sizeof(summary), "EVACUATED %d/%d  /  ALIENS %d  /  %02d:%02d  /  RANK %c",
-                          m.civiliansBoarded, m.civiliansTotal, m.aliensKilled, mins, secs, missionGrade(m));
+            std::snprintf(summary, sizeof(summary), "SAVED %d/%d  /  ALIENS %d  /  %02d:%02d  /  RANK %c",
+                          m.civiliansSaved, m.civiliansTotal, m.aliensKilled, mins, secs, missionGrade(m));
         }
         p.text(menuX + 12, 104, summary, m.phase == MissionPhase::Victory ? gold : alert, 1);
         char detail[112];
@@ -506,7 +576,7 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
         p.text(menuX + 12, 118, score, muted);
     } else {
         char location[44];
-        if (isCampaign) std::snprintf(location, sizeof(location), "%s / DELTA SQUAD MISSION 1", arenaLabel(arena));
+        if (isCampaign) std::snprintf(location, sizeof(location), "MISSION %d / %s", int(chapter) + 1, missionName(chapter));
         else std::snprintf(location, sizeof(location), "%s / FIRST TO TEN", arenaLabel(arena));
         p.text(menuX + 12, 118, location, muted);
     }
@@ -540,7 +610,8 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
     const int count = s.match == Match::Start ? MenuRows - 1 : MenuRows;
     const char* primary = s.match == Match::Start ? "BACK TO START"
         : s.match == Match::Paused ? "RESUME"
-        : isCampaign ? (s.mission && s.mission->phase == MissionPhase::Failed && s.mission->checkpointStage != MissionCheckpoint::None
+        : isCampaign ? (s.mission && s.mission->nextMissionReady() ? "NEXT MISSION"
+                        : s.mission && s.mission->phase == MissionPhase::Failed && s.mission->checkpointStage != MissionCheckpoint::None
                         ? "RETRY CHECKPOINT" : "PLAY AGAIN")
         : "REMATCH";
     const char* labels[MenuRows]{primary, "DIFFICULTY", isCampaign ? "MISSION" : "RIVAL",
@@ -557,7 +628,7 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
         renderSize = desktopSize;
     }
 #endif
-    const char* values[MenuRows]{"", difficulty, isCampaign ? "BRIAR HOUSE" : opponentName(menu.opponent),
+    const char* values[MenuRows]{"", difficulty, isCampaign ? missionName(chapter) : opponentName(menu.opponent),
                                 menu.voice ? "ON" : "OFF", volume, renderSize, menu.callsign.data(), ""};
     for (int row = 0; row < count; ++row) {
         const int py = menuY + row * menuRowHeight;
@@ -660,7 +731,10 @@ bool projectToHud(const Snapshot& s, Vec3 point, float& x, float& y) {
 // edge of the view and points the way.
 void objectiveMarker(const Painter& p, const Snapshot& s, const MissionSnapshot& m) {
     if (!m.hasWaypoint || s.scope > 0.3f || s.ads > 0.7f || s.dead) return;
-    const Vec3 target = game_detail::atHeight(m.waypoint, 1.7f);
+    const bool operation = m.phase == MissionPhase::Operation;
+    const bool saddle = operation && m.operation.stage == OperationStage::Steer;
+    const bool landing = operation && m.operation.stage == OperationStage::Fight;
+    const Vec3 target = game_detail::atHeight(m.waypoint, saddle ? 4.f : 1.7f);
     const float range = game_detail::planar(m.waypoint - s.player.position);
     if (range < (m.waypointIsRoute ? .8f : 2.5f)) return;
     float x = 0, y = 0;
@@ -681,7 +755,7 @@ void objectiveMarker(const Painter& p, const Snapshot& s, const MissionSnapshot&
         y = 200.f + dy * k;
     }
     const int cx = int(x), cy = int(y);
-    const uint16_t color = clamped ? muted : accent;
+    const uint16_t color = clamped ? muted : operation && !m.waypointIsRoute ? operationColor(m.operation) : accent;
     for (int r = 6; r <= 7; ++r) {
         p.line(cx - r, cy, cx, cy - r, color);
         p.line(cx, cy - r, cx + r, cy, color);
@@ -699,12 +773,85 @@ void objectiveMarker(const Painter& p, const Snapshot& s, const MissionSnapshot&
         p.line(tipX, tipY, cx + int(ux * 8 + uy * 4), cy + int(uy * 8 - ux * 4), color);
     }
     char label[20];
-    std::snprintf(label, sizeof(label), m.waypointIsRoute ? "ROUTE %dM" : "%dM", int(range + 0.5f));
+    const char* tag = m.waypointIsRoute ? "ROUTE %dM" : saddle ? "SADDLE %dM" : landing ? "LANDING %dM" : "%dM";
+    std::snprintf(label, sizeof(label), tag, int(range + 0.5f));
     const int width = int(std::strlen(label)) * 6;
     p.text(std::clamp(cx - width / 2, 4, 796 - width), cy + 11, label, color, 1);
 }
 
-void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
+// Timberline: one segment per answered call. The Array: the hold on the saddle.
+void drawOperationProgress(const Painter& p, const MissionSnapshot& m) {
+    const auto& op = m.operation;
+    constexpr int x = 185, y = 51, gap = 2;
+    const auto tint = operationColor(op);
+    if (m.chapter == MissionChapter::Timberline) {
+        constexpr int calls = OperationView::callsNeeded;
+        constexpr int step = (430 + gap) / calls, width = step - gap;
+        for (int i = 0; i < calls; ++i) {
+            p.rect(x + step * i, y, width, 4, panel);
+            if (i < op.calls) p.rect(x + step * i, y, width, 4, playerColor);
+            if (i == op.calls && op.targetSet) p.rect(x + step * i, y, width / 3, 4, tint);
+        }
+        return;
+    }
+    if (op.stage != OperationStage::Steer) return;
+    p.rect(x, y, 430, 4, panel);
+    p.rect(x, y, int(430 * std::clamp(op.lock, 0.f, 1.f)), 4, playerColor);
+}
+
+// Where the called ship is going and where the pointer is, drawn over the world so they read
+// through hedges and rooftops.
+void drawSignalMarkers(const Painter& p, const Snapshot& s, const MissionSnapshot& m) {
+    if (m.phase != MissionPhase::Operation || s.scope > .3f) return;
+    const auto& op = m.operation;
+    const auto mark = [&](Vec3 at, float height, uint16_t color, const char* format, bool box) {
+        float x = 0, y = 0;
+        if (!projectToHud(s, game_detail::atHeight(at, height), x, y) || x < 20 || x > 780 || y < 60 || y > 440) return;
+        const int cx = int(x), cy = int(y);
+        if (box) {
+            p.line(cx - 6, cy - 6, cx + 6, cy - 6, color);
+            p.line(cx + 6, cy - 6, cx + 6, cy + 6, color);
+            p.line(cx + 6, cy + 6, cx - 6, cy + 6, color);
+            p.line(cx - 6, cy + 6, cx - 6, cy - 6, color);
+        } else {
+            p.line(cx - 5, cy, cx + 5, cy, color);
+            p.line(cx, cy - 5, cx, cy + 5, color);
+        }
+        if (!format) return;
+        char label[24];
+        std::snprintf(label, sizeof(label), format, int(game_detail::planar(at - s.player.position) + .5f));
+        const int width = int(std::strlen(label)) * 6;
+        p.text(std::clamp(cx - width / 2, 4, 796 - width), cy + 10, label, color, 1);
+    };
+    const auto tint = operationColor(op);
+    if (op.stage == OperationStage::Call) {
+        if (op.targetSet) mark(op.target, .2f, tint, op.pulled ? "PULLED %dM" : "LANDING %dM", true);
+        if (op.painting && op.aimValid) mark(op.aim, 0.f, paper, nullptr, false);
+    } else if (op.stage == OperationStage::Steer) {
+        mark(op.ship, 2.5f, tint, op.pulled ? "BEAM %dM" : "BEAM %dM", true);
+        if (op.painting) mark(op.aim, 0.f, paper, nullptr, false);
+    }
+}
+
+// The Signal button and what it does right now, low in the centre of the view.
+void drawSignalPrompt(const Painter& p, const MissionSnapshot& m, const MenuState& menu, bool held) {
+    if (!m.signalReady || !m.signalHint[0]) return;
+    const std::string_view button(signalButton(menu)), hint(m.signalHint);
+    const int bw = int(button.size()) * 6 + 10;
+    const int width = bw + 10 + int(hint.size()) * 6 + 12;
+    const int x = 400 - width / 2, y = 398;
+    const auto& op = m.operation;
+    const bool warning = op.jammer >= 0 || (op.painting && !op.aimValid) ||
+                         std::string_view(m.signalHint).find("TOO CLOSE") != std::string_view::npos ||
+                         std::string_view(m.signalHint).find("NO CLEAR") != std::string_view::npos ||
+                         std::string_view(m.signalHint).find("GET BACK") != std::string_view::npos;
+    p.rect(x, y, width, 18, ink);
+    p.rect(x + 3, y + 3, bw, 12, held ? accent : lineColor);
+    p.text(x + 8, y + 6, button, held ? ink : paper, 1);
+    p.text(x + bw + 13, y + 6, hint, warning ? alert : held ? accent : paper, 1);
+}
+
+void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s, const MenuState& menu) {
     const auto& m = *s.mission;
     const bool inIntro = m.phase == MissionPhase::Intro;
     // Cutscenes (the wake-up and the exfil) strip the combat HUD back to the story.
@@ -774,14 +921,18 @@ void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
 
     // Top objective bar (hidden during initial blackout so the opening cinema breathes).
     if (showTactical) {
+        const bool operation = m.phase == MissionPhase::Operation;
+        const auto status = operation ? operationColor(m.operation) : playerColor;
         p.rect(185, 15, 430, 36, ink);
-        p.rect(185, 15, 430, 2, (cutscene || m.phase == MissionPhase::Overwatch || calmBeat) ? gold : playerColor);
+        p.rect(185, 15, 430, 2, (cutscene || m.phase == MissionPhase::Overwatch || calmBeat) ? gold : status);
         const std::string_view obj(m.objective);
         p.text(400 - int(obj.size()) * 6, 20, obj, paper, 2);
         const std::string_view sub(m.subObjective);
-        p.text(400 - int(sub.size()) * 3, 39, sub, muted, 1);
-        if (m.phase == MissionPhase::Extraction && m.evacTotal > 0 && !m.cinematic) {
-            // Hold progress fills as the evac birds close in.
+        const bool warning = operation && (m.operation.jammer >= 0 || m.operation.pulled);
+        p.text(400 - int(sub.size()) * 3, 39, sub, warning ? status : muted, 1);
+        if (operation) {
+            drawOperationProgress(p, m);
+        } else if (m.phase == MissionPhase::Extraction && m.evacTotal > 0.f && !m.cinematic) {
             const float done = std::clamp(1.f - m.evacSeconds / m.evacTotal, 0.f, 1.f);
             p.rect(185, 51, 430, 3, panel);
             p.rect(185, 51, int(430 * done), 3, done >= 1.f ? gold : playerColor);
@@ -794,11 +945,21 @@ void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
     // Compact civilian + hostile counters.
     if (!cutscene) {
         char civText[24], hostText[24];
-        std::snprintf(civText, sizeof(civText), "CIVS %d/%d", m.civiliansSaved, m.civiliansTotal);
+        bool danger = m.chapter == MissionChapter::BriarHouse && m.civiliansLost > 0;
+        if (m.chapter == MissionChapter::BriarHouse) {
+            std::snprintf(civText, sizeof(civText), "CIVS %d/%d", m.civiliansSaved, m.civiliansTotal);
+        } else if (m.chapter == MissionChapter::Timberline) {
+            std::snprintf(civText, sizeof(civText), "CALLS %d/%d", m.operation.calls, OperationView::callsNeeded);
+        } else if (m.operation.stage == OperationStage::Steer) {
+            std::snprintf(civText, sizeof(civText), "DISH %dM", int(m.operation.dishDistance));
+            danger = m.operation.dishDistance < 14.f;
+        } else {
+            std::snprintf(civText, sizeof(civText), "M3/3");
+        }
         const char* enemyLabel = m.phase == MissionPhase::Overwatch ? "TARGETS %d" : "HOSTILES %d";
         std::snprintf(hostText, sizeof(hostText), enemyLabel, m.aliensRemaining);
         p.rect(625, 15, 104, 36, panel);
-        p.text(632, 20, civText, m.civiliansLost > 0 ? alert : gold, 1);
+        p.text(632, 20, civText, danger ? alert : gold, 1);
         p.text(632, 34, hostText, m.aliensRemaining > 0 ? rgb(72, 248, 255) : playerColor, 1);
     }
 
@@ -848,7 +1009,11 @@ void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
         p.rect(bx + bw - 3, 316, 3, 18, c);
         p.text(bx + 12, 321, badge, c, 1);
     }
-    // Mission dialogue carries the instructions, so subtitles always show; the setting mutes radio sound.
+    if (!cutscene && !s.dead) {
+        drawSignalMarkers(p, s, m);
+        drawSignalPrompt(p, m, menu, m.operation.painting);
+    }
+    // Subtitles always show, since people talk over the action; the setting only mutes radio sound.
     drawRadioBanner(p, m);
     if (s.damage > 0.12f && !s.dead) {
         const float bearing = s.damageFromYaw - s.playerYaw;
@@ -893,7 +1058,7 @@ void paintHud(const Painter& p, const Assets& assets, const Snapshot& s, const M
         return;
     }
     if (s.mission && s.mission->active) {
-        drawMissionHud(p, assets, s);
+        drawMissionHud(p, assets, s, menu);
         return;
     }
     scope(p, s);
@@ -1055,25 +1220,70 @@ void scaleWorld(const uint16_t* source, int width, int height, uint16_t* framebu
                 }
                 pair[i] = lines[slot].data();
             }
-            for (int x = 0; x < 800; ++x) {
-                const uint16_t pixel = mix(pair[0][x], pair[1][x], row.weight);
-                if (rotated) framebuffer[size_t(x) * 480 + 15 + 449 - y] = pixel;
-                else framebuffer[(y + 15) * 800 + x] = pixel;
+            const uint16_t* p0 = pair[0];
+            const uint16_t* p1 = pair[1];
+            const int w = row.weight;
+            if (rotated) {
+                uint16_t* dst = framebuffer + 15 + 449 - y;
+                for (int x = 0; x < 800; ++x) dst[size_t(x) * 480] = mix(p0[x], p1[x], w);
+            } else {
+                uint16_t* out = framebuffer + (y + 15) * 800;
+                if (w == 0) std::memcpy(out, p0, 800 * sizeof(uint16_t));
+                else for (int x = 0; x < 800; ++x) out[x] = mix(p0[x], p1[x], w);
+            }
+        }
+        return;
+    }
+    if (!rotated && width == 400 && height == 225) {
+        for (int sy = 0; sy < 225; ++sy) {
+            const uint16_t* row = source + sy * 400;
+            uint16_t* out0 = framebuffer + (sy * 2 + 15) * 800;
+            uint32_t* out32 = reinterpret_cast<uint32_t*>(out0);
+            for (int sx = 0; sx < 400; ++sx) {
+                const uint32_t p = row[sx];
+                out32[sx] = p | (p << 16);
+            }
+            std::memcpy(out0 + 800, out0, 800 * sizeof(uint16_t));
+        }
+        return;
+    }
+    if (!rotated && width == 320 && height == 180) {
+        // Exact 2.5x nearest-neighbor scaling: every 2 source pixels map to 5 output pixels (0,0,0,1,1),
+        // matching x * 320 / 800 bit for bit without per-pixel division.
+        int prevSy = -1;
+        for (int y = 0; y < 450; ++y) {
+            const int sy = (y * 2) / 5;
+            uint16_t* out = framebuffer + (y + 15) * 800;
+            if (sy == prevSy) {
+                std::memcpy(out, out - 800, 800 * sizeof(uint16_t));
+                continue;
+            }
+            prevSy = sy;
+            const uint16_t* row = source + sy * 320;
+            uint16_t* dst = out;
+            for (int sx = 0; sx < 320; sx += 2) {
+                const uint16_t a = row[sx], b = row[sx + 1];
+                dst[0] = a; dst[1] = a; dst[2] = a; dst[3] = b; dst[4] = b;
+                dst += 5;
             }
         }
         return;
     }
     if (rotated) {
+        std::array<uint16_t, 450> yMap;
+        for (int y = 0; y < 450; ++y) yMap[y] = uint16_t(y * height / 450);
         for (int x = 0; x < 800; ++x) {
-            const int sourceX = x * width / 800;
+            const uint16_t* colSrc = source + x * width / 800;
             uint16_t* column = framebuffer + size_t(x) * 480 + 15;
-            for (int y = 0; y < 450; ++y) column[449 - y] = source[y * height / 450 * width + sourceX];
+            for (int y = 0; y < 450; ++y) column[449 - y] = colSrc[size_t(yMap[y]) * width];
         }
     } else {
+        std::array<uint16_t, 800> xMap;
+        for (int x = 0; x < 800; ++x) xMap[x] = uint16_t(x * width / 800);
         for (int y = 0; y < 450; ++y) {
             const auto* row = source + y * height / 450 * width;
             uint16_t* out = framebuffer + (y + 15) * 800;
-            for (int x = 0; x < 800; ++x) out[x] = row[x * width / 800];
+            for (int x = 0; x < 800; ++x) out[x] = row[xMap[x]];
         }
     }
 }

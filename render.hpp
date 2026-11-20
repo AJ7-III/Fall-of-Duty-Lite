@@ -23,6 +23,9 @@ public:
     void render(const Snapshot& snapshot, int width, int height, uint16_t* rgb565, bool measure = true);
     const RenderStats& stats() const;
     uint64_t workingBytes() const;
+#ifdef ESP_PLATFORM
+    bool depthInInternalRam() const;
+#endif
 
 private:
     struct Impl;

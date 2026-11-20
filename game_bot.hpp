@@ -63,7 +63,9 @@ inline Vec3 silhouette(Vec3 from, const BotTarget& target, int i) {
 class Navigation {
 public:
     explicit Navigation(const Assets& assets) : assets_(assets), size_(assets.navNodes.size()), g_(size_), f_(size_),
-        parent_(size_), state_(size_), heap_(size_), heapPosition_(size_) {}
+        parent_(size_), state_(size_), heap_(size_), heapPosition_(size_),
+        orderedByX_(std::is_sorted(assets.navNodes.begin(), assets.navNodes.end(),
+                                  [](const NavNode& a, const NavNode& b) { return a.position.x < b.position.x; })) {}
 
     bool valid(int n) const { return n >= 0 && n < int(size_) && assets_.navNodes[n].walkable; }
     int size() const { return int(size_); }
@@ -94,6 +96,7 @@ public:
             }
             return -1;
         }
+        if (orderedByX_) return nearestInColumns(p);
         int best = -1;
         float score = infinity;
         for (int i = 0; i < int(size_); ++i) {
@@ -159,7 +162,34 @@ private:
     std::vector<int> parent_;
     std::vector<uint8_t> state_;
     std::vector<int> heap_, heapPosition_;
+    bool orderedByX_;
     int used_ = 0;
+
+    int nearestInColumns(Vec3 p) const {
+        const auto& nodes = assets_.navNodes;
+        const auto split = std::lower_bound(nodes.begin(), nodes.end(), p.x,
+                                            [](const NavNode& n, float x) { return n.position.x < x; });
+        const int first = int(split - nodes.begin());
+        int best = -1;
+        float bestDistance = infinity;
+        const auto consider = [&](int i) {
+            const auto& candidate = nodes[i];
+            const float dx = candidate.position.x - p.x;
+            if (dx * dx > bestDistance) return false;
+            if (candidate.walkable) {
+                const float distance = planarSquared(candidate.position - p);
+                // Keep the first node on a tie, as in the original linear search.
+                if (distance < bestDistance || (distance == bestDistance && i < best)) {
+                    bestDistance = distance;
+                    best = i;
+                }
+            }
+            return true;
+        };
+        for (int i = first; i < int(size_) && consider(i); ++i) {}
+        for (int i = first - 1; i >= 0 && consider(i); --i) {}
+        return best;
+    }
 
     static double edgeCost(float packed) {
         // The browser rounds the accumulated costs to Float32, with Number

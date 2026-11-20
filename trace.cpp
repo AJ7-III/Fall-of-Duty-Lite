@@ -38,6 +38,9 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
         if (std::sscanf(line, "S %u %d %23s %c", &seed, &next.difficulty_, start, &extra) != 3) return badStart();
         if (std::strcmp(start, "breakout") == 0) next.campaignStart_ = CampaignStart::Breakout;
         else if (std::strcmp(start, "landing-zone") == 0) next.campaignStart_ = CampaignStart::LandingZone;
+        else if (std::strcmp(start, "timberline") == 0) next.campaignStart_ = CampaignStart::Timberline;
+        else if (std::strcmp(start, "array") == 0) next.campaignStart_ = CampaignStart::Array;
+        else if (std::strcmp(start, "array-finale") == 0) next.campaignStart_ = CampaignStart::ArrayFinale;
         else return badStart();
     } else {
         auto& f = next.fixture_;
@@ -88,7 +91,7 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
                             &held, &pressed) != 6 ||
                 !(std::abs(input.moveX) <= 1 && std::abs(input.moveY) <= 1 &&
                   std::abs(input.lookX) <= 2 * pi && std::abs(input.lookY) <= 2 * pi) ||
-                ((held | pressed) & ~((1u << 15) - 1))) return invalid();
+                ((held | pressed) & ~((1u << 16) - 1))) return invalid();
             input.held = held;
             input.pressed = pressed;
             next.inputs_.push_back(input);
@@ -139,6 +142,9 @@ void ReplayTrace::begin(App& app) {
     app.game.setRandomHook(draws_.empty() ? nullptr : &supply, this);
     if (campaignStart_ == CampaignStart::Breakout) app.game.startMission(seed_, difficulty_);
     else if (campaignStart_ == CampaignStart::LandingZone) app.game.startExtractionReplay(seed_, difficulty_);
+    else if (campaignStart_ == CampaignStart::Timberline) app.game.startChapterReplay(seed_, difficulty_, MissionChapter::Timberline);
+    else if (campaignStart_ == CampaignStart::Array) app.game.startChapterReplay(seed_, difficulty_, MissionChapter::Array);
+    else if (campaignStart_ == CampaignStart::ArrayFinale) app.game.startFinaleReplay(seed_, difficulty_);
     else {
         app.game.start(seed_, difficulty_, opponent_);
         app.game.setupFixture(fixture_);
@@ -181,10 +187,12 @@ void writeTraceTick(FILE* out, const App& app) {
         const auto& m = *s.mission;
         const auto plasma = std::count_if(m.plasma.begin(), m.plasma.end(), [](const PlasmaCloud& p) { return p.radius > 0; });
         std::fprintf(out, "\"mission\":{\"phase\":%d,\"checkpoint\":%d,\"civilians\":[%d,%d,%d],"
-                     "\"boarded\":%d,\"aliens\":%d,\"plasma\":%d,\"shock\":%.6f,\"hold\":%.6f,\"perimeter\":%.2f},",
+                     "\"boarded\":%d,\"aliens\":%d,\"plasma\":%d,\"shock\":%.6f,\"hold\":%.6f,\"perimeter\":%.2f,"
+                     "\"stage\":%d,\"lock\":%.4f,\"dish\":%d,\"beam\":%.3f},",
                      int(m.phase), int(m.checkpointStage), int(m.actors[1].civilian), int(m.actors[2].civilian),
                      int(m.actors[3].civilian), m.civiliansBoarded, m.aliensRemaining, int(plasma),
-                     m.plasmaShock, m.evacSeconds, m.holdRadius);
+                     m.plasmaShock, m.evacSeconds, m.holdRadius, int(m.operation.stage), m.operation.lock, int(m.dishLink),
+                     m.operation.dishDistance);
     }
     std::fputs("\"events\":[", out);
     bool comma = false;

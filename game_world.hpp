@@ -86,8 +86,7 @@ public:
         return true;
     }
 
-    bool walkBlocked(Vec3 from, Vec3 to) const {
-        constexpr float pad = .42f;
+    bool walkBlocked(Vec3 from, Vec3 to, float pad = .42f) const {
         const float margin = rotationMargin(pad);
         const Vec3 delta = to - from;
         const float left = std::min(from.x, to.x) - margin, right = std::max(from.x, to.x) + margin;

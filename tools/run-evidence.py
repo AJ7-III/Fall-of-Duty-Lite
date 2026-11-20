@@ -66,14 +66,28 @@ def main():
                 mission = [sample["mission"] for sample in ticks]
                 phases = sorted({sample["phase"] for sample in mission})
                 start = initial.split()[-1]
+                requires_combat = start in {"breakout", "landing-zone", "array-finale"}
                 if start == "breakout":
                     valid = phases == [0, 1, 2] and max(sample["aliens"] for sample in mission) == 4
-                else:
+                elif start == "array-finale":
+                    # The Array's rear door: the dish steers the mothership while the fleet pushes the house.
+                    valid = (phases == [10] and {sample["stage"] for sample in mission} == {7}
+                             and any(sample["dish"] for sample in mission)
+                             and max(sample["aliens"] for sample in mission) >= 2)
+                elif start == "landing-zone":
                     valid = (phases == [6, 7] and any(sample["apache"] for sample in ticks)
                              and any(sample["hold"] > 0 and sample["perimeter"] == 15 for sample in mission))
-                if not valid or not any(sample["plasma"] > 0 for sample in mission) or not any(
-                        sample["shock"] > 0 for sample in mission):
-                    raise RuntimeError(f"Campaign replay missed its combat beats in {scene}")
+                else:
+                    # These starts can be used for travel and scouting replays.
+                    stages = {"timberline": range(0, 4), "array": range(4, 10)}[start]
+                    valid = (mission[0]["phase"] == 10 and mission[0]["stage"] == stages.start
+                             and set(phases) <= {8, 9, 10}
+                             and all(sample["stage"] in stages for sample in mission))
+                if requires_combat:
+                    valid = (valid and any(sample["plasma"] > 0 for sample in mission)
+                             and any(sample["shock"] > 0 for sample in mission))
+                if not valid:
+                    raise RuntimeError(f"Campaign replay missed its expected stages or events in {scene}")
                 result["missionPhases"] = phases
                 result["peakPlasma"] = max(sample["plasma"] for sample in mission)
         else:

@@ -79,6 +79,7 @@ void onTransfer(usb_transfer_t* transfer) {
         if (face & 0x80) report.buttons |= fod::Swap;
         if ((shoulders & 0x04) || data[8] >= 48) report.buttons |= fod::Aim;
         if ((shoulders & 0x08) || data[9] >= 48) report.buttons |= fod::Fire;
+        if (shoulders & 0x01) report.buttons |= fod::Signal;
         if (shoulders & 0x20) report.buttons |= fod::Pause;
         if (shoulders & 0x40) report.buttons |= fod::Sprint;
         if (dpad == 0 || dpad == 1 || dpad == 7) report.buttons |= fod::Up | fod::Streak;

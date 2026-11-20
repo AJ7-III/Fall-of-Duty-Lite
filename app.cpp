@@ -46,8 +46,13 @@ void App::startImmediate(bool asCampaign) {
 
 void App::beginMatch(bool retryCheckpoint) {
     audio.stopSpeech();
-    if (menu_.campaign) game.startMission(seed_++, menu_.difficulty, retryCheckpoint);
-    else game.start(seed_++, menu_.difficulty, menu_.opponent);
+    const auto seed = seed_++;
+    if (menu_.campaign) {
+        if (retryCheckpoint) game.startMission(seed, menu_.difficulty, true);
+        else if (!game.advanceCampaign(seed, menu_.difficulty)) game.startCampaign(seed, menu_.difficulty);
+    } else {
+        game.start(seed, menu_.difficulty, menu_.opponent);
+    }
     routeAudio();
 }
 
@@ -155,7 +160,7 @@ void App::startOrResume(const Input& input) {
                                      snapshot.mission->phase == MissionPhase::Failed && game.canRetryCheckpoint();
         beginMatch(retryCheckpoint);
     }
-    constexpr uint32_t actions = Fire | Reload | Stance | Swap | Streak | Jump;
+    constexpr uint32_t actions = Fire | Reload | Stance | Swap | Streak | Jump | Signal;
     blockedActions_ = input.held & actions;
 }
 

@@ -12,6 +12,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_memory_utils.h"
 #include "esp_random.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -79,8 +80,15 @@ void reportCapture(const board::SlotSample* samples, bool stationary) {
 }
 
 uint16_t* allocateWorld() {
+    constexpr size_t bytes = 400 * 225 * sizeof(uint16_t);
+    constexpr size_t reserveInternal = 96 * 1024;
+    if (heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA) >= bytes + reserveInternal) {
+        if (auto* p = static_cast<uint16_t*>(heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA))) {
+            return p;
+        }
+    }
     return static_cast<uint16_t*>(heap_caps_aligned_alloc(
-        64, 400 * 225 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        64, bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
 }
 
 #if CONFIG_FOD_BOARD_DIAGNOSTIC
@@ -358,12 +366,6 @@ bool publishedCompact(Live& live) {
 
 void renderTask(void* context) {
     auto& live = *static_cast<Live*>(context);
-    auto* source = allocateWorld();
-    if (!source) {
-        showRecovery("RENDER MEMORY");
-        vTaskDelete(nullptr);
-        return;
-    }
 
     std::unique_ptr<fod::Renderer> renderer;
 #if CONFIG_FOD_CLASSIC_VISUALS
@@ -372,15 +374,24 @@ void renderTask(void* context) {
     constexpr auto look = fod::RenderLook::Enhanced;
 #endif
     try {
+        // Construct Renderer first so its heavily-accessed depth buffer gets priority for on-chip SRAM.
         renderer = std::make_unique<fod::Renderer>(live.assets, look);
     } catch (const std::bad_alloc&) {
-        heap_caps_free(source);
         showRecovery("RENDER MEMORY");
         vTaskDelete(nullptr);
         return;
     }
-    ESP_LOGI(tag, "renderer working bytes=%llu color bytes=%u", static_cast<unsigned long long>(renderer->workingBytes()),
-             400 * 225 * static_cast<unsigned>(sizeof(uint16_t)));
+    auto* source = allocateWorld();
+    if (!source) {
+        renderer.reset();
+        showRecovery("RENDER MEMORY");
+        vTaskDelete(nullptr);
+        return;
+    }
+    ESP_LOGI(tag, "renderer working bytes=%llu color bytes=%u color_in_sram=%d depth_in_sram=%d",
+             static_cast<unsigned long long>(renderer->workingBytes()),
+             400 * 225 * static_cast<unsigned>(sizeof(uint16_t)),
+             esp_ptr_internal(source) ? 1 : 0, renderer->depthInInternalRam() ? 1 : 0);
     fod::WorldFrame worldFrame(*renderer, source);
     std::optional<fod::MenuFrameKey> lastMenu;
     board::logMemory("renderer-ready");
@@ -597,6 +608,12 @@ void gameplay() {
         ESP_LOGI(tag, "arena=%s build_us=%" PRId64 " resident_payload=%llu", launchTitle(launch), board::timeUs() - begin,
                  static_cast<unsigned long long>(assets.residentBytes));
         board::logMemory("arena-built");
+    } else {
+        try {
+            fod::optimizeShipBoxWorld(assets);
+        } catch (const std::bad_alloc&) {
+            ESP_LOGW(tag, "Ship Box mesh simplification ran out of memory");
+        }
     }
     fod::App app(assets, replay ? 0u : esp_random());
     toMenu(board::readSettings(), app.settings());

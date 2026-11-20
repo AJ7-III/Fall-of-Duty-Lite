@@ -20,7 +20,7 @@ public:
     uint32_t missingDraws() const { return missingDraws_; }
 
 private:
-    enum class CampaignStart { None, Breakout, LandingZone };
+    enum class CampaignStart { None, Breakout, LandingZone, Timberline, Array, ArrayFinale };
     CampaignStart campaignStart_ = CampaignStart::None;
 
     struct Draw {

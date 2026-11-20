@@ -7,9 +7,10 @@
 #include <algorithm>
 #include <array>
 #include <cassert>
+#include <cmath>
+#include <cstring>
 #include <functional>
 #include <initializer_list>
-#include <unordered_map>
 #include <utility>
 
 namespace fod {
@@ -40,7 +41,7 @@ enum Surface {
     Timber, Counter, Steel, Upholstery, Linen, WagonPaint, Rug, Brick, Glass, Ceiling, GardenWall,
     Ivory, Sage, Brass, Amber, DarkWood, Terracotta, Soil, YoungLeaf, Flower, Artwork,
     Marble, RedRunner, StainedGlass, MonumentStone, Asphalt, Tire, CarGlass,
-    Meadow, ForestSlope, MountainRock, FarRidge, CabinCedar, CabinGreen, CabinCream, CabinGlass,
+    Meadow, ForestSlope, MountainRock, CabinCedar, CabinGreen, CabinCream, CabinGlass,
     Iron, Gravel, CabinSlate, RidgePine,
     AlienHull, AlienTrim, AlienGlow, AlienCore, Scorch,
     AlienSkin, AlienSinew, AlienTooth, AlienMaw, AlienGum,
@@ -49,7 +50,9 @@ enum Surface {
     HeloOlive, HeloDark, HeloMark, HeloCross,
     GrassBladeDark, GrassBladeMid, GrassBladeGold, RoadLine,
     CivTrim, CivFabric, CivFeatures, CivGlasses, CivCap, CivCapBand,
-    PineNeedles, PineShade, ScorchEdge, CabinLit, HeloPanel, HeloGlass, WreckSkin, WreckGlass, PodSkin, SurfaceCount
+    PineNeedles, PineShade, ScorchEdge, CabinLit, HeloPanel, HeloGlass, WreckSkin, WreckGlass, PodSkin,
+    FirTips, PineBark, AspenBark, AspenBarkShade, AspenGold, AspenOchre, AspenAmber,
+    AlpineScree, SurfaceCount
 };
 
 constexpr std::array<uint16_t, SurfaceCount> colors{
@@ -61,7 +64,7 @@ constexpr std::array<uint16_t, SurfaceCount> colors{
     rgb(255, 225, 156), rgb(82, 52, 37), rgb(162, 94, 64), rgb(78, 61, 44), rgb(107, 134, 63),
     rgb(201, 169, 91), rgb(186, 177, 142), rgb(211, 207, 187), rgb(137, 53, 54), rgb(89, 122, 141),
     rgb(213, 204, 180), rgb(81, 85, 78), rgb(45, 44, 43), rgb(89, 121, 130),
-    rgb(108, 122, 77), rgb(68, 91, 66), rgb(121, 126, 124), rgb(115, 130, 139),
+    rgb(108, 122, 77), rgb(68, 91, 66), rgb(121, 126, 124),
     rgb(154, 98, 70), rgb(117, 137, 109), rgb(197, 177, 139), rgb(125, 168, 181),
     rgb(49, 56, 54), rgb(152, 143, 123), rgb(83, 100, 105), rgb(50, 72, 59),
     rgb(42, 49, 64), rgb(74, 86, 108), rgb(72, 245, 255), rgb(255, 88, 104), rgb(34, 32, 31),
@@ -73,6 +76,9 @@ constexpr std::array<uint16_t, SurfaceCount> colors{
     rgb(192, 166, 109), rgb(41, 57, 78), rgb(54, 35, 31), rgb(55, 38, 34), rgb(68, 113, 94), rgb(39, 73, 60),
     rgb(65, 84, 62), rgb(37, 52, 47), rgb(40, 33, 28), rgb(183, 134, 83),
     rgb(117, 126, 95), rgb(100, 133, 142), rgb(76, 85, 68), rgb(106, 135, 143), rgb(67, 81, 100),
+    rgb(81, 111, 78), rgb(104, 74, 59), rgb(169, 157, 138), rgb(94, 81, 77),
+    rgb(196, 150, 65), rgb(150, 101, 40), rgb(213, 172, 78),
+    rgb(113, 105, 98),
 };
 
 // Warm Colorado dusk alpenglow tinting applied to exterior materials in Invasion mode.
@@ -136,25 +142,53 @@ Side insideFace(Wall segment) {
     return segment.x < segment.endX ? Side::North : Side::South;
 }
 
-struct VertexHash {
-    size_t operator()(const std::array<float, 5>& fields) const {
-        size_t hash = 0;
-        for (const float field : fields) hash = hash * 33u ^ std::hash<float>{}(field);
-        return hash;
-    }
-};
+uint32_t floatBits(float v) {
+    if (v == 0.f) v = 0.f; // Canonicalize -0.0f so it matches +0.0f.
+    uint32_t bits;
+    std::memcpy(&bits, &v, sizeof(bits));
+    return bits;
+}
 
+uint32_t hashKey5(const std::array<uint32_t, 5>& fields) {
+    uint32_t h = 2166136261u;
+    for (uint32_t f : fields) h = (h ^ f) * 16777619u;
+    return h ^ (h >> 16);
+}
+
+// Flat open-addressed weld avoids per-vertex heap nodes in PSRAM during arena construction.
 template<typename V, typename Key>
 std::vector<uint32_t> weld(std::vector<V>& vertices, Key key) {
-    std::unordered_map<std::array<float, 5>, uint32_t, VertexHash> known;
-    known.reserve(vertices.size());
+    const size_t n = vertices.size();
     std::vector<uint32_t> remap;
-    remap.reserve(vertices.size());
+    remap.reserve(n);
+    if (!n) return remap;
+    size_t cap = 16;
+    while (cap < n * 2) cap <<= 1;
+    const size_t mask = cap - 1;
+    std::vector<uint32_t> table(cap, UINT32_MAX);
+    std::vector<std::array<uint32_t, 5>> keys;
+    keys.reserve(n);
     uint32_t used = 0;
-    for (size_t i = 0; i < vertices.size(); ++i) {
-        const auto [at, inserted] = known.try_emplace(key(vertices[i]), used);
-        if (inserted) vertices[used++] = vertices[i];
-        remap.push_back(at->second);
+    for (size_t i = 0; i < n; ++i) {
+        const auto raw = key(vertices[i]);
+        const std::array<uint32_t, 5> k{floatBits(raw[0]), floatBits(raw[1]), floatBits(raw[2]),
+                                        floatBits(raw[3]), floatBits(raw[4])};
+        size_t slot = hashKey5(k) & mask;
+        for (;;) {
+            const uint32_t entry = table[slot];
+            if (entry == UINT32_MAX) {
+                table[slot] = used;
+                keys.push_back(k);
+                vertices[used] = vertices[i];
+                remap.push_back(used++);
+                break;
+            }
+            if (keys[entry] == k) {
+                remap.push_back(entry);
+                break;
+            }
+            slot = (slot + 1) & mask;
+        }
     }
     vertices.resize(used);
     vertices.shrink_to_fit();
@@ -258,7 +292,7 @@ public:
 
     // Place a high-detail instanced Ship Box vehicle (Truck or Car) with exact rotated culling
     // bounds and solid oriented collision for cover, navigation, bullets, and dusk shadows.
-    bool placeVehicle(PropKind kind, Vec3 at, float yaw, float s = 1.f) {
+    bool placeVehicle(PropKind kind, Vec3 at, float yaw, uint16_t paint, uint16_t cargoPaint = 0, float s = 1.f) {
         const Mesh& src = kind == PropKind::Truck ? assets.shipBoxTruck : assets.shipBoxCar;
         if (src.triangles.empty() || src.chunks.empty()) return false;
         const Bounds lb = src.chunks.front().bounds;
@@ -277,7 +311,16 @@ public:
         const float halfLen = (lb.max.x - lb.min.x) * 0.5f * s;
         const float halfWidth = (lb.max.z - lb.min.z) * 0.5f * s;
         const float height = (lb.max.y - lb.min.y) * s;
-        assets.propInstances.push_back({kind, at, yaw, s, wb, halfLen, halfWidth, height});
+        PropInstance prop{kind, at, yaw, s, wb, halfLen, halfWidth, height, {}};
+        // Paint IDs in the Ship Box pack. Also check the texture slot before
+        // recoloring an extracted mesh from a different pack.
+        if (kind == PropKind::Car) {
+            paintVehicle(prop, src, 40, 31, paint);
+        } else {
+            paintVehicle(prop, src, 26, 23, paint);
+            paintVehicle(prop, src, 38, 30, cargoPaint);
+        }
+        assets.propInstances.push_back(std::move(prop));
         const Vec3 along{cs, 0.f, -sn};
         // Trim slightly inward from side mirrors so collision hugs the metal body cleanly.
         orientedCollision(at, along, std::max(0.5f, halfLen - 0.12f), std::max(0.5f, halfWidth - 0.16f),
@@ -482,6 +525,45 @@ private:
     std::array<float, SurfaceCount> repeats;
     float xOffset = 0;
 
+    void paintVehicle(PropInstance& prop, const Mesh& mesh, uint16_t id, int16_t texture, uint16_t finish) {
+        if (!finish || size_t(texture) >= assets.briarBaseline.textures || id >= assets.briarBaseline.materials ||
+            assets.materials[id].texture != texture ||
+            std::none_of(mesh.triangles.begin(), mesh.triangles.end(), [id](const Triangle& t) { return t.material == id; })) return;
+
+        Material material = assets.materials[id];
+        const auto& source = assets.textures[texture];
+        if (source.pixels.empty()) return;
+        const auto unpack = [](uint16_t pixel) {
+            return std::array<int, 3>{(pixel >> 11) * 255 / 31, ((pixel >> 5) & 63) * 255 / 63, (pixel & 31) * 255 / 31};
+        };
+        const auto luminance = [](const std::array<int, 3>& c) { return (c[0] + 2 * c[1] + c[2]) / 4; };
+        const auto tint = unpack(finish);
+        int64_t total = 0;
+        for (const auto pixel : source.pixels) total += luminance(unpack(pixel));
+        const int midtone = int(total / int64_t(source.pixels.size()));
+
+        Texture painted{source.width, source.height, {}};
+        painted.pixels.reserve(source.pixels.size());
+        for (const auto pixel : source.pixels) {
+            const auto c = unpack(pixel);
+            const int shade = (luminance(c) - midtone) * 5 / 4;
+            // Keep warm rust spots and the original texture's dents and clear-coat streaks.
+            const int rust = std::clamp((c[0] - c[1] - 10) * 3, 0, 64);
+            const auto channel = [&](size_t n) {
+                return unsigned(std::clamp(((tint[n] + shade) * (64 - rust) + c[n] * rust) / 64, 0, 255));
+            };
+            painted.pixels.push_back(rgb(channel(0), channel(1), channel(2)));
+        }
+        material.texture = int16_t(assets.textures.size());
+        assets.textures.push_back(std::move(painted));
+        if (prop.paintMaterials.empty()) {
+            prop.paintMaterials.resize(assets.briarBaseline.materials);
+            for (size_t i = 0; i < prop.paintMaterials.size(); ++i) prop.paintMaterials[i] = uint16_t(i);
+        }
+        prop.paintMaterials[id] = uint16_t(assets.materials.size());
+        assets.materials.push_back(material);
+    }
+
     Vec3 position(float x, float y, float height = 0) const { return fod::position(x + xOffset, y, height); }
 
     std::array<Vec3, 4> corners(Rect r, float height) const {
@@ -502,16 +584,16 @@ private:
 
     void buildMaterials() {
         for (size_t i = 0; i < colors.size(); ++i) {
-            const bool twoSided = i == Glass || i == Ceiling || i == AlienTooth || i == AlienMaw || i == ScorchEdge ||
+            const bool twoSided = i == Glass || i == Ceiling || i == AlienTooth || i == AlienMaw ||
+                                  i == ScorchEdge || i == PineBark ||
                                   i == GrassBladeDark || i == GrassBladeMid || i == GrassBladeGold;
             const bool glow = i == Amber || i == AlienGlow || i == AlienCore || i == CabinLit ||
                               i == RayCore || i == RayOvercharge;
             uint16_t baseColor = colors[i];
             if (dusk) {
-                if (i == FarRidge) baseColor = rgb(138, 72, 74);           // Red-orange alpenglow far peaks
-                else if (i == MountainRock) baseColor = rgb(126, 86, 76);  // Sunset-lit granite faces
+                if (i == MountainRock) baseColor = rgb(126, 86, 76);  // Sunset-lit granite faces
                 else if (i == ForestSlope) baseColor = rgb(62, 58, 52);    // Dusk twilight pines
-                else if (i == RidgePine) baseColor = rgb(48, 48, 46);
+                else if (i == RidgePine) baseColor = rgb(47, 65, 55);
                 else if (i == Meadow) baseColor = rgb(104, 86, 58);        // Golden-ochre evening meadow
                 else if (i == CabinGlass) baseColor = rgb(214, 134, 78);   // Sunset-reflecting town windows
                 else if (i == Glass) baseColor = rgb(208, 136, 98);        // Warm amber-tinted estate glazing
@@ -525,7 +607,8 @@ private:
                     baseColor = duskTint(baseColor, 18, -4, -18, 92);
                 }
             }
-            assets.materials.push_back({baseColor, -1, uint8_t(i == Glass ? 82 : i == ScorchEdge ? 104 : 255), twoSided, glow});
+            assets.materials.push_back({baseColor, -1, uint8_t(i == Glass ? 82 : i == ScorchEdge ? 104 : 255),
+                                        twoSided, glow});
         }
     }
 
@@ -588,19 +671,47 @@ private:
             const int clumps = tileNoise(x, y, 64, 8) * 2, grit = int(grain(x, y)) / 2;
             return rgb(81 + clumps + grit, 91 + clumps + grit, 51 + clumps / 2 + grit);
         });
-        if (dusk) {
-            texture(MountainRock, 64, .088f, [](int x, int y) {
-                const int folds = tileNoise(x, y, 64, 16) * 3;
-                const int stratum = (y * 2 + x + 2 * tileNoise(x, y, 64, 8)) & 31;
-                const int ledge = stratum < 4 ? -19 : stratum < 9 ? 14 : -stratum / 4;
-                const int gravel = int(grain(x / 3, y / 2)) + int(grain(x, y)) / 3;
-                const int stone = folds + ledge + gravel;
-                return rgb(99 + stone, 103 + stone, 103 + stone);
+        const auto granite = [](int x, int y) {
+            const int fold = tileNoise(x, y, 64, 16) * 3;
+            const int stratum = (y * 3 + x + 3 * tileNoise(x, y, 64, 8)) & 31;
+            const int ledge = stratum < 3 ? -25 : stratum < 8 ? 14 : -stratum / 3;
+            const int grit = int(grain(x / 3, y / 2)) + int(grain(x, y)) / 3;
+            return fold + ledge + grit;
+        };
+        texture(MountainRock, 64, .18f, [&](int x, int y) {
+            const int stone = granite(x, y);
+            return rgb(111 + stone, 96 + stone, 89 + stone);
+        });
+        texture(AlpineScree, 32, .43f, [](int x, int y) {
+            const int pebble = int(grain(x / 2, y / 2)) * 2 + int(grain(x, y)) / 3;
+            const int channel = tileNoise(x, y, 32, 8) * 3;
+            return rgb(76 + pebble + channel, 74 + pebble + channel, 64 + pebble + channel);
+        });
+        for (const Surface needles : {PineNeedles, FirTips}) {
+            texture(needles, 32, .52f, [needles](int x, int y) {
+                const int canopy = tileNoise(x, y, 32, 8) * 2;
+                const int spray = (x + y * 3 + tileNoise(x, y, 32, 4)) & 15;
+                const int twig = spray < 3 ? -11 : spray < 7 ? 11 : int(grain(x, y)) / 3;
+                const int light = canopy + twig;
+                return needles == FirTips ? rgb(39 + light, 70 + light, 66 + light)
+                                          : rgb(47 + light, 70 + light, 44 + light);
             });
+        }
+        for (const Surface leaf : {AspenGold, AspenOchre, AspenAmber}) {
+            texture(leaf, 32, .85f, [leaf](int x, int y) {
+                const int bunch = tileNoise(x, y, 32, 8) * 3;
+                const int fleck = int(grain(x / 2, y / 2)) - 7;
+                const int light = bunch + fleck;
+                if (leaf == AspenAmber) return rgb(184 + light, 140 + light, 52 + light / 2);
+                if (leaf == AspenGold) return rgb(169 + light, 112 + light, 36 + light / 2);
+                return rgb(116 + light, 77 + light, 37 + light / 2);
+            });
+        }
+        if (dusk) {
             texture(ForestSlope, 32, .12f, [](int x, int y) {
-                const int grove = 2 * tileNoise(x, y, 32, 8);
+                const int grove = 3 * tileNoise(x, y, 32, 8);
                 const int fleck = (int(grain(x / 2, y / 3)) - 7) * 2;
-                return rgb(42 + grove + fleck, 48 + grove + fleck, 44 + grove + fleck / 2);
+                return rgb(43 + grove + fleck, 54 + grove + fleck, 44 + grove + fleck / 2);
             });
             texture(Scorch, 32, .49f, [](int x, int y) {
                 const int soot = tileNoise(x, y, 32, 8) + int(grain(x, y)) / 3;
@@ -617,11 +728,6 @@ private:
                 const int marks = (x * 2 + y + grain(x / 5, y / 6)) % 19 == 0 ? 17 : 0;
                 const int light = tileNoise(x, y, 32, 8) + seam + marks;
                 return rgb(51 + light, 64 + light, 84 + light);
-            });
-        } else {
-            texture(MountainRock, 32, .16f, [](int x, int y) {
-                const auto stone = grain(x / 4, (y + x / 2) / 3) + grain(x, y) / 2;
-                return rgb(107 + stone, 113 + stone, 109 + stone);
             });
         }
         texture(Gravel, 32, .54f, [](int x, int y) {
@@ -750,6 +856,24 @@ private:
     }
 
 public:
+    std::array<uint16_t, 2> mountainMaterials(Texture texture) {
+        const uint16_t material = uint16_t(assets.materials.size());
+        const auto slot = int16_t(assets.textures.size());
+        assets.materials.push_back({rgb(255, 255, 255), slot, 255, false});
+        // The rear range rises above the valley haze but still recedes into the sky.
+        assets.materials.push_back({rgb(255, 255, 255), slot, 255, false, false, 1});
+        assets.textures.push_back(std::move(texture));
+        return {material, uint16_t(material + 1)};
+    }
+
+    void backdropQuad(const std::array<Vertex, 4>& vertices, uint16_t material) {
+        auto& world = assets.world;
+        const auto first = uint32_t(world.vertices.size());
+        world.vertices.insert(world.vertices.end(), vertices.begin(), vertices.end());
+        world.triangles.push_back({first, first + 2, first + 1, material, -1});
+        world.triangles.push_back({first, first + 3, first + 2, material, -1});
+    }
+
     void quad(const std::array<Vec3, 4>& points, Surface surface, int16_t glass = -1, bool fit = false) {
         const auto first = vertices(points, surface, fit);
         const auto material = uint16_t(firstMaterial + surface);
@@ -1151,49 +1275,111 @@ Vec3 acrossStreet(Vec3 from, Vec3 to) {
 
 Vec3 mix(Vec3 a, Vec3 b, float t) { return a + (b - a) * t; }
 
-void pine(Builder& b, Vec3 base, float height, Surface shade, bool trunk = true) {
-    if (b.isDusk() && trunk) {
-        constexpr int sides = 6;
-        const int seed = int(base.x * 33.f) + int(base.z * 79.f);
-        const float turn = grain(seed, 8) * .24f;
-        const Vec3 lean{(int(grain(seed, 9)) - 7) * .034f, 0, (int(grain(seed, 10)) - 7) * .034f};
-        const auto crown = [&](float t) { return base + lean * t + Vec3{0, t * height, 0}; };
-        const auto direction = [](float angle) { return Vec3{std::cos(angle), 0, std::sin(angle)}; };
-        for (int i = 0; i < sides; ++i) {
-            const float a = turn + i * (2 * pi / sides), next = a + 2 * pi / sides;
-            b.face({base + direction(next) * .115f, base + direction(a) * .115f, crown(.54f)}, DarkWood);
-        }
-        constexpr float start[]{.22f, .43f, .64f};
-        constexpr float end[]{.63f, .86f, 1.f};
-        constexpr float widths[]{.235f, .184f, .122f};
-        for (int layer = 0; layer < 3; ++layer) {
-            std::array<Vec3, sides> collar{};
-            const float rotation = turn + layer * .39f;
-            for (int i = 0; i < sides; ++i) {
-                const float lifts = float(grain(seed + i, layer * 3));
-                collar[i] = crown(start[layer] + .04f + lifts * .003f) +
-                            direction(rotation + i * (2 * pi / sides)) * (height * widths[layer] * .70f);
-            }
-            for (int i = 0; i < sides; ++i) {
-                const float a = rotation + (i + .5f) * (2 * pi / sides);
-                const float reach = .82f + .031f * grain(seed + i, layer + 15);
-                const Vec3 tip = crown(start[layer] - .02f * reach) + direction(a) * (height * widths[layer] * reach);
-                const auto needle = (layer + i + seed) % 4 == 0 ? PineNeedles : shade;
-                b.face({tip, collar[i], crown(end[layer])}, needle);
-                b.face({collar[(i + 1) % sides], tip, crown(end[layer])}, PineShade);
-            }
-        }
-        return;
-    }
+Vec3 radial(float angle) { return {std::cos(angle), 0, std::sin(angle)}; }
+
+void treeTrunk(Builder& b, Vec3 base, Vec3 upper, float width, float turn, Surface bark, Surface shade) {
     constexpr int sides = 5;
     for (int i = 0; i < sides; ++i) {
-        const float a = i * (2 * pi / sides), next = (i + 1) * (2 * pi / sides);
-        const Vec3 left{std::cos(a), 0, std::sin(a)}, right{std::cos(next), 0, std::sin(next)};
-        if (trunk) b.face({base + right * .13f, base + left * .13f, base + Vec3{0, height * .35f, 0}}, DarkWood);
-        const Vec3 skirt = base + Vec3{0, height * .25f, 0};
-        const Vec3 crown = base + Vec3{0, height * .49f, 0};
-        b.face({skirt + right * (height * .23f), skirt + left * (height * .23f), base + Vec3{0, height * .79f, 0}}, shade);
-        b.face({crown + right * (height * .175f), crown + left * (height * .175f), base + Vec3{0, height, 0}}, shade);
+        const Vec3 left = radial(turn + i * (2 * pi / sides));
+        const Vec3 right = radial(turn + (i + 1) * (2 * pi / sides));
+        b.quad({base + right * width, base + left * width,
+                upper + left * (width * .51f), upper + right * (width * .51f)}, i % 3 ? bark : shade);
+    }
+}
+
+void pine(Builder& b, Vec3 base, float height, Surface shade, bool trunk = true) {
+    constexpr float skirt[]{.19f, .34f, .50f, .65f, .77f};
+    constexpr float apex[]{.55f, .71f, .84f, .94f, 1.f};
+    constexpr float width[]{.22f, .189f, .145f, .106f, .073f};
+    const int seed = int(base.x * 27.f) + int(base.z * 81.f);
+    const float turn = grain(seed, 8) * .41f;
+    const float breadth = .67f + .038f * grain(seed, 11);
+    const Vec3 lean{(int(grain(seed, 9)) - 7) * .009f * height, 0, (int(grain(seed, 10)) - 7) * .009f * height};
+    const auto crown = [&](float t) { return base + lean * t + Vec3{0, t * height, 0}; };
+    const bool spruce = grain(seed, 27) < 7;
+    if (trunk) {
+        treeTrunk(b, base, crown(.55f), height * .023f, turn, PineBark, DarkWood);
+    } else {
+        // Crossed trunk faces keep distant crowns grounded without a full trunk mesh.
+        for (int i = 0; i < 2; ++i) {
+            const Vec3 edge = radial(turn + i * (pi * .5f)) * (height * .018f);
+            b.face({base + edge, base - edge, crown(.53f)}, PineBark);
+        }
+    }
+
+    constexpr int maxSides = 6;
+    const int sides = trunk && spruce ? maxSides : 5;
+    const float arc = 2 * pi / sides;
+    for (int layer = 0; layer < int(std::size(skirt)); ++layer) {
+        if (!trunk && (layer % 2 || (!spruce && layer == 2))) continue;
+        const float rotation = turn + layer * .58f;
+        const float spread = height * width[layer] * breadth * (spruce ? .86f : 1.f);
+        const float skirtHeight = skirt[layer] + (spruce ? -.045f : .035f);
+        const float peakHeight = !trunk && !spruce && layer == 0 ? .86f : apex[layer];
+        const Vec3 peak = crown(peakHeight) + radial(rotation + .8f) * (spread * .17f);
+        std::array<Vec3, maxSides> collar{};
+        for (int i = 0; i < sides; ++i) {
+            const float lift = .024f + .004f * grain(seed + i * 7, layer * 5);
+            const float reach = .76f + .020f * grain(seed + layer * 11, i + 33);
+            collar[i] = crown(skirtHeight + lift) + radial(rotation + i * arc) * (spread * reach);
+        }
+        for (int i = 0; i < sides; ++i) {
+            const Vec3 next = collar[(i + 1) % sides];
+            if (trunk) {
+                const float t = rotation + (i + .52f) * arc;
+                const float reach = .84f + .044f * grain(seed - i * 3, layer + 24);
+                const float droop = (.010f * grain(seed + i, layer + 1) - .085f) * (1.f - .13f * layer);
+                const Vec3 tip = crown(skirtHeight + droop) + radial(t) * (spread * reach);
+                const Surface needles = (i + layer + int(grain(seed, 49))) % 5 < 2 ?
+                                        (spruce ? FirTips : PineNeedles) : shade;
+                if (layer < 3) {
+                    const Vec3 branch = mix(tip, peak, .31f) + Vec3{0, height * .046f, 0};
+                    b.quad({tip, collar[i], peak, branch}, needles);
+                    b.quad({next, tip, branch, peak}, (i + layer) % 3 ? shade : PineShade);
+                } else {
+                    b.face({tip, collar[i], peak}, needles);
+                    b.face({next, tip, peak}, shade);
+                }
+            } else {
+                b.face({next, collar[i], peak}, (i + layer) % 3 ? shade : RidgePine);
+            }
+        }
+    }
+}
+
+void aspen(Builder& b, Vec3 base, float height) {
+    const int seed = int(base.x * 61.f) + int(base.z * 17.f);
+    const float turn = grain(seed, 37) * .41f;
+    const Vec3 lean{(int(grain(seed, 15)) - 7) * .028f, 0, (int(grain(seed, 18)) - 7) * .028f};
+    const Vec3 top = base + lean + Vec3{0, height * .86f, 0};
+    treeTrunk(b, base, top, height * .015f, turn, AspenBark, AspenBarkShade);
+
+    constexpr int sides = 6;
+    for (int cluster = 0; cluster < 4; ++cluster) {
+        const Vec3 branch = radial(turn + cluster * 2.39996f);
+        const float altitude = .49f + cluster * .107f;
+        const float radius = height * (.157f - .014f * cluster);
+        const Vec3 crotch = base + lean * altitude + Vec3{0, height * (altitude - .075f), 0};
+        const Vec3 heart = base + lean * altitude + Vec3{0, height * altitude, 0}
+                         + branch * (radius * (cluster == 3 ? .24f : .79f));
+        treeTrunk(b, crotch, heart, height * .005f, turn, AspenBark, AspenBarkShade);
+        const Vec3 high = heart + branch * (.19f * radius) + Vec3{0, radius * 1.16f, 0};
+        const Vec3 low = heart - Vec3{0, radius * .66f, 0};
+        const auto rim = [&](int corner) {
+            const float angle = turn + cluster + (corner % sides) * (2 * pi / sides);
+            const float reach = .86f + .022f * grain(seed + corner % sides, cluster + 13);
+            return heart + radial(angle) * (radius * reach) + Vec3{0, radius * (.07f * (corner % sides) - .14f), 0};
+        };
+        const auto shoulder = [&](Vec3 edge) {
+            return mix(heart, edge, .64f) + Vec3{0, radius * .77f, 0};
+        };
+        for (int i = 0; i < sides; ++i) {
+            const Vec3 a = rim(i), c = rim(i + 1);
+            const Vec3 bough = shoulder(a), next = shoulder(c);
+            b.quad({c, a, bough, next}, (cluster + i) % 3 ? AspenGold : AspenOchre);
+            b.face({next, bough, high}, AspenAmber);
+            b.face({a, c, low}, (cluster + i) % 4 ? AspenOchre : AspenGold);
+        }
     }
 }
 
@@ -1432,10 +1618,8 @@ void home(Builder& b, const Homesite& plot, Vec3 from, Vec3 to, bool solidTown =
     if (plot.segment == 2) {
         frame.apron(verge, -3.55f, 1.45f, -.72f, .08f, Gravel);
         const Vec3 parking = verge + along * -3.55f + outward * .48f + Vec3{0, .085f, 0};
-        if (solidTown && b.placeVehicle(PropKind::Car, parking + outward * 2.15f - Vec3{0, .06f, 0},
-                                        std::atan2(-outward.z, outward.x))) {
-            // Reused Ship Box abandoned sedan parked in the A-Frame cabin driveway.
-        } else {
+        if (!solidTown || !b.placeVehicle(PropKind::Car, parking + outward * 2.15f - Vec3{0, .06f, 0},
+                                         std::atan2(-outward.z, outward.x), rgb(61, 149, 153))) {
             parkedPickup({b, parking, along, outward});
             if (solidTown) {
                 b.orientedCollision(parking + outward * 1.95f, along, 0.96f, 2.0f, 0.f, 1.65f, true);
@@ -1445,13 +1629,20 @@ void home(Builder& b, const Homesite& plot, Vec3 from, Vec3 to, bool solidTown =
 }
 
 void boulder(Builder& b, Vec3 center, float width, float height) {
-    constexpr std::array<Vec3, 5> outline{{{-.7f, 0, .48f}, {.24f, 0, .65f}, {.66f, 0, .08f},
-                                          {.25f, 0, -.57f}, {-.55f, 0, -.39f}}};
-    const Vec3 crown = center + Vec3{-.1f * width, height, .11f * width};
-    for (size_t i = 0; i < outline.size(); ++i) {
-        const auto a = center + outline[i] * width;
-        const auto edge = center + outline[(i + 1) % outline.size()] * width;
-        b.face({a, edge, crown}, MountainRock);
+    constexpr int sides = 6;
+    const int seed = int(center.x * 51.f + center.z * 77.f);
+    const float turn = grain(seed, 8) * .29f;
+    const Vec3 crown = center + radial(turn) * (.25f * width) + Vec3{0, height, 0};
+    std::array<Vec3, sides> base{}, ledge{};
+    for (int i = 0; i < sides; ++i) {
+        const Vec3 dir = radial(turn + i * (2 * pi / sides));
+        base[i] = center + dir * (width * (.43f + .019f * grain(seed, i)));
+        ledge[i] = mix(base[i], crown, .20f + .024f * grain(seed + i, 18));
+    }
+    for (int i = 0; i < sides; ++i) {
+        const int next = (i + 1) % sides;
+        b.quad({base[next], base[i], ledge[i], ledge[next]}, AlpineScree);
+        b.face({ledge[next], ledge[i], crown}, i % 3 ? MountainRock : AlpineScree);
     }
 }
 
@@ -1499,6 +1690,159 @@ void uphillLane(Builder& b, const RoadSection& west, const RoadSection& east) {
 
     for (const auto& spot : {lane[2][1] - along * 2.75f, lane[3][4] + along * 2.75f, lane[4][1] - along * 2.75f}) {
         pine(b, spot - Vec3{0, .54f, 0}, 6.2f, ForestSlope);
+    }
+}
+
+float smoothStep(float t) {
+    t = std::clamp(t, 0.f, 1.f);
+    return t * t * (3.f - 2.f * t);
+}
+
+float slopeNoise(float x, float z) {
+    const int i = int(std::floor(x)), j = int(std::floor(z));
+    const float u = smoothStep(x - i), v = smoothStep(z - j);
+    const float a = float(grain(i, j)), b = float(grain(i + 1, j));
+    const float c = float(grain(i, j + 1)), d = float(grain(i + 1, j + 1));
+    return (a + (b - a) * u + (c - a + (a + d - b - c) * u) * v) * (1.f / 15.f);
+}
+
+uint16_t mountainColor(Vec3 p, float distance, bool dusk) {
+    const float folds = slopeNoise(.14f * p.x + 8.f, .14f * p.z);
+    const float scree = slopeNoise(p.x * .65f + p.y * .28f, p.z * .65f - p.y * .31f);
+    const float grain = slopeNoise(p.x * 3.4f, p.z * 3.4f);
+    // The stony seams run across adjacent faces and tilt where the rock has folded.
+    const float seam = p.y * .81f + p.x * .31f - p.z * .22f + folds * 3.6f;
+    const float stratum = seam - std::floor(seam);
+    const float ledge = smoothStep((stratum - .14f) * 6.f) - smoothStep((stratum - .55f) * 4.f);
+    Vec3 rock = mix({94, 102, 124}, {163, 141, 130}, smoothStep((folds - .17f) * 1.4f));
+    rock += Vec3{1, .87f, .78f} * (24.f * scree + 13.f * grain + ledge * 19.f - 19.f);
+
+    const float grove = slopeNoise(p.x * .26f - 9.f, p.z * .26f + 4.f);
+    const float needles = slopeNoise(p.x * 1.75f, p.z * 1.75f);
+    const Vec3 grass = mix({91, 100, 65}, {157, 144, 96}, scree) + Vec3{1, 1, .8f} * (grain * 14.f);
+    const Vec3 evergreens = mix({38, 58, 54}, {74, 103, 79}, needles * .73f + grove * .27f);
+    const float timber = smoothStep((20.f + 10.f * (grove - .5f) - p.y) * .23f) *
+                         smoothStep((grove - .19f) * 3.5f);
+    const float meadow = smoothStep((7.3f - p.y) * .21f);
+    const float gravelCut = smoothStep((scree - .62f) * 3.0f);
+    rock = mix(rock, mix(grass, evergreens, timber), std::max(meadow, timber) * (1.f - .48f * gravelCut));
+
+    const float gullies = slopeNoise(p.x * .37f + p.y * .22f, p.z * .29f - p.y * .31f);
+    const float freezeLine = 25.8f + 7.f * (folds - .5f) + 5.f * (gullies - .5f) + 1.8f * scree + 8.f * distance;
+    const float frosting = smoothStep((p.y - freezeLine) * .27f);
+    const float exposed = smoothStep((gullies - .46f) * 2.7f) * (.91f - .30f * frosting);
+    const float snow = frosting * (1.f - exposed);
+    const Vec3 ice = mix({169, 190, 213}, dusk ? Vec3{252, 229, 215} : Vec3{244, 244, 241},
+                         std::clamp(.67f * folds + .26f * scree, 0.f, 1.f));
+    Vec3 color = mix(rock, ice, snow);
+    // Muted cool colors separate the high range from the nearer foothills.
+    color = mix(color, mix({100, 121, 158}, {195, 207, 232}, snow), .46f * distance);
+    return rgb(unsigned(std::clamp(color.x, 0.f, 255.f)), unsigned(std::clamp(color.y, 0.f, 255.f)),
+               unsigned(std::clamp(color.z, 0.f, 255.f)));
+}
+
+void mountainSlope(Builder& b, const RoadSection& start, const RoadSection& end, size_t sector, bool lane) {
+    enum Layer { LotEdge, MeadowEdge, Foothill, TreeLine, Crags, RidgeLine, SnowLine, Summit, Basin,
+                 Buttress, HighPass, SkyRidge, LayerCount };
+    constexpr int slices = 7;
+    constexpr float skyline[]{40, 36, 48, 43, 39, 38, 43, 54, 47, 36, 46, 52, 43, 45, 38, 42, 49, 40, 39};
+    static_assert(std::size(skyline) == std::size(street));
+    using Profile = std::array<Vec3, LayerCount>;
+    const auto profile = [&](const RoadSection& road, size_t i) -> Profile {
+        const Vec3 summit = road[HighRidge];
+        const Vec3 normal = normalized({summit.x - road[Ridge].x, 0, summit.z - road[Ridge].z});
+        const Vec3 basin = summit + normal * 7.f - Vec3{0, 9.f, 0};
+        Vec3 peak = summit + normal * (24.f + .27f * grain(int(i), 72));
+        peak.y = skyline[i];
+        const Vec3 buttress = mix(basin, peak, .42f) + Vec3{0, 2.5f - .38f * grain(int(i), 28), 0};
+        const Vec3 highPass = mix(basin, peak, .76f) + Vec3{0, 2.5f - .31f * grain(int(i), 35), 0};
+        return {road[Lots], road[UpperMeadow], road[Foothills], road[Timberline],
+                mix(road[Timberline], road[Ridge], .54f), road[Ridge],
+                mix(road[Ridge], summit, .52f), summit, basin, buttress, highPass, peak};
+    };
+
+    std::array<Profile, slices + 1> slope{};
+    slope.front() = profile(start, sector);
+    slope.back() = profile(end, (sector + 1) % std::size(skyline));
+    const Vec3 outward = acrossStreet(start[Lots], end[Lots]);
+    constexpr float roughness[]{0.f, .54f, 1.12f, 2.10f, 2.90f, 4.f, 5.1f, 5.9f, 3.f, 5.6f, 6.5f, 8.f};
+    const int seed = int(sector) * 23;
+    const float crestAt = .19f + .043f * grain(seed, 25);
+    const float crestWidth = 2.35f + .16f * grain(seed, 61);
+    const float crestMass = .44f + .052f * grain(seed, 81);
+    for (int col = 1; col < slices; ++col) {
+        const float along = float(col) / slices;
+        const float envelope = 4.f * along * (1.f - along);
+        const float crown = std::max(0.f, 1.f - std::abs(along - crestAt) * crestWidth);
+        const float fold = (crown * 1.7f - .67f) * envelope * crestMass;
+        const float rearFold = envelope * (.65f - 2.5f * std::abs(along - (1.f - crestAt)));
+        for (size_t row = 0; row < LayerCount; ++row) {
+            const float variation = float(grain(seed + col, int(row) + 9)) / 7.5f - 1.f;
+            const float relief = lane && row == Foothill ? 0.f : roughness[row];
+            const float ridge = row >= Basin ? rearFold : fold;
+            slope[col][row] = mix(slope.front()[row], slope.back()[row], along)
+                            + Vec3{0, relief * (.39f * variation + ridge), 0}
+                            - outward * (relief * (.39f * variation + .63f * ridge));
+        }
+    }
+
+    const auto spot = [&](size_t row, float along, float ascent) {
+        const float x = along * slices;
+        const int col = std::min(slices - 1, int(x));
+        const float t = x - col;
+        const Vec3 a = slope[col][row], c = slope[col + 1][row];
+        const Vec3 d = slope[col][row + 1], e = slope[col + 1][row + 1];
+        if (t + ascent <= 1.f) return a + (c - a) * t + (d - a) * ascent;
+        return e + (d - e) * (1.f - t) + (c - e) * (1.f - ascent);
+    };
+
+    // Bake each slope in its mesh coordinates. Neighboring slopes use the same
+    // world-space color fields, so timber and snow cross the sector boundaries.
+    constexpr int width = 64, height = 128;
+    Texture texture{width, height, {}};
+    texture.pixels.reserve(size_t(width * height));
+    for (int y = 0; y < height; ++y) {
+        const float ridge = y * (float(SkyRidge) / (height - 1));
+        const size_t row = std::min<size_t>(HighPass, size_t(ridge));
+        const float distance = smoothStep((ridge - float(RidgeLine)) / (SkyRidge - RidgeLine));
+        for (int x = 0; x < width; ++x) {
+            const Vec3 p = spot(row, float(x) / (width - 1), ridge - row);
+            texture.pixels.push_back(mountainColor(p, distance, b.isDusk()));
+        }
+    }
+    const auto [foothillMaterial, rangeMaterial] = b.mountainMaterials(std::move(texture));
+    const auto vertex = [&](int col, size_t row) {
+        return Vertex{slope[col][row], (.5f + col * (float(width - 1) / slices)) / width,
+                      (.5f + row * (float(height - 1) / float(SkyRidge))) / height};
+    };
+    for (int col = 0; col < slices; ++col) {
+        for (size_t row = lane ? Foothill : LotEdge; row < SkyRidge; ++row) {
+            b.backdropQuad({vertex(col, row + 1), vertex(col, row), vertex(col + 1, row), vertex(col + 1, row + 1)},
+                           row >= Basin ? rangeMaterial : foothillMaterial);
+        }
+    }
+    if (!lane) {
+        const bool aspens = sector == 1 || sector == 8 || sector == 12 || sector == 16;
+        const int count = sector % 2 ? 4 : 5;
+        for (int i = 0; i < count; ++i) {
+            const float t = .056f + .175f * i + .008f * grain(seed, i);
+            const float height = 4.4f + .28f * grain(seed, i + 41);
+            const Vec3 base = spot(i == 4 ? MeadowEdge : LotEdge, t, .24f + .028f * grain(seed + i, 14));
+            if (aspens && i < 3) aspen(b, base - Vec3{0, .18f, 0}, height * .88f);
+            else pine(b, base - Vec3{0, .23f, 0}, height, i % 3 ? RidgePine : PineNeedles);
+        }
+    }
+    // Groves follow the lower slopes and leave open scree chutes between them.
+    const int clusterSize = 4 + int(grain(seed, 37)) / 3;
+    for (int i = 0; i < clusterSize; ++i) {
+        const float t = .10f + .027f * grain(seed, 31) + .035f * i + .007f * grain(seed + i, 32);
+        const Vec3 base = spot(Foothill, t, .12f + .047f * grain(seed + i, 38));
+        const float height = 4.3f + .24f * grain(seed + i, 43);
+        pine(b, base - Vec3{0, .30f, 0}, height, i % 3 ? RidgePine : PineShade, false);
+    }
+    if (sector % 3 != 0) {
+        const Vec3 talus = spot(TreeLine, .59f + .018f * grain(seed, 7), .20f + .03f * grain(seed, 43));
+        boulder(b, talus - Vec3{0, .42f, 0}, 2.2f + .13f * grain(seed, 66), .8f + .08f * grain(seed, 68));
     }
 }
 
@@ -1581,50 +1925,7 @@ void mountainCommunity(Builder& b, bool playableTown = false) {
     if (playableTown) b.beginBackdrop();
     uphillLane(b, land[junction], land[junction + 1]);
     for (size_t i = 0; i < count; ++i) {
-        const auto& start = land[i];
-        const auto& end = land[(i + 1) % count];
-        constexpr Surface mountains[]{ForestSlope, ForestSlope, ForestSlope, MountainRock, FarRidge};
-        constexpr float irregularity[]{0.f, .52f, .85f, 1.2f, 3.4f, 2.7f};
-        std::array<Vec3, HighRidge - Lots + 1> spur{};
-        const float split = .38f + .018f * grain(i, 16);
-        const Vec3 outward = acrossStreet(road[i], road[(i + 1) % count]);
-        for (size_t j = 0; j < spur.size(); ++j) {
-            const float roughness = i == junction && Lots + j <= Foothills ? 0.f : irregularity[j];
-            spur[j] = mix(start[Lots + j], end[Lots + j], split) - outward * roughness +
-                      Vec3{0, roughness * (grain(i, j + 17) / 7.5f - 1), 0};
-        }
-        for (size_t j = 0; j < std::size(mountains); ++j) {
-            if (i == junction && Lots + j < Foothills) continue;
-            const auto material = mountains[j];
-            b.quad({start[Lots + j + 1], start[Lots + j], spur[j], spur[j + 1]}, material);
-            b.quad({spur[j + 1], spur[j], end[Lots + j], end[Lots + j + 1]}, material);
-        }
-        const auto onSlope = [&](size_t band, float along, float ascent) {
-            const bool left = along < split;
-            const float t = left ? along / split : (along - split) / (1 - split);
-            const Vec3 nearLeft = left ? start[band] : spur[band - Lots];
-            const Vec3 nearRight = left ? spur[band - Lots] : end[band];
-            const Vec3 farLeft = left ? start[band + 1] : spur[band + 1 - Lots];
-            const Vec3 farRight = left ? spur[band + 1 - Lots] : end[band + 1];
-            // Sample the same triangular surface used to draw the hillside.
-            if (t + ascent <= 1) return nearLeft + (nearRight - nearLeft) * t + (farLeft - nearLeft) * ascent;
-            return farRight + (farLeft - farRight) * (1 - t) + (nearRight - farRight) * (1 - ascent);
-        };
-        if (i != junction) {
-            for (int tree = 0; tree < 4; ++tree) {
-                const float t = .12f + .23f * tree + .004f * grain(i, tree);
-                const auto base = onSlope(tree % 3 ? Lots : UpperMeadow, t, .1f + .046f * grain(i, tree + 8));
-                pine(b, base - Vec3{0, .27f, 0}, 4.6f + .16f * grain(i, tree + 11), tree % 3 ? RidgePine : Hedge);
-            }
-        }
-        // Give each hillside a stand of trees with rocky gaps between the stands.
-        const int trees = 3 + grain(i, 37) / 3;
-        for (int tree = 0; tree < trees; ++tree) {
-            const float t = .15f + .037f * grain(i, 38) + .022f * grain(i, tree + 41);
-            const auto base = onSlope(Foothills, t, .13f + .048f * grain(i, tree + 49));
-            const float height = 4.2f + .19f * grain(i, tree + 54);
-            pine(b, base - Vec3{0, .35f, 0}, height, tree % 3 ? RidgePine : ForestSlope, false);
-        }
+        mountainSlope(b, land[i], land[(i + 1) % count], i, i == junction);
     }
 }
 
@@ -1932,11 +2233,13 @@ uint64_t arenaBytes(const Assets& a) {
                      allocated(a.commanderUniform) + allocated(a.enforcerUniform);
     for (const auto* mesh : {&a.world, &a.alienTrooper, &a.alienEnforcer, &a.alienDrone, &a.alienRayGun, &a.alienRayRings,
                              &a.alienHeavyRayGun, &a.alienHeavyRayRings, &a.alienUplink, &a.alienUplinkCore, &a.civilianMesh,
+                             &a.relayTerminal,
                              &a.transportHelo, &a.transportRotor, &a.shipBoxTruck, &a.shipBoxCar, &a.shipBoxCrate,
                              &a.shipBoxPallet, &a.shipBoxBarrel, &a.shipBoxLamp, &a.shipBoxContainer}) {
         bytes += meshBytes(*mesh);
     }
     for (const auto& craft : a.alienFleet) bytes += meshBytes(craft);
+    for (const auto& prop : a.propInstances) bytes += allocated(prop.paintMaterials);
     for (const auto* poses : {&a.alienTrooperPoses, &a.alienEnforcerPoses, &a.civilianPoses}) {
         bytes += allocated(*poses);
         for (const auto& pose : *poses) bytes += meshBytes(pose);
@@ -2404,22 +2707,33 @@ void buildRayGuns(Assets& assets, uint16_t firstMat) {
                    {.045f * wide, .092f * wide, .086f * wide, .056f * wide, .038f * wide, .024f * wide},
                    {.052f * wide, .105f * wide, .095f * wide, .062f * wide, .040f * wide, .026f * wide},
                    8, up, metal);
-            // Rear glowing plasma capacitor bulb perched atop the receiver.
-            w.tube({{0, .14f * wide, -.12f * len}, {0, .195f * wide, -.02f * len},
-                    {0, .185f * wide, .09f * len}, {0, .135f * wide, .18f * len}},
-                   {.030f * wide, .064f * wide, .058f * wide, .022f * wide},
-                   {.036f * wide, .072f * wide, .062f * wide, .026f * wide},
-                   7, up, glow);
-            // Glowing side plasma channels along the receiver flanks.
+            // A bright capacitor sits in a slotted metal cage above the receiver.
+            const auto capacitor = [&](float z) { return Vec3{0, .185f * wide, z * len}; };
+            w.tube({capacitor(-.22f), capacitor(-.17f), capacitor(.16f), capacitor(.21f)},
+                   {.026f * wide, .069f * wide, .069f * wide, .026f * wide},
+                   {.026f * wide, .069f * wide, .069f * wide, .026f * wide}, 6, up, glow);
+            w.tube({capacitor(-.235f), capacitor(-.20f), capacitor(-.15f)},
+                   {.039f * wide, .081f * wide, .075f * wide},
+                   {.039f * wide, .081f * wide, .075f * wide}, 6, up, coil);
+            w.tube({capacitor(.13f), capacitor(.17f), capacitor(.222f)},
+                   {.077f * wide, .082f * wide, .037f * wide},
+                   {.077f * wide, .082f * wide, .037f * wide}, 6, up, trim);
             for (float s : {-1.f, 1.f}) {
-                w.tube({{s * .072f * wide, .08f, -.06f * len}, {s * .076f * wide, .085f, .12f * len},
-                        {s * .048f * wide, .082f, .32f * len}},
-                       {.015f * wide, .022f * wide, .012f * wide}, {.020f * wide, .026f * wide, .014f * wide},
-                       5, up, glow);
+                const Vec3 offset{s * .045f * wide, .056f * wide, 0};
+                const Vec3 lip{s * .012f * wide, -.018f, 0};
+                w.quad(capacitor(-.19f) + offset, capacitor(.17f) + offset, capacitor(.17f) + offset + lip,
+                       capacitor(-.19f) + offset + lip, capacitor(0), hull);
+                const Vec3 back{s * .081f * wide, .035f, -.17f * len}, front{s * .058f * wide, .063f, .33f * len};
+                const Vec3 ridge{s * .125f * wide, .075f, .005f * len}, ridgeUp = ridge + Vec3{0, .054f, 0};
+                w.quad(back, front, ridge, ridgeUp, {0, .08f, 0}, trim);
+                w.tri(back + Vec3{0, .098f, .025f}, ridgeUp, front, {0, .08f, 0}, coil);
+                const Vec3 track = ridge + Vec3{s * .003f, .019f, 0};
+                w.quad(track + Vec3{0, 0, -.056f}, track + Vec3{0, .014f, .064f},
+                       front + Vec3{s * .009f, .018f, -.040f}, front + Vec3{s * .009f, .007f, -.040f},
+                       {0, .08f, 0}, core);
                 if (heavy) {
-                    // Enforcer twin armored side fins & capacitor pods.
-                    w.spike({s * .095f * wide, .11f, .02f}, {s * .17f, .18f, -.18f}, up, .032f, trim);
-                    w.spike({s * .085f * wide, .04f, .24f}, {s * .13f, .01f, .52f}, up, .026f, coil);
+                    w.spike({s * .109f * wide, .11f, .02f}, {s * .19f, .23f, -.25f}, up, .041f, trim);
+                    w.spike({s * .110f * wide, .04f, .22f}, {s * .16f, -.045f, .57f}, up, .035f, coil);
                 }
             }
             // A coaxial emitter collar and straight rails mark the actual firing axis.
@@ -2430,13 +2744,17 @@ void buildRayGuns(Assets& assets, uint16_t firstMat) {
                    {.049f * wide, .091f * wide, .083f * wide, .064f * wide}, 8, up, trim);
             w.tube({axial(.70f), axial(.79f), axial(.90f), axial(rayMuzzle)},
                    {.036f * wide, .053f * wide, .040f * wide, 0},
-                   {.036f * wide, .053f * wide, .040f * wide, 0}, 6, up, mat(RayCore));
+                   {.036f * wide, .053f * wide, .040f * wide, 0}, 6, up, core);
             const int prongs = heavy ? 4 : 3;
             for (int p = 0; p < prongs; ++p) {
                 const float a = 2 * pi * p / prongs + pi * .25f;
                 const Vec3 radial{std::cos(a), std::sin(a), 0};
-                w.spike(axial(.72f) + radial * (.086f * wide),
-                        axial(rayMuzzle) + radial * (.094f * wide), {-radial.y, radial.x, 0}, .025f * wide, coil);
+                const Vec3 root = axial(.67f) + radial * (.076f * wide);
+                const Vec3 knuckle = axial(.79f) + radial * (.119f * wide);
+                const Vec3 tip = axial(rayMuzzle) + radial * (.093f * wide);
+                w.tube({root, knuckle, tip}, {.022f * wide, .027f * wide, 0},
+                       {.025f * wide, .026f * wide, 0}, 4, radial, coil);
+                w.spike(knuckle + radial * (.013f * wide), tip, radial, .016f * wide, core);
             }
             finalizeProceduralMesh(body);
             for (auto& v : body.vertices) v.u = v.v = 0;
@@ -2450,7 +2768,7 @@ void buildRayGuns(Assets& assets, uint16_t firstMat) {
                 const float z = (.28f + .36f * frac) * len;
                 const float rad = (.125f - .036f * frac) * wide;
                 const float thick = .015f * wide;
-                constexpr int segs = 8;
+                constexpr int segs = 10;
                 std::array<Vec3, segs + 1> loop{};
                 std::array<float, segs + 1> ru{}, rv{};
                 ru.fill(thick);
@@ -2460,7 +2778,7 @@ void buildRayGuns(Assets& assets, uint16_t firstMat) {
                     loop[k] = {std::cos(a) * rad, std::sin(a) * rad, z};
                 }
                 w.tube(loop, ru, rv, 4, Vec3{0, 0, 1}, (r & 1) ? glow : coil, false);
-                // Energetic fin teeth on each ring so rotation reads unmistakably in motion!
+                // Flared contacts make the accelerator's rotation visible at a distance.
                 for (int f = 0; f < 3; ++f) {
                     const float a = (2 * pi * f / 3.f) + float(r) * .7f;
                     const Vec3 dir{std::cos(a), std::sin(a), 0};
@@ -2848,6 +3166,130 @@ void markerArray(Builder& b) {
           {beacon + Vec3{-.05f, .1f, -.05f}, beacon + Vec3{-.05f, .1f, .05f}, beacon + Vec3{.05f, .1f, .05f}, beacon + Vec3{.05f, .1f, -.05f}}, AlienCore);
 }
 
+// Watertight spatial vertex clustering for high-poly Ship Box vehicles reused across the
+// valley. Preserves original collision bounds and separates UV islands so textures never stretch.
+void simplifyVehicleMesh(Mesh& mesh, float cell) {
+    if (mesh.vertices.empty() || mesh.triangles.empty() || mesh.chunks.empty()) return;
+    const Bounds originalBounds = mesh.chunks.front().bounds;
+    const float invCell = 1.0f / cell;
+
+    // Step 1: cluster 3D positions into a spatial grid so adjacent materials share exact seam vertices.
+    size_t vertexCapacity = 16;
+    while (vertexCapacity < mesh.vertices.size() * 2) vertexCapacity <<= 1;
+    const size_t vertexMask = vertexCapacity - 1;
+    std::vector<Vec3> posSum;
+    posSum.reserve(mesh.vertices.size() / 4 + 16);
+    std::vector<uint32_t> vertPos(mesh.vertices.size());
+    {
+        // Release the clustering table before allocating the vertex and triangle tables.
+        struct PosEntry { int32_t x, y, z; uint32_t id; };
+        std::vector<PosEntry> posTable(vertexCapacity, {0, 0, 0, UINT32_MAX});
+        std::vector<uint32_t> posCount;
+        posCount.reserve(mesh.vertices.size() / 4 + 16);
+        for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+            const Vec3 p = mesh.vertices[i].position;
+            const int32_t gx = int32_t(std::floor(p.x * invCell));
+            const int32_t gy = int32_t(std::floor(p.y * invCell));
+            const int32_t gz = int32_t(std::floor(p.z * invCell));
+            const uint32_t h = uint32_t(gx) * 73856093u ^ uint32_t(gy) * 19349663u ^ uint32_t(gz) * 83492791u;
+            size_t slot = (h ^ (h >> 16)) & vertexMask;
+            for (;;) {
+                auto& e = posTable[slot];
+                if (e.id == UINT32_MAX) {
+                    const uint32_t id = uint32_t(posSum.size());
+                    e = {gx, gy, gz, id};
+                    posSum.push_back(p);
+                    posCount.push_back(1);
+                    vertPos[i] = id;
+                    break;
+                }
+                if (e.x == gx && e.y == gy && e.z == gz) {
+                    posSum[e.id] += p;
+                    posCount[e.id]++;
+                    vertPos[i] = e.id;
+                    break;
+                }
+                slot = (slot + 1) & vertexMask;
+            }
+        }
+        for (size_t i = 0; i < posSum.size(); ++i) posSum[i] *= 1.0f / float(posCount[i]);
+    }
+
+    // Step 2: emit vertices keyed by (posCluster, material, coarse UV island) and drop degenerate/duplicate tris.
+    struct VertKey { uint32_t pc; uint16_t mat; int16_t ub, vb; uint32_t id; };
+    std::vector<VertKey> vTable(vertexCapacity, {0, 0, 0, 0, UINT32_MAX});
+    std::vector<Vertex> newVerts;
+    std::vector<uint32_t> uvCount;
+    newVerts.reserve(posSum.size() + 64);
+    uvCount.reserve(posSum.size() + 64);
+
+    auto getVertex = [&](uint32_t origIdx, uint16_t mat) -> uint32_t {
+        const uint32_t pc = vertPos[origIdx];
+        const auto& v = mesh.vertices[origIdx];
+        const int16_t ub = int16_t(std::clamp(int(std::floor(v.u * 4.f)), -32000, 32000));
+        const int16_t vb = int16_t(std::clamp(int(std::floor(v.v * 4.f)), -32000, 32000));
+        uint32_t h = pc * 2654435761u ^ (uint32_t(mat) * 2246822519u) ^
+                     (uint32_t(uint16_t(ub)) * 3266489917u) ^ (uint32_t(uint16_t(vb)) * 668265263u);
+        size_t slot = (h ^ (h >> 16)) & vertexMask;
+        for (;;) {
+            auto& e = vTable[slot];
+            if (e.id == UINT32_MAX) {
+                const uint32_t id = uint32_t(newVerts.size());
+                e = {pc, mat, ub, vb, id};
+                newVerts.push_back({posSum[pc], v.u, v.v});
+                uvCount.push_back(1);
+                return id;
+            }
+            if (e.pc == pc && e.mat == mat && e.ub == ub && e.vb == vb) {
+                newVerts[e.id].u += v.u;
+                newVerts[e.id].v += v.v;
+                uvCount[e.id]++;
+                return e.id;
+            }
+            slot = (slot + 1) & vertexMask;
+        }
+    };
+
+    struct TriKey { uint32_t a, b, c; uint16_t mat; bool used; };
+    size_t tCap = 16;
+    while (tCap < mesh.triangles.size() * 2) tCap <<= 1;
+    const size_t tMask = tCap - 1;
+    std::vector<TriKey> tTable(tCap, {0, 0, 0, 0, false});
+    std::vector<Triangle> newTris;
+    newTris.reserve(mesh.triangles.size() / 3 + 16);
+
+    for (const auto& t : mesh.triangles) {
+        const uint32_t pa = vertPos[t.a], pb = vertPos[t.b], pc = vertPos[t.c];
+        if (pa == pb || pb == pc || pc == pa) continue;
+        uint32_t s0 = pa, s1 = pb, s2 = pc;
+        if (s0 > s1) std::swap(s0, s1);
+        if (s1 > s2) std::swap(s1, s2);
+        if (s0 > s1) std::swap(s0, s1);
+        uint32_t h = s0 * 73856093u ^ s1 * 19349663u ^ s2 * 83492791u ^ uint32_t(t.material) * 2654435761u;
+        size_t slot = (h ^ (h >> 16)) & tMask;
+        bool dup = false;
+        for (;;) {
+            auto& e = tTable[slot];
+            if (!e.used) { e = {s0, s1, s2, t.material, true}; break; }
+            if (e.a == s0 && e.b == s1 && e.c == s2 && e.mat == t.material) { dup = true; break; }
+            slot = (slot + 1) & tMask;
+        }
+        if (dup) continue;
+        newTris.push_back({getVertex(t.a, t.material), getVertex(t.b, t.material),
+                           getVertex(t.c, t.material), t.material, t.glass});
+    }
+    for (size_t i = 0; i < newVerts.size(); ++i) {
+        const float inv = 1.0f / float(uvCount[i]);
+        newVerts[i].u *= inv;
+        newVerts[i].v *= inv;
+    }
+    newVerts.shrink_to_fit();
+    newTris.shrink_to_fit();
+    mesh.vertices = std::move(newVerts);
+    mesh.triangles = std::move(newTris);
+    mesh.chunks = {{originalBounds, 0, uint32_t(mesh.triangles.size())}};
+}
+
 // Harvest reusable high-detail textured props (box truck, sedan, wooden crates, stacked pallets,
 // metal barrels, streetlamp poles, olive military shipping container) directly from Ship Box's
 // loaded world mesh before buildBriarHouse replaces assets.world. Cached once on Assets.
@@ -2899,6 +3341,8 @@ void extractShipBoxProps(Assets& assets) {
     };
     assets.shipBoxTruck = extract(9.9f, 10.2f, -0.6f + pi * 0.5f, 3.55f, 1.48f, 0.005f, 3.2f, vehicleMat);
     assets.shipBoxCar = extract(-10.9f, -9.9f, 0.65f, 2.45f, 1.18f, -0.08f, 1.9f, vehicleMat);
+    simplifyVehicleMesh(assets.shipBoxTruck, 0.08f);
+    simplifyVehicleMesh(assets.shipBoxCar, 0.08f);
     assets.shipBoxCrate = extract(-6.6f, 10.0f, -0.3f, 0.80f, 0.80f, 0.005f, 1.45f, [](uint16_t m) { return m == 16; });
     assets.shipBoxPallet = extract(-10.1f, 9.6f, 0.5f, 0.95f, 0.80f, 0.005f, 0.85f, [](uint16_t m) { return m == 16; });
     assets.shipBoxBarrel = extract(-7.8f, 5.6f, 0.f, 0.40f, 0.40f, 0.005f, 1.05f, [](uint16_t m) { return m == 13; });
@@ -2976,15 +3420,16 @@ void townCombatProps(Builder& b) {
             b.orientedCollision(at, {std::cos(yaw), 0, -std::sin(yaw)}, 3.08f, 1.28f, 0.f, 2.62f, true);
         }
     };
-    const auto shipTruck = [&](float x, float y, float yaw, Vec3 fallbackAlong, Vec3 fallbackOut) {
+    const auto shipTruck = [&](float x, float y, float yaw, Vec3 fallbackAlong, Vec3 fallbackOut,
+                               uint16_t paint, uint16_t cargo) {
         const Vec3 at = position(x, y, .01f);
-        if (!b.placeVehicle(PropKind::Truck, at, yaw, 1.f)) {
+        if (!b.placeVehicle(PropKind::Truck, at, yaw, paint, cargo)) {
             parkedPickup({b, at, fallbackAlong, fallbackOut});
             b.orientedCollision(at + fallbackOut * 1.95f, fallbackAlong, 0.96f, 2.0f, 0.f, 1.65f, true);
         }
     };
-    const auto shipCar = [&](float x, float y, float yaw) {
-        b.placeVehicle(PropKind::Car, position(x, y, .01f), yaw, 1.f);
+    const auto shipCar = [&](float x, float y, float yaw, uint16_t paint) {
+        b.placeVehicle(PropKind::Car, position(x, y, .01f), yaw, paint);
     };
 
     // South Boulevard: Warhorse 2-1 crash fuselage cover + scattered Delta Squad Ship Box supply
@@ -2992,8 +3437,8 @@ void townCombatProps(Builder& b) {
     b.collision({344, 588, 398, 656}, 0.f, 1.75f, true);
     coverWall(215, 608, 265, 620, 1.05f);
     coverWall(495, 608, 545, 620, 1.05f);
-    shipCar(148, 620, 0.22f);
-    shipCar(562, 578, -0.34f);
+    shipCar(148, 620, 0.22f, rgb(168, 61, 70));
+    shipCar(562, 578, -0.34f, rgb(190, 139, 66));
     // Delta Squad emergency supply drop & barricade crates outside the breached front gates.
     crateAt(278, 536, 0.14f, 0.92f);
     crateAt(298, 532, -0.18f, 0.72f);
@@ -3014,8 +3459,8 @@ void townCombatProps(Builder& b) {
     coverWall(875, 488, 930, 500, 1.12f);
     coverWall(965, 345, 978, 395, 1.15f);
     coverWall(935, 130, 948, 180, 1.10f);
-    shipTruck(982, 465, pi * 0.5f - 0.08f, {0, 0, 1}, {1, 0, 0});
-    shipCar(918, 215, pi * 0.5f + 0.24f);
+    shipTruck(982, 465, pi * 0.5f - 0.08f, {0, 0, 1}, {1, 0, 0}, rgb(178, 92, 46), rgb(190, 163, 111));
+    shipCar(918, 215, pi * 0.5f + 0.24f, rgb(91, 122, 187));
     crateAt(956, 412, 0.25f, 0.90f);
     barrelAt(942, 405);
     barrelAt(948, 392);
@@ -3038,11 +3483,11 @@ void townCombatProps(Builder& b) {
     palletAt(62, -196, 0.32f);
     barrelAt(108, -248);
     barrelAt(120, -240);
-    shipTruck(336, -252, 0.34f, {1, 0, 0}, {0, 0, 1});
-    shipCar(28, -172, -0.20f);
+    shipTruck(336, -252, 0.34f, {1, 0, 0}, {0, 0, 1}, rgb(110, 141, 160), rgb(177, 183, 177));
+    shipCar(28, -172, -0.20f, rgb(200, 194, 168));
     // North Valley Avenue (Dr. Nora Marsh's street)
     coverWall(508, -192, 566, -180, 1.15f);
-    shipTruck(602, -188, 0.06f, {1, 0, 0}, {0, 0, 1});
+    shipTruck(602, -188, 0.06f, {1, 0, 0}, {0, 0, 1}, rgb(199, 181, 148), rgb(126, 134, 119));
     crateAt(490, -186, -0.18f, 0.90f);
     barrelAt(474, -192);
     palletAt(580, -235, -0.12f);
@@ -3054,8 +3499,8 @@ void townCombatProps(Builder& b) {
     crashedPod(b, -225, 420, true);
     coverWall(-285, 248, -272, 298, 1.15f);
     coverWall(-265, 96, -252, 146, 1.10f);
-    shipTruck(-345, 151, pi * 0.5f - 0.10f, {0, 0, -1}, {-1, 0, 0}); // Keeps the footpath between Walt's walls open.
-    shipCar(-352, 330, pi * 0.5f + 0.20f);
+    shipTruck(-345, 151, pi * 0.5f - 0.10f, {0, 0, -1}, {-1, 0, 0}, rgb(75, 119, 87), rgb(147, 151, 103));
+    shipCar(-352, 330, pi * 0.5f + 0.20f, rgb(99, 143, 76));
     crateAt(-278, 316, 0.28f, 0.90f);
     palletAt(-262, 332, -0.15f);
     barrelAt(-292, 308);
@@ -3244,6 +3689,98 @@ void invasionBackdrop(Builder& b) {
     }
 }
 
+void buildOperationMeshes(Assets& assets, uint16_t firstMat) {
+    const auto mat = [firstMat](Surface surface) { return uint16_t(firstMat + surface); };
+    MeshWriter terminal{assets.relayTerminal};
+    terminal.box({-.52f, .025f, -.48f}, {.52f, .13f, .48f}, mat(HeloDark));
+    terminal.box({-.28f, .13f, -.23f}, {.28f, .89f, .23f}, mat(HeloOlive));
+    terminal.box({-.46f, .86f, -.34f}, {.46f, 1.15f, .34f}, mat(HeloDark));
+    terminal.box({-.32f, 1.147f, -.24f}, {.32f, 1.17f, .21f}, mat(Steel));
+    terminal.box({-.245f, 1.167f, -.195f}, {.245f, 1.18f, .095f}, mat(AlienGlow));
+    for (float side : {-1.f, 1.f}) {
+        const float x = side * .34f;
+        terminal.box({x - .035f, 1.13f, -.21f}, {x + .035f, 1.21f, .27f}, mat(HeloMark));
+        terminal.box({x - .024f, 1.15f, -.29f}, {x + .024f, 1.62f, -.244f}, mat(RayMetal));
+    }
+    terminal.box({-.41f, .95f, .34f}, {.41f, 1.f, .352f}, mat(RayCore));
+    terminal.box({-.41f, .95f, -.352f}, {.41f, 1.f, -.34f}, mat(RayCore));
+    finalizeProceduralMesh(assets.relayTerminal);
+
+}
+
+// Radial armor plates, recessed engine bays, and bevels catch the sunset on the silhouette.
+void buildFleet(Assets& assets) {
+    const auto material = [&](uint16_t tint, bool lit = false) {
+        const auto id = uint16_t(assets.materials.size());
+        assets.materials.push_back({tint, -1, 255, true, lit, 2});
+        return id;
+    };
+    const uint16_t recess = material(rgb(19, 23, 34));
+    const uint16_t rim = material(rgb(68, 91, 112));
+    const uint16_t bevel = material(rgb(129, 150, 156));
+    const uint16_t beacons = material(rgb(255, 175, 116), true);
+    for (size_t i = 0; i < fleetHulls.size(); ++i) {
+        const FleetHull& hull = fleetHulls[i];
+        auto& craft = assets.alienFleet[i];
+        craft = {};
+        MeshWriter w{craft};
+        const bool flagship = i == 0;
+        const int panels = flagship ? 16 : i == 1 ? 12 : 14;
+        const uint16_t armor = material(i == 2 ? rgb(67, 56, 89) : i == 1 ? rgb(95, 74, 74) : rgb(46, 64, 89));
+        const uint16_t panel = material(i == 2 ? rgb(104, 88, 133) : i == 1 ? rgb(131, 101, 93) : rgb(81, 105, 129));
+        const uint16_t channel = material(i == 2 ? rgb(165, 105, 255) : i == 1 ? rgb(255, 136, 75) : rgb(43, 178, 250), true);
+        const uint16_t lamp = material(i == 2 ? rgb(225, 207, 255) : i == 1 ? rgb(255, 223, 168) : rgb(149, 252, 255), true);
+        const uint16_t lens = material(i == 2 ? rgb(239, 218, 255) : rgb(209, 255, 248), true);
+        const auto point = [&](float r, float y, float a) {
+            return Vec3{std::cos(a) * r * hull.radius, y * hull.height, std::sin(a) * r * hull.radius};
+        };
+        const auto band = [&](float a, float b, float ra, float ya, float rb, float yb, uint16_t mat) {
+            w.quad(point(ra, ya, a), point(ra, ya, b), point(rb, yb, b), point(rb, yb, a), mat);
+        };
+        for (int j = 0; j < panels; ++j) {
+            const float step = 2.f * pi / panels;
+            const float a = j * step, b = (j + 1) * step;
+            // The continuous hull shows through the gaps between the individual armor plates.
+            band(a, b, .16f, .46f, .40f, .32f, armor);
+            band(a, b, .40f, .32f, .82f, .12f, panel);
+            band(a, b, .82f, .12f, .965f, .031f, rim);
+            band(a, b, .965f, .031f, .98f, -.030f, recess);
+            band(a, b, .98f, -.030f, .86f, -.091f, rim);
+            band(a, b, .86f, -.091f, .66f, -.245f, armor);
+            band(a, b, .66f, -.245f, .35f, -.318f, recess);
+            band(a, b, .35f, -.318f, .24f, -.36f, armor);
+            w.tri(point(.16f, .46f, a), point(.16f, .46f, b), {0, hull.height * .52f, 0}, panel);
+
+            // Raised shell plates, a recessed window belt, and vent tiles across the belly.
+            const float start = a + step * .036f, end = b - step * .036f;
+            band(start, end, .44f, .319f, .82f, .147f, j % 3 ? panel : rim);
+            band(start, end, .82f, .147f, 1.008f, .013f, j % 4 ? armor : panel);
+            band(start, end, 1.008f, .013f, 1.012f, -.024f, bevel);
+            band(start, end, 1.012f, -.024f, .89f, -.111f, armor);
+            band(start, end, .89f, -.111f, .68f, -.265f, j % 4 ? panel : rim);
+            band(start, end, .68f, -.265f, .40f, -.339f, armor);
+            band(start, end, .40f, -.339f, .35f, -.333f, rim);
+            band(a + step * .11f, b - step * .11f, .980f, .011f, .988f, -.012f, channel);
+            for (int k = 0; k < 3; ++k) {
+                const float vent = a + step * (.14f + .25f * k);
+                const float stop = vent + step * .146f;
+                band(vent, stop, .72f, -.245f, .60f, -.300f, recess);
+                band(vent, stop, .686f, -.270f, .63f, -.294f, k == 1 ? lamp : channel);
+            }
+            band(a + step * .13f, b - step * .13f, .485f, -.323f, .443f, -.343f, j % 4 ? channel : beacons);
+
+            // The emitter is recessed inside a heavy collar. Its lens and the beam share an origin.
+            band(a, b, .24f, -.36f, .218f, -.448f, rim);
+            band(a, b, .218f, -.448f, .181f, -.49f, bevel);
+            band(a, b, .181f, -.49f, .15f, -.503f, channel);
+            band(a, b, .15f, -.503f, .116f, -.458f, recess);
+            band(a, b, .116f, -.458f, .087f, -.465f, lamp);
+            w.tri(point(.087f, -.465f, a), point(.087f, -.465f, b), {0, hull.height * -.471f, 0}, lens);
+        }
+        finalizeProceduralMesh(craft);
+    }
+}
+
 void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
     const uint16_t hull = uint16_t(firstMat + AlienHull);
     const uint16_t trim = uint16_t(firstMat + AlienTrim);
@@ -3254,6 +3791,7 @@ void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
     buildRayGuns(assets, firstMat);
     buildCivilian(assets, firstMat);
     buildTransport(assets, firstMat);
+    buildOperationMeshes(assets, firstMat);
 
     CreatureWriter tower{assets.alienUplink.vertices, &assets.alienUplink.triangles};
     tower.tube({{0, .035f, 0}, {0, .20f, 0}, {0, 1.f, 0}, {0, 1.25f, 0}},
@@ -3301,69 +3839,7 @@ void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
            {-.056f, .031f, .477f}, uint16_t(firstMat + RayCore));
     d.box({-.11f, -.22f, -.11f}, {.11f, -.16f, .11f}, core);
     finalizeProceduralMesh(assets.alienDrone);
-
-    // Alien fleet crafts (each welded with tight bounds for O(1) frustum culling; hidden on title screen).
-    const struct { float cx, cy, alt, r, h; bool beam; } specs[3]{
-        {260.f, -520.f, 36.f, 240.f, 7.6f, true},  // Primary mothership looming over northern mountain ridge
-        {430.f, 890.f, 25.f, 128.f, 4.4f, false},  // Southern flanking saucer beyond South Boulevard
-        {-480.f, 120.f, 30.f, 95.f, 3.6f, false},  // Western scout cruiser over the sunset peaks
-    };
-    for (int s = 0; s < 3; ++s) {
-        auto& craft = assets.alienFleet[s];
-        craft = {};
-        MeshWriter f{craft};
-        constexpr int n = 10;
-        const Vec3 center = position(specs[s].cx, specs[s].cy, specs[s].alt);
-        const float rOuter = specs[s].r * scale;
-        const float rInner = rOuter * .52f;
-        const float rCore = rOuter * .24f;
-        const float height = specs[s].h;
-        const Vec3 topPeak = center + Vec3{0, height * .68f, 0};
-        const Vec3 botPeak = center - Vec3{0, height * .46f, 0};
-        for (int i = 0; i < n; ++i) {
-            const float a0 = 2 * pi * i / n, a1 = 2 * pi * (i + 1) / n;
-            const Vec3 d0{std::cos(a0), 0, std::sin(a0)}, d1{std::cos(a1), 0, std::sin(a1)};
-            const Vec3 out0 = center + d0 * rOuter, out1 = center + d1 * rOuter;
-            const Vec3 up0 = center + d0 * rInner + Vec3{0, height * .34f, 0};
-            const Vec3 up1 = center + d1 * rInner + Vec3{0, height * .34f, 0};
-            const Vec3 dn0 = center + d0 * rInner - Vec3{0, height * .26f, 0};
-            const Vec3 dn1 = center + d1 * rInner - Vec3{0, height * .26f, 0};
-            const Vec3 glow0 = center + d0 * rCore - Vec3{0, height * .36f, 0};
-            const Vec3 glow1 = center + d1 * rCore - Vec3{0, height * .36f, 0};
-            f.quad(out0, out1, up1, up0, hull);
-            f.tri(up0, up1, topPeak, trim);
-            f.quad(dn0, dn1, out1, out0, hull);
-            f.quad(glow0, glow1, dn1, dn0, i % 2 ? trim : hull);
-            const Vec3 left = mix(glow0, glow1, .13f), right = mix(glow0, glow1, .87f);
-            const Vec3 inset{0, -.055f, 0};
-            f.quad(left + inset, right + inset, mix(right, dn1, .18f) + inset,
-                   mix(left, dn0, .18f) + inset, glow);
-            f.tri(botPeak, glow1, glow0, core);
-        }
-        if (specs[s].beam) {
-            // As the light spreads through the air, the lower sections fade into the foothills.
-            constexpr int beamSides = 8;
-            constexpr float heights[]{0.f, .28f, .63f, 1.f};
-            constexpr float radii[]{1.55f, 1.34f, 1.02f, .67f};
-            constexpr uint8_t opacity[]{9, 19, 38};
-            const Vec3 ground = position(specs[s].cx, specs[s].cy, 0.f);
-            const Vec3 emit = center - Vec3{0, height * .40f, 0};
-            for (size_t section = 0; section < std::size(opacity); ++section) {
-                const uint16_t material = uint16_t(assets.materials.size());
-                assets.materials.push_back({rgb(105, 207, 223), -1, opacity[section], true, true});
-                const auto point = [&](size_t ring, float a) {
-                    return ground + (emit - ground) * heights[ring] +
-                           Vec3{std::cos(a), 0, std::sin(a)} * (rCore * radii[ring]);
-                };
-                for (int i = 0; i < beamSides; ++i) {
-                    const float a0 = 2 * pi * i / beamSides, a1 = 2 * pi * (i + 1) / beamSides;
-                    f.quad(point(section, a0), point(section, a1), point(section + 1, a1),
-                           point(section + 1, a0), material);
-                }
-            }
-        }
-        finalizeProceduralMesh(craft);
-    }
+    buildFleet(assets);
 }
 
 void buildMissionUniforms(Assets& assets, uint16_t briarFirstMat) {
@@ -3450,131 +3926,211 @@ void buildMissionUniforms(Assets& assets, uint16_t briarFirstMat) {
 
 void synthesizeMissionAudio(Assets& assets) {
     if (assets.audio.size() < size_t(Sound::Count)) assets.audio.resize(size_t(Sound::Count));
-    const auto writeClip = [&](Sound id, double seconds, auto generator) {
+    // Single-precision synthesis avoids software double-precision libm emulation on ESP32-P4.
+    const auto writeClip = [&](Sound id, float seconds, auto generator) {
         auto& samples = assets.audio[size_t(id)].samples;
-        const size_t count = size_t(seconds * audioHz);
+        const size_t count = size_t(seconds * float(audioHz));
         samples.resize(count);
+        const float invHz = 1.0f / float(audioHz);
         for (size_t i = 0; i < count; ++i) {
-            const double t = double(i) / audioHz;
-            const double value = std::clamp(generator(t, seconds), -1.0, 1.0);
-            samples[i] = int16_t(value * 24000.0);
+            const float t = float(i) * invHz;
+            const float value = std::clamp(generator(t, seconds), -1.0f, 1.0f);
+            samples[i] = int16_t(value * 24000.0f);
         }
     };
+    constexpr float tau = 2.0f * pi;
     // Alien ray gun blast: resonant retro-sci-fi frequency whip with harmonic shimmer and sub-punch.
-    writeClip(Sound::PlasmaFire, 0.25, [](double t, double dur) {
-        const double env = std::exp(-t * 12.5) * (1.0 - t / dur);
-        const double whip = 1750.0 * std::exp(-t * 18.0) + 280.0;
-        const double phase = 2.0 * pi * (280.0 * t + (1750.0 / 18.0) * (1.0 - std::exp(-t * 18.0)));
-        const double ring = std::sin(2.0 * pi * 54.0 * t) * 0.22 + 0.78;
-        const double crackle = 0.16 * std::exp(-t * 36.0) * std::sin(2.0 * pi * (whip * 2.4) * t);
-        const double punch = 0.28 * std::exp(-t * 28.0) * std::sin(2.0 * pi * 145.0 * t);
-        return env * (ring * (0.58 * std::sin(phase) + 0.28 * std::sin(phase * 1.99)) + crackle + punch);
+    writeClip(Sound::PlasmaFire, 0.25f, [](float t, float dur) {
+        const float env = std::exp(-t * 12.5f) * (1.0f - t / dur);
+        const float e18 = std::exp(-t * 18.0f);
+        const float whip = 1750.0f * e18 + 280.0f;
+        const float phase = tau * (280.0f * t + (1750.0f / 18.0f) * (1.0f - e18));
+        const float ring = std::sin(tau * 54.0f * t) * 0.22f + 0.78f;
+        const float crackle = 0.16f * std::exp(-t * 36.0f) * std::sin(tau * (whip * 2.4f) * t);
+        const float punch = 0.28f * std::exp(-t * 28.0f) * std::sin(tau * 145.0f * t);
+        return env * (ring * (0.58f * std::sin(phase) + 0.28f * std::sin(phase * 1.99f)) + crackle + punch);
     });
     // Alien drone energy burst: sharper metallic pulse.
-    writeClip(Sound::DroneFire, 0.17, [](double t, double dur) {
-        const double env = std::exp(-t * 18.0) * (1.0 - t / dur);
-        const double phase = 2.0 * pi * (1850.0 * t - 520.0 * std::log(1.0 + t * 22.0));
-        return env * (0.58 * std::sin(phase) + 0.36 * std::sin(phase * 1.5));
+    writeClip(Sound::DroneFire, 0.17f, [](float t, float dur) {
+        const float env = std::exp(-t * 18.0f) * (1.0f - t / dur);
+        const float phase = tau * (1850.0f * t - 520.0f * std::log(1.0f + t * 22.0f));
+        return env * (0.58f * std::sin(phase) + 0.36f * std::sin(phase * 1.5f));
     });
     // Alien neutralization warble.
-    writeClip(Sound::AlienDown, 0.38, [](double t, double dur) {
-        const double env = std::exp(-t * 5.5) * (1.0 - t / dur);
-        const double vibrato = std::sin(2.0 * pi * 34.0 * t);
-        const double freq = 520.0 - 320.0 * (t / dur) + 65.0 * vibrato;
-        return env * 0.72 * std::sin(2.0 * pi * freq * t);
+    writeClip(Sound::AlienDown, 0.38f, [](float t, float dur) {
+        const float env = std::exp(-t * 5.5f) * (1.0f - t / dur);
+        const float vibrato = std::sin(tau * 34.0f * t);
+        const float freq = 520.0f - 320.0f * (t / dur) + 65.0f * vibrato;
+        return env * 0.72f * std::sin(tau * freq * t);
     });
     // Concussion wake-up tinnitus + low impact rumble.
-    writeClip(Sound::ConcussionRing, 2.2, [](double t, double dur) {
-        const double attack = std::min(1.0, t / 0.08);
-        const double decay = std::exp(-t * 1.35) * (1.0 - t / dur);
-        const double ring = 0.24 * std::sin(2.0 * pi * 2850.0 * t) + 0.10 * std::sin(2.0 * pi * 2862.0 * t);
-        const double thump = 0.65 * std::exp(-t * 7.5) * std::sin(2.0 * pi * (78.0 - 32.0 * t) * t);
+    writeClip(Sound::ConcussionRing, 2.2f, [](float t, float dur) {
+        const float attack = std::min(1.0f, t / 0.08f);
+        const float decay = std::exp(-t * 1.35f) * (1.0f - t / dur);
+        const float ring = 0.24f * std::sin(tau * 2850.0f * t) + 0.10f * std::sin(tau * 2862.0f * t);
+        const float thump = 0.65f * std::exp(-t * 7.5f) * std::sin(tau * (78.0f - 32.0f * t) * t);
         return attack * (decay * ring + thump);
     });
     // Tactical Delta Squad radio squelch chirp.
-    writeClip(Sound::RadioChirp, 0.14, [](double t, double dur) {
-        const double env = (t < 0.055 || t > 0.08) ? std::sin(pi * std::fmod(t, 0.07) / 0.07) : 0.0;
-        const double freq = t < 0.07 ? 1120.0 : 1480.0;
-        return 0.42 * env * (1.0 - 0.3 * t / dur) * std::sin(2.0 * pi * freq * t);
+    writeClip(Sound::RadioChirp, 0.14f, [](float t, float dur) {
+        const float env = (t < 0.055f || t > 0.08f) ? std::sin(pi * std::fmod(t, 0.07f) / 0.07f) : 0.0f;
+        const float freq = t < 0.07f ? 1120.0f : 1480.0f;
+        return 0.42f * env * (1.0f - 0.3f * t / dur) * std::sin(tau * freq * t);
     });
     // Warm two-tone rescue confirmation chime.
-    writeClip(Sound::CivilianSaved, 0.34, [](double t, double dur) {
-        const double env = std::exp(-t * 5.0) * (1.0 - t / dur);
-        const double freq = t < 0.12 ? 660.0 : 990.0;
-        return 0.52 * env * (std::sin(2.0 * pi * freq * t) + 0.25 * std::sin(4.0 * pi * freq * t));
+    writeClip(Sound::CivilianSaved, 0.34f, [](float t, float dur) {
+        const float env = std::exp(-t * 5.0f) * (1.0f - t / dur);
+        const float freq = t < 0.12f ? 660.0f : 990.0f;
+        return 0.52f * env * (std::sin(tau * freq * t) + 0.25f * std::sin(2.0f * tau * freq * t));
     });
     // Low muffled double heartbeat ("lub-dub") for the concussed awakening.
-    writeClip(Sound::Heartbeat, 0.72, [](double t, double) {
-        const auto thump = [](double dt, double freq) {
-            if (dt < 0.0 || dt > 0.22) return 0.0;
-            const double env = std::sin(pi * std::min(1.0, dt / 0.035)) * std::exp(-dt * 24.0);
-            return env * std::sin(2.0 * pi * (freq - 24.0 * dt) * dt);
+    writeClip(Sound::Heartbeat, 0.72f, [](float t, float) {
+        const auto thump = [](float dt, float freq) {
+            if (dt < 0.0f || dt > 0.22f) return 0.0f;
+            const float env = std::sin(pi * std::min(1.0f, dt / 0.035f)) * std::exp(-dt * 24.0f);
+            return env * std::sin(tau * (freq - 24.0f * dt) * dt);
         };
-        return 0.85 * thump(t, 64.0) + 0.62 * thump(t - 0.24, 52.0);
+        return 0.85f * thump(t, 64.0f) + 0.62f * thump(t - 0.24f, 52.0f);
     });
     // Deep eerie alien warhorn / tripod brass blast echoing across the mountain valley.
-    writeClip(Sound::AlienHorn, 2.4, [](double t, double dur) {
-        const double attack = std::min(1.0, t / 0.28);
-        const double release = std::clamp((dur - t) / 0.65, 0.0, 1.0);
-        const double env = attack * release;
-        const double f0 = 76.0 - 11.0 * (t / dur);
-        const double w = 2.0 * pi * f0 * t;
-        const double grit = std::sin(w) * 0.55 + std::sin(w * 2.01) * 0.28 +
-                            std::sin(w * 3.02) * 0.16 + std::sin(w * 4.98) * 0.08;
-        const double mod = 0.82 + 0.18 * std::sin(2.0 * pi * 4.5 * t);
-        return env * mod * 0.78 * std::tanh(grit * 1.4);
+    writeClip(Sound::AlienHorn, 2.4f, [](float t, float dur) {
+        const float attack = std::min(1.0f, t / 0.28f);
+        const float release = std::clamp((dur - t) / 0.65f, 0.0f, 1.0f);
+        const float env = attack * release;
+        const float f0 = 76.0f - 11.0f * (t / dur);
+        const float w = tau * f0 * t;
+        const float grit = std::sin(w) * 0.55f + std::sin(w * 2.01f) * 0.28f +
+                           std::sin(w * 3.02f) * 0.16f + std::sin(w * 4.98f) * 0.08f;
+        const float mod = 0.82f + 0.18f * std::sin(tau * 4.5f * t);
+        return env * mod * 0.78f * std::tanh(grit * 1.4f);
     });
     // Creature roar: a rattling, buzzing throat with a hissing upper formant, rising then dropping.
-    writeClip(Sound::AlienRoar, 0.95, [](double t, double dur) {
-        const double attack = std::min(1.0, t / 0.05);
-        const double release = std::clamp((dur - t) / 0.35, 0.0, 1.0);
-        const double f0 = 92.0 + 58.0 * std::sin(pi * std::min(1.0, t / dur));
-        const double w = 2.0 * pi * f0 * t;
-        double buzz = 0;
-        for (int h = 1; h <= 7; ++h) buzz += std::sin(w * h) / h;
-        const uint32_t hash = uint32_t(t * audioHz) * 2654435761u;
-        const double hiss = (double((hash >> 9) & 1023) / 511.5 - 1.0) * (0.22 + 0.18 * std::sin(2.0 * pi * 7.0 * t));
-        const double formant = 0.2 * std::sin(2.0 * pi * (820.0 + 340.0 * t) * t);
-        const double rattle = 0.72 + 0.28 * std::sin(2.0 * pi * 31.0 * t);
-        return attack * release * 0.8 * std::tanh((buzz * 0.55 * rattle + hiss * 0.5 + formant) * 1.6);
+    writeClip(Sound::AlienRoar, 0.95f, [](float t, float dur) {
+        const float attack = std::min(1.0f, t / 0.05f);
+        const float release = std::clamp((dur - t) / 0.35f, 0.0f, 1.0f);
+        const float f0 = 92.0f + 58.0f * std::sin(pi * std::min(1.0f, t / dur));
+        const float w = tau * f0 * t;
+        float buzz = 0;
+        for (int h = 1; h <= 7; ++h) buzz += std::sin(w * float(h)) / float(h);
+        const uint32_t hash = uint32_t(t * float(audioHz)) * 2654435761u;
+        const float hiss = (float((hash >> 9) & 1023) / 511.5f - 1.0f) * (0.22f + 0.18f * std::sin(tau * 7.0f * t));
+        const float formant = 0.2f * std::sin(tau * (820.0f + 340.0f * t) * t);
+        const float rattle = 0.72f + 0.28f * std::sin(tau * 31.0f * t);
+        return attack * release * 0.8f * std::tanh((buzz * 0.55f * rattle + hiss * 0.5f + formant) * 1.6f);
     });
     // Subtle eerie looping mothership sub-bass ambience for quiet tension moments.
-    writeClip(Sound::InvasionHum, 2.0, [](double t, double) {
-        const double p1 = 2.0 * pi * 48.0 * t;
-        const double p2 = 2.0 * pi * 72.0 * t;
-        const double swell = 0.72 + 0.28 * std::sin(2.0 * pi * 0.5 * t);
-        return swell * (0.20 * std::sin(p1) + 0.11 * std::sin(p2) + 0.04 * std::sin(2.0 * pi * 144.0 * t));
+    writeClip(Sound::InvasionHum, 2.0f, [](float t, float) {
+        const float p1 = tau * 48.0f * t;
+        const float p2 = tau * 72.0f * t;
+        const float swell = 0.72f + 0.28f * std::sin(tau * 0.5f * t);
+        return swell * (0.20f * std::sin(p1) + 0.11f * std::sin(p2) + 0.04f * std::sin(tau * 144.0f * t));
     });
     // Rising alien ray-gun capacitor coil whine before an overcharge or focused burst.
-    writeClip(Sound::RayCharge, 0.62, [](double t, double dur) {
-        const double k = t / dur;
-        const double env = std::min(1.0, t / 0.06) * (1.0 - 0.15 * k * k);
-        const double freq = 320.0 + 1180.0 * k * k;
-        const double w = 2.0 * pi * (320.0 * t + (1180.0 / 3.0) * t * k * k);
-        const double pulse = 0.72 + 0.28 * std::sin(2.0 * pi * (18.0 + 28.0 * k) * t);
-        return env * pulse * (0.48 * std::sin(w) + 0.24 * std::sin(w * 2.01) + 0.12 * std::sin(2.0 * pi * freq * 0.5 * t));
+    writeClip(Sound::RayCharge, 0.62f, [](float t, float dur) {
+        const float k = t / dur;
+        const float env = std::min(1.0f, t / 0.06f) * (1.0f - 0.15f * k * k);
+        const float freq = 320.0f + 1180.0f * k * k;
+        const float w = tau * (320.0f * t + (1180.0f / 3.0f) * t * k * k);
+        const float pulse = 0.72f + 0.28f * std::sin(tau * (18.0f + 28.0f * k) * t);
+        return env * pulse * (0.48f * std::sin(w) + 0.24f * std::sin(w * 2.01f) + 0.12f * std::sin(tau * freq * 0.5f * t));
     });
-    writeClip(Sound::PlasmaShock, .39, [](double t, double dur) {
-        const uint32_t tick = uint32_t(t * audioHz);
+    writeClip(Sound::PlasmaShock, .39f, [](float t, float dur) {
+        const uint32_t tick = uint32_t(t * float(audioHz));
         const uint32_t noise = (tick ^ (tick >> 5)) * 2654435761u;
-        const double crackle = double((noise >> 16) & 255u) / 127.5 - 1.0;
-        const double pulse = .52 + .48 * std::sin(2 * pi * 57 * t);
-        const double buzz = std::sin(2 * pi * (153 * t + 5.1 * std::log1p(19 * t)));
-        return (1 - t / dur) * (.32 * pulse * buzz + .57 * crackle * std::exp(-t * 11));
+        const float crackle = float((noise >> 16) & 255u) / 127.5f - 1.0f;
+        const float pulse = .52f + .48f * std::sin(tau * 57.f * t);
+        const float buzz = std::sin(tau * (153.f * t + 5.1f * std::log1p(19.f * t)));
+        return (1.f - t / dur) * (.32f * pulse * buzz + .57f * crackle * std::exp(-t * 11.f));
     });
     // Crystalline energy-shield shatter + descending plasma discharge.
-    writeClip(Sound::ShieldBreak, 0.34, [](double t, double dur) {
-        const double env = std::exp(-t * 9.5) * (1.0 - t / dur);
-        const uint32_t hash = uint32_t(t * audioHz) * 2654435761u;
-        const double spark = (double((hash >> 9) & 1023) / 511.5 - 1.0) * std::exp(-t * 22.0);
-        const double chime = 0.42 * std::sin(2.0 * pi * (2100.0 - 1100.0 * (t / dur)) * t) +
-                             0.30 * std::sin(2.0 * pi * (1420.0 - 720.0 * (t / dur)) * t);
-        const double drop = 0.32 * std::sin(2.0 * pi * (480.0 - 340.0 * (t / dur)) * t);
-        return env * (chime + drop + 0.38 * spark);
+    writeClip(Sound::ShieldBreak, 0.34f, [](float t, float dur) {
+        const float env = std::exp(-t * 9.5f) * (1.0f - t / dur);
+        const uint32_t hash = uint32_t(t * float(audioHz)) * 2654435761u;
+        const float spark = (float((hash >> 9) & 1023) / 511.5f - 1.0f) * std::exp(-t * 22.0f);
+        const float chime = 0.42f * std::sin(tau * (2100.0f - 1100.0f * (t / dur)) * t) +
+                            0.30f * std::sin(tau * (1420.0f - 720.0f * (t / dur)) * t);
+        const float drop = 0.32f * std::sin(tau * (480.0f - 340.0f * (t / dur)) * t);
+        return env * (chime + drop + 0.38f * spark);
     });
 }
 
 } // namespace
+
+void optimizeShipBoxWorld(Assets& assets) {
+    auto& world = assets.world;
+    // The shipped pack puts the parked vehicles in these seven visual chunks.
+    // Keep other pack layouts on their original geometry.
+    if (assets.arena != Arena::ShipBox || world.chunks.size() != 175 ||
+        world.triangles.size() != 38754 || world.vertices.size() != 42058 ||
+        !world.posePositions.empty()) return;
+    constexpr std::array<size_t, 7> vehicles{3, 4, 5, 6, 7, 87, 88};
+    constexpr std::array<uint32_t, 7> counts{7641, 2212, 3531, 14849, 2663, 2188, 1023};
+    for (size_t i = 0; i < vehicles.size(); ++i) {
+        if (world.chunks[vehicles[i]].count != counts[i]) return;
+    }
+
+    Mesh next;
+    next.chunks.reserve(world.chunks.size());
+    std::vector<uint32_t> remap(world.vertices.size(), UINT32_MAX);
+    const auto copyTriangle = [](const Mesh& source, Triangle t, Mesh& dest, auto& indices) {
+        for (auto* index : {&t.a, &t.b, &t.c}) {
+            auto& mapped = indices[*index];
+            if (mapped == UINT32_MAX) {
+                mapped = uint32_t(dest.vertices.size());
+                dest.vertices.push_back(source.vertices[*index]);
+            }
+            *index = mapped;
+        }
+        dest.triangles.push_back(t);
+    };
+    const auto smallTriangle = [&](const Triangle& t) {
+        // Keep panels and long trim, such as the truck's roll-door ribs, at full detail.
+        constexpr float maxEdgeSquared = 0.55f * 0.55f;
+        const Vec3 a = world.vertices[t.a].position;
+        const Vec3 b = world.vertices[t.b].position;
+        const Vec3 c = world.vertices[t.c].position;
+        return dot(a - b, a - b) < maxEdgeSquared && dot(b - c, b - c) < maxEdgeSquared &&
+               dot(c - a, c - a) < maxEdgeSquared;
+    };
+    for (size_t i = 0; i < world.chunks.size(); ++i) {
+        const auto& chunk = world.chunks[i];
+        const auto first = uint32_t(next.triangles.size());
+        const bool vehicle = std::find(vehicles.begin(), vehicles.end(), i) != vehicles.end();
+        Mesh opaque;
+        std::vector<uint32_t> local;
+        if (vehicle) {
+            opaque.chunks.push_back(chunk);
+            local.assign(world.vertices.size(), UINT32_MAX);
+        }
+        for (size_t j = chunk.first; j < size_t(chunk.first) + chunk.count; ++j) {
+            const auto& t = world.triangles[j];
+            const auto& material = assets.materials[t.material];
+            if (vehicle && t.glass < 0 && material.alpha == 255 && material.doubleSided && smallTriangle(t)) {
+                copyTriangle(world, t, opaque, local);
+            } else {
+                copyTriangle(world, t, next, remap);
+            }
+        }
+        if (!opaque.triangles.empty()) {
+            const auto begin = uint32_t(next.vertices.size());
+            simplifyVehicleMesh(opaque, 0.05f);
+            next.vertices.insert(next.vertices.end(), opaque.vertices.begin(), opaque.vertices.end());
+            for (auto t : opaque.triangles) {
+                t.a += begin;
+                t.b += begin;
+                t.c += begin;
+                next.triangles.push_back(t);
+            }
+        }
+        const auto count = uint32_t(next.triangles.size()) - first;
+        if (count) next.chunks.push_back({chunk.bounds, first, count});
+    }
+    next.vertices.shrink_to_fit();
+    next.triangles.shrink_to_fit();
+    next.chunks.shrink_to_fit();
+    assets.residentBytes = assets.residentBytes - std::min(assets.residentBytes, meshBytes(world)) + meshBytes(next);
+    world = std::move(next);
+}
 
 void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == mode) return;
@@ -3610,6 +4166,7 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     assets.alienGunSockets = {};
     assets.alienUplink = {};
     assets.alienUplinkCore = {};
+    assets.relayTerminal = {};
     assets.civilianMesh = {};
     assets.civilianPoses.clear();
     assets.transportHelo = {};

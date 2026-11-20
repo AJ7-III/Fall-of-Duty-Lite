@@ -10,16 +10,59 @@
 namespace fod {
 
 enum class MissionRole : uint8_t { Commander, AlienTrooper, AlienDrone, Civilian };
-enum class MissionPhase : uint8_t { Intro, Overwatch, Breach, Regroup, Rescue, Uplink, Incoming, Extraction, Victory, Failed };
-enum class MissionCheckpoint : uint8_t { None, Overwatch, Rescue, Uplink, Extraction };
-enum class CivilianOutcome : uint8_t { Pinned, Escorting, Evacuating, Sheltered, Boarded, Lost };
+enum class MissionPhase : uint8_t {
+    Intro, Overwatch, Breach, Regroup, Rescue, Uplink, Incoming, Extraction, Victory, Failed, Operation,
+    Boarding // Dustoff is down in the clearing and the family waits for the player's signal.
+};
+enum class MissionCheckpoint : uint8_t { None, Overwatch, Rescue, Uplink, Extraction, Operation };
+enum class MissionChapter : uint8_t { BriarHouse, Timberline, Array };
+// Stayed: Nora refused Dustoff to stay with her dish. She counts as saved and carries into the later missions.
+enum class CivilianOutcome : uint8_t { Pinned, Escorting, Evacuating, Sheltered, Boarded, Lost, Stayed };
 enum class TracerStyle : uint8_t { Ballistic, Scanner, DropBeam, ShieldLink, PlasmaImpact };
 
-constexpr bool civilianRescued(CivilianOutcome outcome) {
-    return outcome >= CivilianOutcome::Evacuating && outcome <= CivilianOutcome::Boarded;
+constexpr const char* missionName(MissionChapter chapter) {
+    switch (chapter) {
+    case MissionChapter::BriarHouse: return "BRIAR HOUSE";
+    case MissionChapter::Timberline: return "TIMBERLINE";
+    case MissionChapter::Array: return "THE ARRAY";
+    }
+    return "";
 }
 
+constexpr bool civilianRescued(CivilianOutcome outcome) {
+    return outcome == CivilianOutcome::Evacuating || outcome == CivilianOutcome::Sheltered ||
+           outcome == CivilianOutcome::Boarded || outcome == CivilianOutcome::Stayed;
+}
+
+// Timberline and The Array: the stage of the mission and the ship the player moves with Signal.
+enum class OperationStage : uint8_t {
+    Travel, Call, Fight, Calibrated,     // Timberline
+    Garden, Hall, Door, Steer, Commit, Reunite // The Array
+};
+
+struct OperationView {
+    OperationStage stage = OperationStage::Travel;
+    Vec3 kit{};               // Nora's emitter kit at Timberline, or the console at Briar House
+    bool kitVisible = false;
+    Vec3 ship{};              // Ground point under the ship the player is calling
+    Vec3 target{};            // Where that ship is heading
+    Vec3 aim{};               // Ground under the pointer while Signal is held
+    bool painting = false;    // Signal is held and the pointer is live
+    bool aimValid = false;    // The pointer is on ground the ship can use
+    bool targetSet = false;   // Timberline: a landing spot is marked
+    bool pulled = false;      // The ship is being dragged toward Nora or the dish
+    int8_t jammer = -1;       // Actor slot of the drone holding the emitter or dish
+    uint8_t calls = 0;        // Timberline: drops landed where they were called
+    static constexpr uint8_t callsNeeded = 4;
+    Vec3 clearing{}, saddle{};
+    float clearingRadius = 0, saddleRadius = 0;
+    float lock = 0;           // The Array: 0..1 hold on the saddle
+    float dishDistance = 0;   // The Array: metres from the beam to the dish
+    bool clearingBurned = false;
+};
+
 constexpr float plasmaRadius = .12f, plasmaShockDuration = .7f;
+constexpr uint16_t chargedPlasmaTint = 0xf9e3; // Hot orange in RGB565.
 constexpr float arrivalDuration = .75f;
 constexpr float rayBoreHeight = .085f, rayMuzzle = .94f;
 constexpr float alienScale(uint8_t variant) { return variant ? 1.08f : 1.f; }
@@ -49,6 +92,26 @@ constexpr Vec3 alienWeakPoint{0, 1.58f, .37f};
 // North Avenue uplink, shared by the renderer and projectile collision.
 constexpr Vec3 uplinkPosition{(450.f - 316.f) * .05f, 0, (212.5f + 227.f) * .05f};
 constexpr Vec3 uplinkEmitter{0, 1.62f, 0};
+// The mothership, and the small saucer that hangs over West Timberline. The renderer builds both
+// here and moves them by MissionSnapshot::fleetShift.
+constexpr Vec3 flagshipPosition{(260.f - 316.f) * .05f, 36.f, (212.5f + 520.f) * .05f};
+constexpr Vec3 scoutShipPosition{(-480.f - 316.f) * .05f, 30.f, (212.5f - 120.f) * .05f};
+struct FleetHull {
+    Vec3 center;
+    float radius, height;
+
+    constexpr Vec3 emitter() const { return {0, -.486f * height, 0}; }
+    constexpr Vec3 boundsExtent() const { return {radius * 1.12f, height * .57f, radius * 1.12f}; }
+};
+
+constexpr std::array<FleetHull, 3> fleetHulls{{
+    {flagshipPosition, 12.f, 7.6f},
+    {{(430.f - 316.f) * .05f, 25.f, (212.5f - 890.f) * .05f}, 6.4f, 4.4f},
+    {scoutShipPosition, 4.75f, 3.6f},
+}};
+// Nora's dish on the east wing roof, aimed at the mothership.
+constexpr Vec3 dishHub{(612.f - 316.f) * .05f, 5.1f, (212.5f - 62.f) * .05f};
+inline Vec3 dishFocus() { return dishHub + normalized(flagshipPosition - dishHub) * 1.55f; }
 
 struct MissionActor {
     Actor actor{};
@@ -70,6 +133,7 @@ struct MissionActor {
     bool overcharging = false; // True while charging an interruptible heavy shot
     bool linked = false;       // True while reinforced by a nearby Scout Drone's shield link
     float arrival = 0.f;       // Fraction of the reinforcement beam still visible
+    bool chargedShot = false;  // A charged flash keeps its color through recoil.
 };
 
 struct MissionTracer {
@@ -83,6 +147,7 @@ struct PlasmaCloud {
     Vec3 position{}, direction{};
     float radius = 0; // Zero marks an unused slot.
     bool charged = false;
+    float traveled = 0; // The visible wake starts at the launch point.
 };
 
 struct MissionSnapshot {
@@ -91,6 +156,9 @@ struct MissionSnapshot {
     static constexpr size_t maxPlasma = 24;
 
     bool active = false;
+    bool campaign = false;
+    MissionChapter chapter = MissionChapter::BriarHouse;
+    float earlierMissionSeconds = 0;
     MissionPhase phase = MissionPhase::Intro;
     float titleCard = 0;     // Seconds into the opening title card (0 once it has gone)
     float introProgress = 0; // 0..1 wake-up sequence
@@ -135,9 +203,21 @@ struct MissionSnapshot {
     float evacYaw = 0, evacPitch = 0;
     bool uplinkVisible = false;
     float uplinkHealth = 0;
+    OperationView operation{};
+    // Offsets of the mothership, the cruiser and the Timberline saucer from where they were built.
+    std::array<Vec3, 3> fleetShift{};
+    bool flagshipBeam = true;
+    float dishPulse = 0;        // 0..1 flash on Nora's dish
+    bool dishLink = false;      // The Array: the dish is talking to the mothership
+    bool signalReady = false;   // Signal does something right now
+    char signalHint[32]{};      // What it does, shown beside the button
     std::array<MissionActor, maxActors> actors{};
     std::array<MissionTracer, maxTracers> tracers{};
     std::array<PlasmaCloud, maxPlasma> plasma{};
+
+    bool nextMissionReady() const {
+        return campaign && phase == MissionPhase::Victory && chapter != MissionChapter::Array;
+    }
 };
 
 } // namespace fod

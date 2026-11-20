@@ -156,6 +156,7 @@ struct Game::Impl {
     Rival first;
     std::optional<Rival> second;
     std::unique_ptr<mission_detail::MissionController> mission;
+    float signalLower = 0; // How far the gun has dipped while the player holds Signal
     Human player;
     Snapshot& snapshot = player.view;
 #ifdef FOD_LOCAL_DUEL
@@ -717,14 +718,17 @@ struct Game::Impl {
         void refillPlayer(bool newMatch) override { g.refill(g.player, newMatch); }
     };
 
-    void startMission(uint32_t seed, int level, bool fromCheckpoint, bool extractionReplay = false) {
+    void startMission(uint32_t seed, int level, mission_detail::MissionStart mode,
+                      MissionChapter replayChapter = MissionChapter::BriarHouse, bool finale = false) {
 #ifdef FOD_LOCAL_DUEL
         guest.reset();
         player.slot = playerSlot;
 #endif
         second.reset();
         if (!mission) mission = std::make_unique<mission_detail::MissionController>(assets, world, navigation);
-        if (extractionReplay) mission->seedExtractionReplay();
+        if (finale) mission->seedFinaleReplay();
+        else if (replayChapter != MissionChapter::BriarHouse) mission->seedChapterReplay(replayChapter);
+        signalLower = 0;
         snapshot = {};
         snapshot.match = Match::Playing;
         setDifficulty(level);
@@ -748,7 +752,7 @@ struct Game::Impl {
         Vec3 startPos = assets.spawns[0].position;
         float startYaw = assets.spawns[0].yaw;
         HostAdapter host(*this);
-        mission->start(seed, snapshot.difficulty, fromCheckpoint, snapshot, startPos, startYaw, host);
+        mission->start(seed, snapshot.difficulty, mode, snapshot, startPos, startYaw, host);
         resetPlayer(player, startPos, startYaw);
         player.invulnerableUntil = 0;
         mission->publish(snapshot.mission);
@@ -1798,7 +1802,14 @@ struct Game::Impl {
                 movePlayer(player, input, dt);
             }
             devices(input, dt);
-            weapons(player, random, input, dt, handheld());
+            // Signalling takes the trigger hand: hold Signal and the gun dips and will not fire.
+            const bool signalling = input.down(Signal) && !s.dead;
+            Input combat = input;
+            if (signalling) {
+                combat.held &= ~uint32_t(Fire);
+                combat.pressed &= ~uint32_t(Fire);
+            }
+            weapons(player, random, combat, dt, handheld());
             mission->step(s, input, dt, player.playerFired, host);
             if (s.dead) {
                 if (player.death.elapsed == 0) beginDeath(player, random, true);
@@ -1807,6 +1818,9 @@ struct Game::Impl {
                 player.death = {};
             }
             viewWeapon(player, handheld());
+            const float dip = signalling && s.ads < .5f ? .55f : 0.f;
+            signalLower += (dip - signalLower) * float(1.0 - std::exp(-10.0 * dt));
+            s.lower = std::max(s.lower, signalLower);
             viewWorld();
             s.rival.visible = false;
             mission->publish(s.mission);
@@ -1848,10 +1862,26 @@ void Game::start(uint32_t seed, int difficulty, bool alternateRival) {
 }
 void Game::start(uint32_t seed, int difficulty, Opponent opponent) { impl_->start(seed, difficulty, opponent); }
 void Game::startMission(uint32_t seed, int difficulty, bool fromCheckpoint) {
-    impl_->startMission(seed, difficulty, fromCheckpoint);
+    using mission_detail::MissionStart;
+    impl_->startMission(seed, difficulty, fromCheckpoint ? MissionStart::Retry : MissionStart::SingleMission);
+}
+void Game::startCampaign(uint32_t seed, int difficulty) {
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::Campaign);
+}
+bool Game::advanceCampaign(uint32_t seed, int difficulty) {
+    const auto& snap = state();
+    if (snap.match != Match::Results || !snap.mission || !snap.mission->nextMissionReady()) return false;
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::NextChapter);
+    return true;
 }
 void Game::startExtractionReplay(uint32_t seed, int difficulty) {
-    impl_->startMission(seed, difficulty, true, true);
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::ExtractionReplay);
+}
+void Game::startChapterReplay(uint32_t seed, int difficulty, MissionChapter chapter) {
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::NextChapter, chapter);
+}
+void Game::startFinaleReplay(uint32_t seed, int difficulty) {
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::Retry, MissionChapter::Array, true);
 }
 bool Game::isMission() const { return impl_->mission && impl_->mission->active(); }
 bool Game::canRetryCheckpoint() const { return impl_->mission && impl_->mission->canRetryCheckpoint(); }

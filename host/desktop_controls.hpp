@@ -57,6 +57,7 @@ inline uint32_t button(int b) {
     case SDL_CONTROLLER_BUTTON_X: return Reload;
     case SDL_CONTROLLER_BUTTON_Y: return Swap;
     case SDL_CONTROLLER_BUTTON_LEFTSTICK: return Sprint;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: return Signal;
     case SDL_CONTROLLER_BUTTON_DPAD_UP: return Up | Streak;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN: return Down;
     case SDL_CONTROLLER_BUTTON_DPAD_LEFT: return Left;

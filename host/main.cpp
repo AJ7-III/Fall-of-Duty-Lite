@@ -166,8 +166,11 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
     auto& menu = app.settings();
     menu.compact = width == 320;
     const int height = menu.height();
-    Renderer render(assets, out.look);
-    std::vector<uint16_t> color(width * height), framebuffer(800 * 480);
+    const bool renderFrames = out.benchmark || out.image;
+    std::optional<Renderer> render;
+    if (renderFrames) render.emplace(assets, out.look);
+    std::vector<uint16_t> color(renderFrames ? width * height : 0);
+    std::vector<uint16_t> framebuffer(renderFrames ? 800 * 480 : 0);
     std::array<int16_t, 2 * audioHz / 30> pcm{};
     if (trace) trace->begin(app);
     const int frames = out.benchmark ? out.frames + out.warmup : trace ? int((trace->length() + 1) / 2) : 1;
@@ -200,16 +203,16 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
         const Speaker speaker = app.audio.speaking();
         if (capture) imageSpeaker = speaker;
         const auto mixed = Clock::now();
-        if (out.benchmark || (out.image && frame == frames - 1)) {
+        if (render && (out.benchmark || frame == frames - 1)) {
             const auto& state = imageCaptured ? imageState : app.state();
-            render.render(state, width, height, color.data(), out.benchmark);
+            render->render(state, width, height, color.data(), out.benchmark);
             const auto rendered = Clock::now();
             // Benchmarks keep the plain scaler. A capture shows the filtered picture the handheld presents.
             scaleWorld(color.data(), width, height, framebuffer.data(), false, !out.benchmark && out.look == RenderLook::Enhanced);
             drawHud(assets, state, menu, framebuffer.data(), false, imageCaptured ? imageSpeaker : speaker);
             const auto presented = Clock::now();
             if (out.benchmark && frame >= out.warmup) {
-                const auto& stats = render.stats();
+                const auto& stats = render->stats();
                 const uint32_t values[]{duration(start, simulated), duration(simulated, mixed),
                                         stats.setupUs, stats.rasterUs, duration(rendered, presented), duration(start, presented)};
                 for (size_t i = 0; i < timings.size(); ++i) timings[i].push_back(values[i]);
@@ -229,7 +232,7 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
         std::printf("{\"platform\":\"desktop\",\"width\":%d,\"height\":%d,\"frames\":%d,\"warmupFrames\":%d,"
                     "\"rendererWorkingBytes\":%llu,\"colorAndPresentationBytes\":%zu,\"audioQueueDrops\":%u,"
                     "\"maxTriangles\":%u,\"maxChunks\":%u,\"maxDepthPasses\":%u,\"microseconds\":{",
-                    width, height, out.frames, out.warmup, static_cast<unsigned long long>(render.workingBytes()),
+                    width, height, out.frames, out.warmup, static_cast<unsigned long long>(render->workingBytes()),
                     (color.capacity() + framebuffer.capacity()) * sizeof(uint16_t), app.audio.dropped(), maxTriangles, maxChunks, maxPixels);
         const char* names[]{"simulationTwoTicks", "audio800StereoSamples", "setup", "raster", "cpuScaleAndHud", "total"};
         for (size_t i = 0; i < timings.size(); ++i) percentiles(names[i], timings[i], i + 1 == timings.size());
@@ -270,11 +273,13 @@ int main(int argc, char** argv) {
     if (trace.campaign()) buildBriarHouse(assets, BriarHouseMode::Invasion);
     if (out.inspect) describeAssets(assets);
     if (out.trace || out.image) {
+        if (out.benchmark || out.image) fod::optimizeShipBoxWorld(assets);
         const auto run = headless(assets, out.trace ? &trace : nullptr, out, out.width ? out.width : 400);
         return run || !out.both ? run : headless(assets, &trace, out, 320);
     }
     if (out.inspect) return 0;
 #ifdef FOD_DESKTOP
+    fod::optimizeShipBoxWorld(assets);
     if (out.localDuel) return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);
 #ifdef __APPLE__
     constexpr int soloDefaultWidth = fod::desktopHdWidth;
@@ -290,14 +295,17 @@ int main(int argc, char** argv) {
         if (action == fod::LaunchAction::None) return 0;
         const bool campaign = action == fod::LaunchAction::Campaign;
         const auto arena = campaign ? fod::Arena::BriarHouse : carry.selectedArena;
-        if (arena == fod::Arena::BriarHouse) {
-            buildBriarHouse(assets, campaign ? fod::BriarHouseMode::Invasion : fod::BriarHouseMode::Standard);
-        } else if (assets.arena != arena) {
+        if (assets.arena != arena) {
             assets = fod::Assets{};
             if (!assets.load(out.pack, error)) {
                 std::fprintf(stderr, "%s: %s\n", out.pack, error.c_str());
                 return 1;
             }
+        }
+        if (arena == fod::Arena::BriarHouse) {
+            buildBriarHouse(assets, campaign ? fod::BriarHouseMode::Invasion : fod::BriarHouseMode::Standard);
+        } else {
+            fod::optimizeShipBoxWorld(assets);
         }
         if (action == fod::LaunchAction::LocalDuel) {
             return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);

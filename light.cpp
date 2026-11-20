@@ -1,10 +1,20 @@
 #include "light.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace fod {
 namespace {
+
+inline float fastInvSqrt(float x) {
+    uint32_t i;
+    std::memcpy(&i, &x, sizeof(i));
+    i = 0x5f3759dfu - (i >> 1);
+    float y;
+    std::memcpy(&y, &i, sizeof(y));
+    return y * (1.5f - 0.5f * x * y * y);
+}
 
 // Sky light fills the yard and a pale sun adds direction. Open ground sums to one.
 constexpr float ambient = 0.74f, bounce = 0.78f, direct = 0.308f, exposure = 1.12f;
@@ -74,12 +84,23 @@ struct Field {
         const float spacing = cell * 0.5f;
         const int rows = std::clamp(int(length(ab) / spacing) + 1, 1, 4096);
         const int columns = std::clamp(int(length(ac) / spacing) + 1, 1, 4096);
+        const float invRows = 1.0f / float(rows), invCols = 1.0f / float(columns);
+        const float ax = (a.x - minX) * inverseCell, az = (a.z - minZ) * inverseCell;
+        const float abx = ab.x * inverseCell * invRows, aby = ab.y * invRows, abz = ab.z * inverseCell * invRows;
+        const float acx = ac.x * inverseCell * invCols, acy = ac.y * invCols, acz = ac.z * inverseCell * invCols;
+        const auto markGrid = [&](float gx, float gy, float gz) {
+            if (gy < clutter || !(gx >= 0 && gz >= 0 && gx < size && gz < size)) return;
+            const int idx = int(gz) * size + int(gx);
+            if (gy < low[idx]) low[idx] = gy;
+            if (gy > high[idx]) high[idx] = gy;
+        };
         for (int i = 0; i <= rows; ++i) {
-            const float along = float(i) / rows;
-            const Vec3 start = a + ab * along;
-            const int last = int((1 - along) * columns);
-            for (int j = 0; j <= last; ++j) mark(start + ac * (float(j) / columns));
-            mark(start + ac * (1 - along));
+            const float sx = ax + abx * i, sy = a.y + aby * i, sz = az + abz * i;
+            const float rem = 1.0f - float(i) * invRows;
+            const int last = int(rem * float(columns));
+            float gx = sx, gy = sy, gz = sz;
+            for (int j = 0; j <= last; ++j, gx += acx, gy += acy, gz += acz) markGrid(gx, gy, gz);
+            markGrid(sx + ac.x * inverseCell * rem, sy + ac.y * rem, sz + ac.z * inverseCell * rem);
         }
     }
 
@@ -96,8 +117,16 @@ struct Field {
         float ground = escaped;
         if (direction.y < 0) ground = std::max(0.0f, from.y / -direction.y);
         const float end = std::min(last, ground);
-        for (float t = first; t < end; t += cell) {
-            if (blocks(from + direction * t)) return t;
+        float gx = (from.x + direction.x * first - minX) * inverseCell;
+        float gy = from.y + direction.y * first;
+        float gz = (from.z + direction.z * first - minZ) * inverseCell;
+        const float dgx = direction.x, dgy = direction.y * cell, dgz = direction.z;
+        const float fSize = float(size);
+        for (float t = first; t < end; t += cell, gx += dgx, gy += dgy, gz += dgz) {
+            if (gx >= 0 && gz >= 0 && gx < fSize && gz < fSize) {
+                const int i = int(gz) * size + int(gx);
+                if (gy >= low[i] - pad && gy <= high[i] + pad) return t;
+            }
         }
         return ground < last ? ground : escaped;
     }
@@ -108,25 +137,32 @@ struct Field {
     }
 };
 
+struct SkyStep {
+    int8_t dx, dz;
+    float weight; // (1 - step / range) / (step * cell)
+};
+
 // Share of the sky a patch of open ground sees over the things that stand around it.
-float openSky(const Field& field, int cx, int cz, const float (*directions)[2]) {
-    // Steps lengthen with distance. The weight fades to nothing at the last step.
-    static constexpr float steps[] = {1, 2, 3, 4.5f, 6, 8, 10.5f, 13.5f, 17, 21, 25, 29};
-    constexpr float range = 30;
+float openSky(const Field& field, int cx, int cz, const SkyStep (*rays)[12]) {
+    const int size = field.size;
+    const float* low = field.low.data();
+    const float* high = field.high.data();
     float open = 0;
     for (int d = 0; d < 8; ++d) {
         float horizon = 0;
-        for (const float step : steps) {
-            const int x = cx + int(std::lround(directions[d][0] * step));
-            const int z = cz + int(std::lround(directions[d][1] * step));
-            if (x < 0 || z < 0 || x >= field.size || z >= field.size) break;
-            const int i = z * field.size + x;
-            if (!field.solid(i)) continue;
-            horizon = std::max(horizon, (field.high[i] - eye) / (step * field.cell) * (1 - step / range));
+        const SkyStep* ray = rays[d];
+        for (int s = 0; s < 12; ++s) {
+            const int x = cx + ray[s].dx;
+            const int z = cz + ray[s].dz;
+            if (unsigned(x) >= unsigned(size) || unsigned(z) >= unsigned(size)) break;
+            const int i = z * size + x;
+            if (low[i] != 0 || high[i] <= eye) continue;
+            const float h = (high[i] - eye) * ray[s].weight;
+            if (h > horizon) horizon = h;
         }
-        open += 1 - horizon / std::sqrt(1 + horizon * horizon);
+        open += 1.0f - horizon * fastInvSqrt(1.0f + horizon * horizon);
     }
-    return open / 8;
+    return open * 0.125f;
 }
 
 void soften(std::vector<float>& values, int size) {
@@ -194,10 +230,11 @@ float lampLight(const Field& field, const std::vector<BakedLight>& lamps, Vec3 p
 } // namespace
 
 uint8_t SceneLight::surface(Vec3 normal, Vec3 sun, Vec3 up, unsigned scale) {
-    // The same daylight as shade(), folded into one reciprocal for meshes that move every frame.
+    // The same daylight as shade(), folded into one fast reciprocal square root for moving meshes.
     constexpr float level = ambient * (bounce + (1 - bounce) * 0.5f) * exposure;
     constexpr float lift = ambient * (1 - bounce) * 0.5f * exposure, beam = direct * exposure;
-    const float inverse = 1 / std::max(length(normal), 0.000001f);
+    const float lenSq = dot(normal, normal);
+    const float inverse = lenSq > 1e-12f ? fastInvSqrt(lenSq) : 1e6f;
     const float light = level + (lift * dot(normal, up) + beam * std::max(0.0f, dot(normal, sun))) * inverse;
     return uint8_t(std::clamp(light * float(scale) + 0.5f, 1.0f, 255.0f));
 }
@@ -255,32 +292,41 @@ void SceneLight::bake(const Assets& assets) {
     }
 
     if (field.size) {
-        // Turn the eight compass rays by a different angle in each cell. The
-        // softening pass then averages the rays into an even penumbra.
-        float directions[16][8][2];
+        // Precompute integer step offsets and horizon weights for all 16 rotated octants.
+        static constexpr float steps[12] = {1, 2, 3, 4.5f, 6, 8, 10.5f, 13.5f, 17, 21, 25, 29};
+        constexpr float range = 30;
+        SkyStep skyRays[16][8][12];
         for (int turn = 0; turn < 16; ++turn) {
             for (int d = 0; d < 8; ++d) {
                 const float angle = (d + turn / 16.0f) * (pi / 4);
-                directions[turn][d][0] = std::cos(angle);
-                directions[turn][d][1] = std::sin(angle);
+                const float dx = std::cos(angle), dz = std::sin(angle);
+                for (int s = 0; s < 12; ++s) {
+                    skyRays[turn][d][s] = {
+                        int8_t(std::lround(dx * steps[s])),
+                        int8_t(std::lround(dz * steps[s])),
+                        (1.0f - steps[s] / range) / (steps[s] * field.cell)
+                    };
+                }
             }
         }
         constexpr float footprint = 0.34f;
         std::vector<float> light(size * size);
+        const bool hasLamps = !assets.lamps.empty();
         for (int z = 0; z < size; ++z) {
+            const float worldZ = field.minZ + (z + 0.5f) * field.cell;
             for (int x = 0; x < size; ++x) {
                 const int i = z * size + x;
                 if (field.solid(i)) {
                     light[i] = footprint;
                     continue;
                 }
-                const Vec3 point{field.minX + (x + 0.5f) * field.cell, eye, field.minZ + (z + 0.5f) * field.cell};
+                const Vec3 point{field.minX + (x + 0.5f) * field.cell, eye, worldZ};
                 const unsigned turn = (unsigned(x) * 73856093u ^ unsigned(z) * 19349663u) >> 7;
-                float sky = openSky(field, x, z, directions[turn & 15]);
+                float sky = openSky(field, x, z, skyRays[turn & 15]);
                 // A roof hides the zenith. Low cover hides more of the sky than a lamp arm.
                 if (field.high[i] > eye) sky *= std::clamp((field.low[i] - eye) / 8, 0.45f, 1.0f);
                 light[i] = shade({0, 1, 0}, sky, field.sunlit(point, profile.sun) ? 1.0f : 0.0f, profile);
-                if (!assets.lamps.empty()) light[i] += lampLight(field, assets.lamps, point, {0, 1, 0});
+                if (hasLamps) light[i] += lampLight(field, assets.lamps, point, {0, 1, 0});
             }
         }
         soften(light, size);

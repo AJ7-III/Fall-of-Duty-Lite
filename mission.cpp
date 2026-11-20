@@ -22,6 +22,9 @@ constexpr uint16_t crimsonPlasma = rgb565(255, 86, 112);
 constexpr uint16_t overchargeOrange = rgb565(255, 116, 62);
 constexpr uint16_t shieldCyan = rgb565(96, 236, 255);
 constexpr uint16_t calloutGold = rgb565(234, 186, 78);
+constexpr uint16_t pulseWhite = rgb565(255, 240, 214);
+// A survivor who breaks cover in front of a watcher draws a shot and ducks back.
+constexpr float flinchDamage = 16.f;
 
 // Tactical squad roles assigned dynamically to active aliens.
 constexpr uint8_t rolePatrol = 0, roleSuppressor = 1, roleFlanker = 2, roleVanguard = 3, roleSupport = 4;
@@ -92,6 +95,7 @@ MissionController::MissionController(const Assets& assets, const World& world, N
 void MissionController::resetAll() {
     state_ = {};
     state_.mistDensity = 0.50f;
+    operation_ = {};
     for (auto& a : agents_) a = {};
     for (auto& s : sectors_) s = {};
     radioQueue_ = {};
@@ -101,10 +105,9 @@ void MissionController::resetAll() {
     introCue_ = 0;
     introSkipped_ = false;
     wakeSounds_ = false;
-    overwatchHintSent_ = false;
     overwatchNudgeSent_ = false;
     regroupBriefSent_ = false;
-    lzCallSent_ = false;
+    lzEnforcerLanded_ = false;
     pendingFlankers_ = 0;
     flankersCalled_ = false;
     wallCalled_ = false;
@@ -117,7 +120,6 @@ void MissionController::resetAll() {
     exfil_ = false;
     exfilCue_ = 0;
     exfilTime_ = 0;
-    liftAt_ = 0;
     evacBeat_ = 0;
     reinforcements_ = 0;
     streetPatrols_ = 0;
@@ -137,6 +139,14 @@ void MissionController::resetAll() {
     nextReinforceAt_ = 0;
     graceUntil_ = 0;
     graceReadyAt_ = 0;
+    signalEdge_ = signalHeld_ = false;
+    signalReadyAt_ = 0;
+    dishPulseAt_ = 0;
+    dishTipSent_ = false;
+    boardingCalled_ = false;
+    boardingCue_ = 0;
+    commanderHolds_ = false;
+    operationHasGoal_ = operationGoalDirect_ = false;
 }
 
 void MissionController::showRadio(const RadioLine& line, MissionHost& host, bool chirp) {
@@ -187,8 +197,9 @@ void MissionController::pumpRadio(MissionHost& host) {
     for (int i = 0; i < radioQueued_; ++i) {
         const double waited = elapsed_ - radioQueue_[i].queuedAt;
         const int sector = radioQueue_[i].sector;
-        const bool stale = (radioQueue_[i].priority == RadioChatter ? waited > 4.0 : waited > 9.0) ||
-                           (sector >= 0 && sector < 3 && sectors_[sector].resolved);
+        const auto priority = radioQueue_[i].priority;
+        const bool aged = priority == RadioChatter ? waited > 4.0 : priority == RadioOrder && waited > 9.0;
+        const bool stale = aged || (sector >= 0 && sector < 3 && sectors_[sector].resolved);
         if (!stale) radioQueue_[kept++] = radioQueue_[i];
     }
     radioQueued_ = kept;
@@ -203,6 +214,11 @@ void MissionController::pumpRadio(MissionHost& host) {
 void MissionController::setObjective(const char* mainText, const char* subText) {
     copyText(state_.objective, sizeof(state_.objective), mainText);
     copyText(state_.subObjective, sizeof(state_.subObjective), subText);
+}
+
+void MissionController::setSignalHint(const char* hint) {
+    state_.signalReady = hint != nullptr;
+    copyText(state_.signalHint, sizeof(state_.signalHint), hint);
 }
 
 void MissionController::setTacticalCallout(const char* text, uint16_t color, float duration) {
@@ -246,6 +262,8 @@ void MissionController::updateMistDensity(double dt) {
     case MissionPhase::Uplink:
     case MissionPhase::Incoming:   target = 0.84f; break;
     case MissionPhase::Extraction: target = 0.86f + 0.03f * float(state_.waveIntensity); break;
+    case MissionPhase::Boarding:   target = 0.88f; break;
+    case MissionPhase::Operation:  target = state_.chapter == MissionChapter::Array ? 0.74f : 0.60f; break;
     default:                       target = 0.88f; break;
     }
     state_.mistDensity += (target - state_.mistDensity) * float(1.0 - std::exp(-0.45 * dt));
@@ -260,7 +278,8 @@ void MissionController::updateDroneLinks(double dt) {
     }
     for (int i = 4; i < int(agents_.size()); ++i) {
         auto& drone = agents_[i];
-        if (!drone.used || drone.dead || !drone.alerted || drone.spawnFx > 0 || drone.role != MissionRole::AlienDrone) continue;
+        if (!drone.used || drone.dead || !drone.alerted || drone.spawnFx > 0 || drone.role != MissionRole::AlienDrone ||
+            drone.operationJammer || elapsed_ < drone.distractedUntil) continue;
         int best = -1;
         float bestDistSq = 12.5f * 12.5f;
         for (int j = 4; j < int(agents_.size()); ++j) {
@@ -416,9 +435,10 @@ void MissionController::spawnExtractionWave(const Snapshot& snap, MissionHost& h
 }
 
 bool MissionController::spawnReinforcement(const Snapshot& snap, MissionHost& host) {
-    const bool drone = reinforcements_ % 3 == 2;
+    const bool heavyPush = state_.campaign && state_.waveIntensity == 3 && !lzEnforcerLanded_;
+    const bool drone = !heavyPush && reinforcements_ % 3 == 2;
     const int enforcerEvery = difficulty_ >= 7 ? 2 : difficulty_ >= 4 ? 3 : 4;
-    const uint8_t variant = !drone && reinforcements_ % enforcerEvery == enforcerEvery - 1 ? 1 : 0;
+    const uint8_t variant = heavyPush || (!drone && reinforcements_ % enforcerEvery == enforcerEvery - 1) ? 1 : 0;
 
     const Vec3* options = drone ? lzDroneDrops : lzGroundDrops;
     const int count = drone ? int(std::size(lzDroneDrops)) : int(std::size(lzGroundDrops));
@@ -438,6 +458,12 @@ bool MissionController::spawnReinforcement(const Snapshot& snap, MissionHost& ho
         return false;
     }
     ++reinforcements_;
+    if (heavyPush) {
+        lzEnforcerLanded_ = true;
+        host.playSound(Sound::AlienHorn, .72f, true, options[best]);
+        setRadio("DELTA-1", "BIG ONE ON THE DROP BEAM.",
+                 2.6f, host, true, RadioUrgent);
+    }
     return true;
 }
 
@@ -467,16 +493,77 @@ void MissionController::seedExtractionReplay() {
     }
 }
 
-void MissionController::start(uint32_t seed, int difficulty, bool fromCheckpoint, Snapshot& snap,
+void MissionController::seedChapterReplay(MissionChapter chapter, bool noraAlive) {
+    checkpoint_ = {};
+    retries_ = 0;
+    state_ = {};
+    state_.campaign = true;
+    state_.phase = MissionPhase::Victory;
+    state_.chapter = chapter == MissionChapter::Array ? MissionChapter::Timberline : MissionChapter::BriarHouse;
+    state_.civiliansSaved = noraAlive ? 3 : 2;
+    state_.civiliansBoarded = 2;
+    noraAlive_ = noraAlive;
+    for (auto& sec : sectors_) sec = {};
+    sectors_[nora].civSlot = nora + 1;
+    agents_[size_t(nora + 1)].civilian = noraAlive ? CivilianOutcome::Stayed : CivilianOutcome::Lost;
+}
+
+void MissionController::seedFinaleReplay() {
+    seedChapterReplay(MissionChapter::Array);
+    state_.chapter = MissionChapter::Array;
+    state_.phase = MissionPhase::Operation;
+    checkpoint_.stage = MissionCheckpoint::Operation;
+    checkpoint_.operationStage = OperationStage::Steer;
+    checkpoint_.operationSpawn = mapPoint(368, 34);
+    retries_ = -1; // The replay is not a retry; restoring the checkpoint counts it back to zero.
+}
+
+void MissionController::restoreCheckpointStats() {
+    state_.retries = ++retries_;
+    state_.checkpointStage = checkpoint_.stage;
+    state_.aliensKilled = checkpoint_.kills;
+    state_.criticalKills = checkpoint_.criticalKills;
+    state_.chargeInterrupts = checkpoint_.interrupts;
+    state_.shieldsBroken = checkpoint_.shieldsBroken;
+    state_.ambushKills = checkpoint_.ambushKills;
+    state_.missionSeconds = checkpoint_.seconds;
+}
+
+void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, Snapshot& snap,
                               Vec3& playerPosOut, float& playerYawOut, MissionHost& host) {
+    const bool replay = mode == MissionStart::ExtractionReplay;
+    if (replay) seedExtractionReplay();
+    const bool retry = mode == MissionStart::Retry && canRetryCheckpoint();
+    const bool advance = mode == MissionStart::NextChapter && state_.nextMissionReady();
+    const auto next = state_.chapter == MissionChapter::BriarHouse ? MissionChapter::Timberline : MissionChapter::Array;
+    const auto chapter = advance ? next : retry ? state_.chapter : MissionChapter::BriarHouse;
+    const bool campaign = mode == MissionStart::Campaign || ((retry || advance) && state_.campaign);
+    const float earlierSeconds = advance ? state_.earlierMissionSeconds + state_.missionSeconds
+                                        : retry ? state_.earlierMissionSeconds : 0.f;
+    const int saved = state_.civiliansSaved, boarded = state_.civiliansBoarded;
+    if (advance && state_.chapter == MissionChapter::BriarHouse) {
+        noraAlive_ = agents_[sectors_[nora].civSlot].civilian == CivilianOutcome::Stayed;
+    } else if (!retry && !advance) {
+        noraAlive_ = true;
+    }
     resetAll();
     difficulty_ = std::clamp(difficulty, 1, 10);
     rng_.state = seed ? seed : 0x44454c54u;
     rng_.tick = 0;
 
     state_.active = true;
+    state_.campaign = campaign;
+    state_.chapter = chapter;
+    state_.earlierMissionSeconds = earlierSeconds;
     state_.civiliansTotal = 3;
     snap.brokenGlass |= (uint64_t(1) << 2) | (uint64_t(1) << 3) | (uint64_t(1) << 4);
+    if (chapter != MissionChapter::BriarHouse) {
+        state_.civiliansSaved = saved;
+        state_.civiliansBoarded = boarded;
+        state_.civiliansLost = state_.civiliansTotal - saved;
+        startOperation(snap, playerPosOut, playerYawOut, host, retry);
+        return;
+    }
 
     for (int s = 0; s < int(sectors_.size()); ++s) {
         const auto& person = family[s];
@@ -489,16 +576,8 @@ void MissionController::start(uint32_t seed, int difficulty, bool fromCheckpoint
     const Vec3 hallWake = mapPoint(368, 305);
     baseWakeYaw_ = pi - 0.14f;
 
-    if (fromCheckpoint && canRetryCheckpoint()) {
-        ++retries_;
-        state_.retries = retries_;
-        state_.checkpointStage = checkpoint_.stage;
-        state_.aliensKilled = checkpoint_.kills;
-        state_.criticalKills = checkpoint_.criticalKills;
-        state_.chargeInterrupts = checkpoint_.interrupts;
-        state_.shieldsBroken = checkpoint_.shieldsBroken;
-        state_.ambushKills = checkpoint_.ambushKills;
-        state_.missionSeconds = checkpoint_.seconds;
+    if (retry || replay) {
+        restoreCheckpointStats();
         state_.introProgress = 1.f;
         state_.concussion = 0.f;
         state_.letterbox = 0.f;
@@ -537,8 +616,7 @@ void MissionController::start(uint32_t seed, int difficulty, bool fromCheckpoint
             playerYawOut = pi;
             spawnCommander(mapPoint(332, 352), pi);
             enterOverwatch(snap, host, true);
-            setRadio("DELTA-1", "CHECKPOINT LOADED. THEY'RE STILL ON SOUTH BOULEVARD - TAKE THE FIRST SHOT.", 4.2f, host, true,
-                     RadioUrgent);
+            setObjective("OVERWATCH - FRONT ROAD", "CHECKPOINT LOADED / TAKE THE FIRST SHOT");
         } else {
             state_.phase = MissionPhase::Rescue;
             nextPatrolAt_ = 10.0;
@@ -546,8 +624,7 @@ void MissionController::start(uint32_t seed, int difficulty, bool fromCheckpoint
             playerPosOut = mapPoint(368, 565);
             playerYawOut = pi / 2;
             spawnCommander(mapPoint(335, 545), pi / 2);
-            setObjective("SWEEP THE TOWN 0/3", "RESCUE BEN, DR. MARSH AND WALT ACROSS THE VALLEY");
-            setRadio("DELTA-1", "CHECKPOINT LOADED. MOVE THROUGH TOWN - THE MARSHES ARE PINNED IN THREE DISTRICTS.", 4.6f, host);
+            setObjective("SWEEP THE TOWN 0/3", "CHECKPOINT LOADED / FIND BEN, NORA AND WALT");
         }
         auto atCheckpoint = snap;
         atCheckpoint.player.position = playerPosOut;
@@ -618,20 +695,20 @@ void MissionController::updateIntro(Snapshot& snap, const Input& input, double d
 
     if (introCue_ == 0 && introTime_ >= 0.55) {
         introCue_ = 1;
-        setRadio("DELTA-1", "HEY! STAY WITH ME - EYES ON ME!", 2.2f, host, true);
+        setRadio("DELTA-1", "HEY. EYES ON ME.", 2.2f, host, true);
     } else if (introCue_ == 1 && introTime_ >= 2.55) {
         introCue_ = 2;
         const Vec3 origin = mapPoint(430, 680, 2.2f), path = mapPoint(315, 395, 1.6f) - origin;
         launchPlasma(origin, normalized(path), false, 0.f, -1, length(path), snap);
         host.playSound(Sound::PlasmaFire, 0.58f, true, mapPoint(400, 620));
-        setRadio("DELTA-1", "WARHORSE IS DOWN. IT'S JUST US NOW - GET UP!", 2.5f, host, true);
+        setRadio("DELTA-1", "I DRAGGED YOU IN. WARHORSE IS IN THE ROAD.", 2.5f, host, true);
     } else if (introCue_ == 2 && introTime_ >= 4.85) {
         introCue_ = 3;
         agents_[0].actor.yaw = pi;
         const Vec3 origin = mapPoint(320, 700, 1.8f), path = mapPoint(412, 385, 2.1f) - origin;
         launchPlasma(origin, normalized(path), false, 0.f, -1, length(path), snap);
         host.playSound(Sound::PlasmaFire, 0.55f, true, mapPoint(330, 640));
-        setRadio("DELTA-1", "EASY... STAY LOW. EYES ON THE FRONT ROAD.", 2.6f, host, true);
+        setRadio("DELTA-1", "THE REST OF THE CREW IS STILL OUT BY THE WRECK.", 2.8f, host, true);
     }
 
     if (progress >= 1.0) {
@@ -641,7 +718,7 @@ void MissionController::updateIntro(Snapshot& snap, const Input& input, double d
     }
 }
 
-void MissionController::enterOverwatch(Snapshot& snap, MissionHost& host, bool urgent) {
+void MissionController::enterOverwatch(Snapshot& snap, MissionHost&, bool urgent) {
     state_.phase = MissionPhase::Overwatch;
     phaseTime_ = 0;
     state_.introProgress = 1.f;
@@ -651,22 +728,16 @@ void MissionController::enterOverwatch(Snapshot& snap, MissionHost& host, bool u
     spawnOverwatchWave(difficulty_);
     saveCheckpoint(MissionCheckpoint::Overwatch);
     updateWaypoint(snap);
-    setObjective("OVERWATCH - FRONT ROAD", "SWAP TO THE M40A3 AND ENGAGE ON YOUR MARK");
-    // A skipped intro or a reload replaces whatever line was still showing.
-    setRadio("DELTA-1", "SWAP TO YOUR M40A3. THEY'RE PICKING THROUGH THE WRECK ON THE ROAD...", 4.2f, host, true,
-             urgent ? RadioUrgent : RadioOrder);
+    // No order here. The wreck is framed in the doorway; the scope and the silence do the rest.
+    setObjective("OVERWATCH - FRONT ROAD", "SWAP TO THE M40A3 AND TAKE THE FIRST SHOT");
+    if (urgent) clearRadioQueue();
 }
 
 void MissionController::updateOverwatch(Snapshot& snap, double dt, bool playerFired, MissionHost& host) {
     phaseTime_ += dt;
-    if (!overwatchHintSent_ && phaseTime_ >= 4.2) {
-        overwatchHintSent_ = true;
-        setRadio("DELTA-1", "FIRST ONES I'VE SEEN UP CLOSE. HOLD STEADY - WE ENGAGE ON YOUR MARK.", 4.2f, host, true,
-                 RadioChatter);
-    }
     if (!overwatchNudgeSent_ && phaseTime_ >= overwatchNudge) {
         overwatchNudgeSent_ = true;
-        setRadio("DELTA-1", "THEY'RE SWEEPING CLOSER. TAKE THE SHOT WHEN YOU HAVE IT.", 3.6f, host, true);
+        setRadio("DELTA-1", "THEY'RE WORKING TOWARD THE GATE.", 3.0f, host, true);
     }
 
     const bool steppedOutside = snap.player.position.z < -10.5f;
@@ -691,11 +762,8 @@ void MissionController::updateOverwatch(Snapshot& snap, double dt, bool playerFi
             }
         }
         setObjective("BREAK OUT ONTO SOUTH BOULEVARD", "CLEAR THE CRASH SITE - TAP SWAP TO MP44");
-        setRadio("DELTA-1",
-                 cleanOpener ? "CLEAN SHOT! PUSH THROUGH THE BREACH ONTO SOUTH BOULEVARD!"
-                 : spotted   ? "THEY'VE SPOTTED US! WEAPONS FREE - BREAK OUT ONTO THE ROAD!"
-                             : "CONTACT ON SOUTH BOULEVARD! WEAPONS FREE - BREAK OUT!",
-                 3.8f, host, true, RadioUrgent);
+        setRadio("DELTA-1", cleanOpener ? "GOOD. NOW WE GO." : spotted ? "THEY'VE SEEN US. GO." : "CONTACT. GO.",
+                 2.4f, host, true, RadioUrgent);
     }
 }
 
@@ -712,7 +780,9 @@ void MissionController::steerAlongPath(Agent& agent, Vec3 target, float speed, d
     }
 
     Vec3 waypoint = target;
-    const bool obstructed = flying
+    // Jammers move with the same ground footprint as other drones. Low cover can
+    // block that footprint even when the emitter has a clear airborne sightline.
+    const bool obstructed = flying && !agent.operationJammer
         ? world_.blocked(agent.actor.position, atHeight(target, agent.hoverBase))
         : world_.walkBlocked(agent.actor.position, target);
     if (obstructed) {
@@ -771,10 +841,15 @@ void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& 
     Vec3 anchor = mapPoint(322, 313);
     float speed = 3.8f;
     if (state_.phase == MissionPhase::Uplink || state_.phase == MissionPhase::Incoming ||
-        state_.phase == MissionPhase::Extraction) {
+        state_.phase == MissionPhase::Extraction || state_.phase == MissionPhase::Boarding) {
         anchor = mapPoint(commanderLz[0], commanderLz[1]);
         speed = 5.2f;
-    } else if (state_.phase == MissionPhase::Regroup || state_.phase == MissionPhase::Rescue) {
+    } else if (state_.phase == MissionPhase::Operation && commanderHolds_) {
+        // Delta-1 takes a post the operation gives him: the emitter, the hall, the rear door.
+        anchor = commanderPost_;
+        speed = 5.0f;
+    } else if (state_.phase == MissionPhase::Regroup || state_.phase == MissionPhase::Rescue ||
+               state_.phase == MissionPhase::Operation) {
         // Delta-1 shadows the player across the mountain town streets, a few paces behind.
         const Vec3 toPlayer{snap.player.position.x - cmd.actor.position.x, 0, snap.player.position.z - cmd.actor.position.z};
         const float dist = planar(toPlayer);
@@ -822,13 +897,14 @@ void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& 
     // Field resupply: if the player is running dry during Rescue or Extraction and closes on Delta-1,
     // he tosses fresh magazines so sustained firefights stay tactical instead of stalling out.
     if (!snap.dead && (state_.phase == MissionPhase::Rescue || state_.phase == MissionPhase::Uplink ||
-                       state_.phase == MissionPhase::Extraction) &&
+                       state_.phase == MissionPhase::Extraction || state_.phase == MissionPhase::Boarding ||
+                       state_.phase == MissionPhase::Operation) &&
         elapsed_ >= resupplyReadyAt_ && snap.reserve <= 15 && snap.clip <= 8 &&
         planarSquared(snap.player.position - cmd.actor.position) < 4.2f * 4.2f) {
         resupplyReadyAt_ = elapsed_ + 26.0;
         host.refillPlayer(false);
         setTacticalCallout("DELTA-1 RESUPPLY", calloutGold, 1.8f);
-        setRadio("DELTA-1", "MAGS OUT - CATCH! STAY IN THE FIGHT!", 2.6f, host, true, RadioChatter);
+        setRadio("DELTA-1", "TAKE THESE.", 1.8f, host, true, RadioChatter);
     }
 
     int bestTarget = -1;
@@ -836,7 +912,8 @@ void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& 
     const Vec3 eye = atHeight(cmd.actor.position, botEye);
     for (int i = 4; i < int(agents_.size()); ++i) {
         const auto& alien = agents_[i];
-        if (!alien.used || alien.dead || !alien.alerted || alien.spawnFx > 0) continue;
+        // Jammers are the player's problem: Delta-1 keeps his rifle on the ground fight.
+        if (!alien.used || alien.dead || !alien.alerted || alien.spawnFx > 0 || alien.operationJammer) continue;
         const Vec3 aim = alien.role == MissionRole::AlienDrone ? alien.actor.position
                                                                : atHeight(alien.actor.position, alienChest * alienScale(alien.variant));
         const float d = length(aim - eye);
@@ -886,7 +963,7 @@ void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& 
     host.updateActorFrame(cmd.actor);
 }
 
-void MissionController::updateCivilian(int slot, Snapshot& snap, double dt) {
+void MissionController::updateCivilian(int slot, Snapshot& snap, double dt, MissionHost& host) {
     auto& civ = agents_[slot];
     if (!civ.used) return;
     if (civ.isDead()) {
@@ -897,26 +974,81 @@ void MissionController::updateCivilian(int slot, Snapshot& snap, double dt) {
     }
 
     civ.radar = 1.f;
-    if (civ.civilian == CivilianOutcome::Evacuating || civ.civilian == CivilianOutcome::Escorting) {
+    const auto faceTravel = [&] {
+        if (civ.actor.speed <= 0.3f) return;
+        const float moveYaw = std::atan2(civ.velocity.x, civ.velocity.z);
+        civ.actor.yaw += wrapDelta(civ.actor.yaw, moveYaw) * float(1.0 - std::exp(-9.0 * dt));
+    };
+    if (state_.phase == MissionPhase::Operation) {
+        // Nora in the later missions walks wherever the operation sends her.
+        if (planarSquared(civ.goal - civ.actor.position) > .36f) steerAlongPath(civ, civ.goal, 4.2f, dt, false);
+        else civ.actor.speed = 0;
+        faceTravel();
+        if (civ.actor.speed <= .3f) {
+            const Vec3 toPlayer = snap.player.position - civ.actor.position;
+            civ.actor.yaw += wrapDelta(civ.actor.yaw, std::atan2(toPlayer.x, toPlayer.z)) * float(1.0 - std::exp(-3.0 * dt));
+        }
+        poseCivilian(civ);
+        return;
+    }
+    if (civ.running) {
+        // Across the clearing to Dustoff's open cabin.
+        const Vec3 door = exfilHover + Vec3{float(civ.sector - 1) * .8f, -exfilHover.y, -1.5f};
+        steerAlongPath(civ, door, 4.0f, dt, false);
+        faceTravel();
+        if (planarSquared(door - civ.actor.position) < .8f) {
+            civ.running = false;
+            civ.civilian = CivilianOutcome::Boarded;
+            civ.actor.visible = false;
+            refreshCivilianTotals();
+        }
+    } else if (civ.civilian == CivilianOutcome::Evacuating || civ.civilian == CivilianOutcome::Escorting) {
         const bool escort = civ.civilian == CivilianOutcome::Escorting;
-        auto& leg = sectors_[civ.sector].coverLeg;
+        auto& sec = sectors_[size_t(civ.sector)];
+        auto& leg = sec.coverLeg;
         const auto& spot = evacSpots[civ.sector];
         const bool nextCover = escort && leg < std::size(waltCoverRoute);
-        const Vec3 dest = escort ? waltCoverRoute[std::min<size_t>(leg, std::size(waltCoverRoute) - 1)]
-                                 : mapPoint(spot[0], spot[1]);
+        Vec3 dest = escort ? waltCoverRoute[std::min<size_t>(leg, std::size(waltCoverRoute) - 1)]
+                           : mapPoint(spot[0], spot[1]);
+        // Ben runs to the player who waved him over, then on toward the clearing.
+        if (civ.rallying) {
+            if (planarSquared(snap.player.position - civ.actor.position) < 3.f * 3.f) civ.rallying = false;
+            else dest = snap.player.position;
+        }
         const bool close = planarSquared(snap.player.position - civ.actor.position) < 6.f * 6.f;
-        if (!escort || (nextCover && close && !districtAlerted(civ.sector))) {
+        // Walt reads his own yard: he waits while a scanner sweeps his way, then goes.
+        if (escort && nextCover && elapsed_ >= civ.holdUntil && sec.held < 4.f) {
+            for (size_t i = 4; i < agents_.size(); ++i) {
+                const auto& a = agents_[i];
+                if (!a.used || a.dead || a.alerted || a.sector != civ.sector) continue;
+                const Vec3 to = civ.actor.position - a.actor.position;
+                if (planarSquared(to) > 12.f * 12.f) continue;
+                // The same sweep the scanner beam draws: Walt moves when it has passed him.
+                const bool drone = a.role == MissionRole::AlienDrone;
+                const float sweep = a.actor.yaw + std::sin(float(elapsed_) * (drone ? 1.15f : .85f) + a.hoverPhase) * .45f;
+                if (std::abs(wrapDelta(sweep, std::atan2(to.x, to.z))) > .32f) continue;
+                if (world_.blocked(a.role == MissionRole::AlienDrone ? a.actor.position : atHeight(a.actor.position, 1.6f),
+                                   atHeight(civ.actor.position, .9f))) continue;
+                civ.holdUntil = elapsed_ + .8;
+                if (sec.held == 0.f) setRadio("WALT MARSH", "WAIT.", 1.4f, host, false, RadioChatter, civ.sector);
+                break;
+            }
+        }
+        const bool holding = escort && elapsed_ < civ.holdUntil;
+        if (holding) sec.held += float(dt);
+        if (!escort || (nextCover && close && !districtAlerted(civ.sector) && !holding)) {
             steerAlongPath(civ, dest, escort ? 3.1f : 4.4f, dt, false);
         } else {
             civ.actor.speed = 0;
         }
-        if (civ.actor.speed > 0.3f) {
-            const float moveYaw = std::atan2(civ.velocity.x, civ.velocity.z);
-            civ.actor.yaw += wrapDelta(civ.actor.yaw, moveYaw) * float(1.0 - std::exp(-9.0 * dt));
-        }
-        if (planarSquared(dest - civ.actor.position) < .5f) {
-            if (nextCover && close) ++leg;
-            else if (!escort) civ.civilian = CivilianOutcome::Sheltered;
+        faceTravel();
+        if (!civ.rallying && planarSquared(dest - civ.actor.position) < .5f) {
+            if (nextCover && close) {
+                ++leg;
+                sec.held = 0.f;
+            } else if (!escort) {
+                civ.civilian = CivilianOutcome::Sheltered;
+            }
         }
     } else {
         civ.actor.speed = 0;
@@ -1075,7 +1207,7 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
     }
     if (a.linked && !droneLinkWarned_ && state_.phase != MissionPhase::Overwatch) {
         droneLinkWarned_ = true;
-        setRadio("DELTA-1", "THAT DRONE'S SHIELDING THEM - DROP THE DRONE FIRST!", 3.4f, host, true, RadioOrder);
+        setRadio("DELTA-1", "THE DRONE IS SHIELDING THEM. DRONE FIRST.", 3.0f, host, true, RadioOrder);
     }
 
     poseAlien(a);
@@ -1088,6 +1220,19 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         a.chargeTime = 0;
         a.burstLeft = 0;
         a.actor.speed = 0;
+        return;
+    }
+    if (elapsed_ < a.distractedUntil) {
+        // A pulse from Nora's dish: the drone swings its emitter toward the house and holds still.
+        const Vec3 to = dishFocus() - a.actor.position;
+        const float yaw = std::atan2(to.x, to.z);
+        a.actor.yaw += wrapDelta(a.actor.yaw, yaw) * float(1.0 - std::exp(-9.0 * dt));
+        a.gunYaw = a.actor.yaw;
+        a.gunPitch = -std::atan2(to.y, planar(to));
+        a.gunCharge = std::max(0.f, a.gunCharge - float(dt * 5.0));
+        a.chargeTime = 0;
+        a.burstLeft = 0;
+        steerAlongPath(a, a.actor.position, 0.f, dt, drone);
         return;
     }
 
@@ -1107,7 +1252,15 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         if (state_.phase != MissionPhase::Overwatch) {
             const bool lowInTimberline = a.sector == walt && (snap.crouch || snap.prone);
             const bool closeSight = seesPlayer && distPlayer < (lowInTimberline ? 3.8f : 9.5f);
-            if (closeSight || (playerFired && distPlayer < 16.f)) a.alerted = true;
+            // A called drop that nobody engages goes looking for whatever called it.
+            const bool hunting = a.huntAt > 0 && elapsed_ >= a.huntAt;
+            if (closeSight || (playerFired && distPlayer < 16.f) || hunting) {
+                a.alerted = true;
+                if (hunting) a.threatTimer = 8.0;
+                if (a.squad >= 0) {
+                    for (auto& mate : agents_) if (mate.used && !mate.dead && mate.squad == a.squad) mate.alerted = true;
+                }
+            }
         }
         if (!a.alerted) {
             const float patrolOffset = std::sin(float(elapsed_) * 0.45f + a.hoverPhase) * 1.9f;
@@ -1126,10 +1279,32 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
     Vec3 targetAim = playerEye;
     bool hasTarget = !snap.dead && a.alerted;
 
+    // Who this alien turns on when it loses the player: its district's survivor, or Nora at the emitter.
+    int protectedSlot = -1;
     if (a.sector >= 0 && a.sector < 3 && sectors_[a.sector].spawned) {
         const int cSlot = sectors_[a.sector].civSlot;
-        const auto& civ = agents_[cSlot];
-        if (civ.used && (civ.civilian == CivilianOutcome::Pinned || civ.civilian == CivilianOutcome::Escorting)) {
+        const auto outcome = agents_[size_t(cSlot)].civilian;
+        if (outcome == CivilianOutcome::Pinned || outcome == CivilianOutcome::Escorting) protectedSlot = cSlot;
+    } else if (state_.phase == MissionPhase::Operation && state_.chapter == MissionChapter::Timberline && a.huntAt > 0 &&
+               agents_[1].used && !agents_[1].isDead()) {
+        protectedSlot = 1;
+    }
+    if (state_.phase == MissionPhase::Boarding && !drone) {
+        for (int c = 1; c <= 3; ++c) {
+            const auto& runner = agents_[size_t(c)];
+            if (!runner.running || runner.isDead()) continue;
+            const Vec3 body = atHeight(runner.actor.position, .9f);
+            if (planarSquared(runner.actor.position - a.actor.position) > 26.f * 26.f || world_.blocked(eye, body)) continue;
+            targetCiv = c;
+            targetPos = runner.actor.position;
+            targetAim = body;
+            break;
+        }
+    }
+    if (protectedSlot >= 0 && targetCiv < 0) {
+        const int cSlot = protectedSlot;
+        const auto& civ = agents_[size_t(cSlot)];
+        if (civ.used && !civ.isDead()) {
             if (seesPlayer) {
                 a.threatTimer = std::max(0.0, a.threatTimer - dt * 1.5);
             } else {
@@ -1166,6 +1341,10 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
     } else if (a.spawnFx > 0) {
         a.velocity = {};
         a.actor.speed = 0;
+    } else if (a.farJammer) {
+        steerAlongPath(a, a.home, 1.2f, dt, true);
+    } else if (a.operationJammer) {
+        steerAlongPath(a, jammerPost_, 3.8f, dt, true);
     } else if (targetCiv < 0) {
         tacticalMove(a, slot, snap, dt);
     } else if (!seesTarget || distTarget > preferredRange + 2.5f) {
@@ -1215,7 +1394,7 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         a.chargeSoundPlayed = false;
         if (startOvercharge && !overchargeWarned_) {
             overchargeWarned_ = true;
-            setRadio("DELTA-1", "ENFORCER CHARGING PLASMA - HIT ITS CHEST OR TAKE COVER!", 3.6f, host, true, RadioUrgent);
+            setRadio("DELTA-1", "IT'S CHARGING.", 1.8f, host, true, RadioUrgent);
         }
     }
 
@@ -1240,6 +1419,7 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         --a.burstLeft;
         a.fireCooldown = drone ? 0.17 : 0.14;
         a.gunRecoil = 1.f;
+        a.chargedShot = heavyBeam;
         a.gunCharge = a.burstLeft > 0 ? 0.65f : 0.f;
         if (a.burstLeft == 0) {
             a.overcharging = false;
@@ -1303,172 +1483,218 @@ void MissionController::refreshCivilianTotals() {
     }
 }
 
+// Anyone still crossing the clearing makes it aboard before the bird lifts.
 void MissionController::finishBoarding() {
     for (const auto& sec : sectors_) {
-        auto& civ = agents_[sec.civSlot];
-        if (!civilianRescued(civ.civilian)) continue;
+        auto& civ = agents_[size_t(sec.civSlot)];
+        if (!civ.running || civ.isDead()) continue;
+        civ.running = false;
         civ.civilian = CivilianOutcome::Boarded;
         civ.actor.visible = false;
     }
-    agents_[0].boarded = true;
-    agents_[0].actor.visible = false;
     refreshCivilianTotals();
 }
 
-// One line for the results screen, written from how the dusk operation went.
+// One line for the results screen, written from how the evening went.
 void MissionController::writeEpilogue() {
+    if (state_.chapter != MissionChapter::BriarHouse) {
+        writeOperationEpilogue();
+        return;
+    }
     const int clock = 19 * 60 + 47 + int(state_.missionSeconds / 60.f);
     char line[72];
+    const auto outcome = [&](int sector) { return agents_[size_t(sectors_[sector].civSlot)].civilian; };
+    const bool benOut = outcome(ben) == CivilianOutcome::Boarded, waltOut = outcome(walt) == CivilianOutcome::Boarded;
+    const bool noraStayed = outcome(nora) == CivilianOutcome::Stayed;
+    const char* flew = benOut && waltOut ? "BEN AND WALT FLEW OUT." : benOut ? "BEN FLEW OUT." : waltOut ? "WALT FLEW OUT." : "";
     if (state_.phase == MissionPhase::Failed && state_.civiliansLost >= state_.civiliansTotal) {
         std::snprintf(line, sizeof(line), "NO ONE LEFT BRIAR HOUSE ALIVE.");
     } else if (state_.phase == MissionPhase::Failed) {
         std::snprintf(line, sizeof(line), "BRIAR HOUSE WENT SILENT AT %02d:%02d.", clock / 60, clock % 60);
-    } else if (state_.civiliansBoarded == state_.civiliansTotal) {
-        std::snprintf(line, sizeof(line), "ALL THREE MARSHES MADE IT OUT. THE FLEET DATA REACHED COMMAND.");
-    } else if (agents_[sectors_[nora].civSlot].civilian == CivilianOutcome::Boarded) {
-        std::snprintf(line, sizeof(line), "DR. MARSH GOT OUT WITH HER DATA. NOT EVERYONE DID.");
+    } else if (noraStayed && benOut && waltOut) {
+        std::snprintf(line, sizeof(line), "BEN AND WALT FLEW OUT. NORA STAYED WITH HER DISH.");
+    } else if (noraStayed && (benOut || waltOut)) {
+        std::snprintf(line, sizeof(line), "%s NORA STAYED. WE LOST %s.", flew, benOut ? "WALT" : "BEN");
+    } else if (noraStayed) {
+        std::snprintf(line, sizeof(line), "NORA STAYED WITH HER DISH. HER FAMILY DID NOT MAKE IT.");
     } else {
-        std::snprintf(line, sizeof(line), "THE SURVIVORS GOT OUT. DR. MARSH AND HER DATA DID NOT.");
+        std::snprintf(line, sizeof(line), "%s WE LOST NORA.", flew);
     }
     copyText(state_.epilogue, sizeof(state_.epilogue), line);
 }
 
-void MissionController::beginExfil(MissionHost& host) {
-    clearRadioQueue();
-    exfil_ = true;
+// The hold is over. Dustoff comes down in the clearing while the fight is still going, and the
+// family waits at the stone wall for the player to send them across.
+void MissionController::beginDustoff(MissionHost& host) {
+    state_.phase = MissionPhase::Boarding;
+    phaseTime_ = 0;
     exfilTime_ = 0;
-    exfilCue_ = 0;
-    liftAt_ = 10.0;
-    state_.cinematic = true;
-    state_.plasma.fill({});
-    state_.plasmaShock = 0.f;
+    boardingCalled_ = false;
+    boardingCue_ = 0;
     state_.evacVisible = true;
     state_.evacPos = exfilApproach;
     const Vec3 heading = exfilHover - exfilApproach;
     state_.evacYaw = std::atan2(heading.x, heading.z);
-    state_.hasWaypoint = false;
-    state_.holdRadius = 0.f;
-    // Any survivors delayed on the long town route rendezvous under cover before the shot opens.
+    // Anyone still on the long town route reaches the wall as the bird comes in.
     for (size_t i = 0; i < sectors_.size(); ++i) {
-        auto& civ = agents_[sectors_[i].civSlot];
+        auto& civ = agents_[size_t(sectors_[i].civSlot)];
         if (civ.civilian != CivilianOutcome::Evacuating) continue;
         civ.actor.position = mapPoint(evacSpots[i][0], evacSpots[i][1]);
         civ.actor.speed = 0;
         civ.path.clear();
+        civ.rallying = false;
         civ.civilian = CivilianOutcome::Sheltered;
         poseCivilian(civ);
     }
-    setObjective("BRIAR HOUSE SECURED", "EXFIL WITH THE MARSH FAMILY");
-    setRadio("DELTA-1", "LZ IS CLEAR - DUSTOFF INBOUND. GET THE FAMILY MOVING!", 3.6f, host, true, RadioUrgent);
+    clearRadioQueue();
+    setObjective("GET THE FAMILY TO DUSTOFF", "DUSTOFF ON FINAL");
+    setRadio("DUSTOFF", "DUSTOFF ON FINAL. KEEP THEIR HEADS DOWN.", 3.0f, host, true, RadioUrgent);
 }
 
-void MissionController::updateExfil(Snapshot& snap, const Input& input, double dt, MissionHost& host) {
-    const bool first = exfilTime_ == 0;
+void MissionController::updateBoarding(Snapshot& snap, double dt, MissionHost& host) {
+    exfilTime_ += dt;
+    const double t = exfilTime_;
+    Vec3 heading{-1, 0, 0}; // Nose west along the clearing, cabin door toward the wall
+    if (t < exfilArrive) {
+        const float k = float(t / exfilArrive);
+        state_.evacPos = exfilApproach + (exfilHover - exfilApproach) * (1.f - (1.f - k) * (1.f - k));
+        heading = exfilHover - exfilApproach;
+        state_.evacPitch = .14f * (1.f - k);
+    } else {
+        state_.evacPos = exfilHover + Vec3{0, std::sin(float(t) * 1.7f) * .12f, 0};
+        state_.evacPitch = 0.f;
+    }
+    state_.evacYaw += wrapDelta(state_.evacYaw, std::atan2(heading.x, heading.z)) * float(1.0 - std::exp(-2.0 * dt));
+    state_.aliensRemaining = livingAliens();
+    if (t < exfilArrive) return;
+
+    int waiting = 0, crossing = 0;
+    bool goingBen = false, goingWalt = false, noraWaiting = false;
+    for (int s = 0; s < 3; ++s) {
+        const auto& civ = agents_[size_t(sectors_[s].civSlot)];
+        if (civ.running && !civ.isDead()) ++crossing;
+        if (civ.civilian != CivilianOutcome::Sheltered) continue;
+        if (s == nora) {
+            noraWaiting = !civ.running;
+        } else if (!civ.running) {
+            ++waiting;
+            goingBen |= s == ben;
+            goingWalt |= s == walt;
+        }
+    }
+    if (boardingCue_ == 0) {
+        boardingCue_ = 1;
+        setRadio("DUSTOFF", "WE'RE DOWN. SEND THEM ACROSS WHEN IT'S SAFE.", 3.2f, host, true, RadioUrgent);
+    } else if (boardingCue_ == 1 && !boardingCalled_ && t > exfilArrive + 28.0) {
+        boardingCue_ = 2;
+        setRadio("DUSTOFF", "WE CAN'T SIT HERE LONG, DELTA.", 2.6f, host, true, RadioChatter);
+    }
+
+    if (boardingCalled_) {
+        setSignalHint(nullptr);
+        // Anyone the clearing will not let through is hauled aboard before the bird has to go.
+        if (crossing > 0 && t - boardingCalledAt_ > 6.0) {
+            finishBoarding();
+            crossing = 0;
+        }
+        if (crossing == 0) beginLift(snap, host);
+        return;
+    }
+    setSignalHint(waiting ? "SEND THEM TO DUSTOFF" : "SEND DUSTOFF");
+    setObjective("GET THE FAMILY TO DUSTOFF",
+                 waiting ? "SIGNAL WHEN NOTHING CAN SEE THE WALL" : "SIGNAL DUSTOFF TO LEAVE");
+    if (!signalEdge_ || elapsed_ < signalReadyAt_) return;
+    signalReadyAt_ = elapsed_ + signalCooldown;
+
+    // Anyone watching the wall sees them break cover, and they duck back down.
+    for (int s = 0; s < 3; ++s) {
+        auto& civ = agents_[size_t(sectors_[s].civSlot)];
+        int shooter = -1;
+        const Vec3 door = exfilHover + Vec3{float(civ.sector - 1) * .8f, -exfilHover.y, -1.5f};
+        if (s == nora || civ.civilian != CivilianOutcome::Sheltered || !signalThreat(civ, door, shooter)) continue;
+        const auto& a = agents_[size_t(shooter)];
+        const Vec3 muzzle = rayGunMuzzle(a);
+        launchPlasma(muzzle, normalized(atHeight(civ.actor.position, .9f) - muzzle), false, flinchDamage,
+                     sectors_[s].civSlot, 48.f, snap);
+        host.playSound(a.role == MissionRole::AlienDrone ? Sound::DroneFire : Sound::PlasmaFire, .8f, true, muzzle);
+        setRadio(family[s].name, "NOT WHILE THEY CAN SEE US.", 2.4f, host, false, RadioUrgent);
+        setTacticalCallout("THEY'RE WATCHING THE WALL", crimsonPlasma, 2.0f);
+        return;
+    }
+    boardingCalled_ = true;
+    boardingCalledAt_ = t;
+    for (int s = 0; s < 3; ++s) {
+        auto& civ = agents_[size_t(sectors_[s].civSlot)];
+        if (s != nora && civ.civilian == CivilianOutcome::Sheltered) civ.running = true;
+    }
+    if (noraWaiting) {
+        // Nora stays. She knows the dish brought them, and she thinks it can send them away.
+        agents_[size_t(sectors_[nora].civSlot)].civilian = CivilianOutcome::Stayed;
+        refreshCivilianTotals();
+        clearRadioQueue();
+        state_.radioTimer = 0.f;
+        setRadio("NORA MARSH", goingBen && goingWalt ? "TAKE MY FATHER AND MY SON. I'M STAYING WITH THE DISH."
+                               : goingWalt ? "TAKE MY FATHER. I'M STAYING WITH THE DISH."
+                               : goingBen  ? "TAKE MY SON. I'M STAYING WITH THE DISH."
+                                           : "I'M NOT GETTING ON. I'M STAYING WITH THE DISH.",
+                 4.0f, host, false, RadioStory);
+    }
+}
+
+// Everyone who is going is aboard. The bird lifts with the player and Delta-1 still on the ground.
+void MissionController::beginLift(const Snapshot& snap, MissionHost& host) {
+    exfil_ = true;
+    exfilTime_ = 0;
+    state_.cinematic = true;
+    state_.plasma.fill({});
+    state_.plasmaShock = 0.f;
+    state_.hasWaypoint = false;
+    state_.holdRadius = 0.f;
+    setSignalHint(nullptr);
+    liftCamera_ = snap.camera;
+    const bool noraStayed = agents_[size_t(sectors_[nora].civSlot)].civilian == CivilianOutcome::Stayed;
+    setObjective("DUSTOFF IS UP", noraStayed ? "NORA STAYS WITH DELTA" : "DELTA STAYS IN THE VALLEY");
+    setRadio("DELTA-1", noraStayed ? "DUSTOFF, GO. WE'RE STAYING WITH NORA." : "DUSTOFF, GO. WE'LL FINISH WHAT SHE STARTED.",
+             3.4f, host, true, RadioStory);
+}
+
+void MissionController::updateExfil(Snapshot& snap, const Input& input, double dt, MissionHost&) {
     exfilTime_ += dt;
     const double t = exfilTime_;
     const bool skip = t > 1.0 && (input.edge(Jump) || input.edge(Confirm));
-    const double end = liftAt_ + exfilClimb;
-    if (t >= end || skip) {
+    // The bird is gone by liftDuration, but the shot holds until the last line has been read.
+    const bool talking = radioQueued_ > 0 || (state_.radioTimer > 0 && elapsed_ - radioShownAt_ < readSeconds(state_.radioLine) + .6);
+    if ((t >= liftDuration && (!talking || t >= liftDuration + 6.0)) || skip) {
         finishBoarding();
         exfil_ = false;
         state_.cinematic = false;
         state_.fade = 1.f;
         state_.phase = MissionPhase::Victory;
+        state_.evacVisible = false;
         writeEpilogue();
         snap.match = Match::Results;
         return;
     }
-
-    // Resolve any remaining boarders before the helicopter lifts, even if their path stalls.
-    if (t >= liftAt_ && exfilCue_ < 2) finishBoarding();
-
-    Vec3 bird, heading;
-    if (t < exfilArrive) {
-        const float k = float(t / exfilArrive);
-        bird = exfilApproach + (exfilHover - exfilApproach) * (1.f - (1.f - k) * (1.f - k));
-        heading = exfilHover - exfilApproach;
-    } else if (t < liftAt_) {
-        bird = exfilHover + Vec3{0, std::sin(float(t) * 1.7f) * .12f, 0};
-        heading = {-1, 0, 0}; // Nose west along the lawn, cabin door toward the house
-    } else {
-        const float k = float(std::clamp((t - liftAt_) / exfilClimb, 0.0, 1.0));
-        bird = exfilHover + (exfilAway - exfilHover) * (k * k);
-        heading = exfilAway - exfilHover;
-    }
+    const float k = float(std::clamp(t / exfilClimb, 0.0, 1.0));
+    const Vec3 bird = exfilHover + (exfilAway - exfilHover) * (k * k);
+    const Vec3 heading = exfilAway - exfilHover;
     state_.evacPos = bird;
     state_.evacYaw += wrapDelta(state_.evacYaw, std::atan2(heading.x, heading.z)) * float(1.0 - std::exp(-2.0 * dt));
-    state_.evacPitch = t < exfilArrive ? .14f * float(1.0 - t / exfilArrive) : t > liftAt_ ? .2f : 0.f;
+    state_.evacPitch = .2f * k;
 
-    // Survivors and Delta-1 run under the bird and climb aboard.
-    int waiting = 0;
-    for (int c = 1; c <= 3; ++c) {
-        auto& civ = agents_[c];
-        if (civ.civilian != CivilianOutcome::Sheltered) continue;
-        ++waiting;
-        if (t > exfilArrive - .6) {
-            const Vec3 door = exfilHover + Vec3{float(c - 2) * .8f, -exfilHover.y, -1.5f};
-            steerAlongPath(civ, door, 4.6f, dt, false);
-            if (civ.actor.speed > .3f) {
-                civ.actor.yaw += wrapDelta(civ.actor.yaw, std::atan2(civ.velocity.x, civ.velocity.z)) *
-                                 float(1.0 - std::exp(-9.0 * dt));
-            }
-            if (planarSquared(door - civ.actor.position) < .8f) {
-                civ.civilian = CivilianOutcome::Boarded;
-                civ.actor.visible = false;
-                refreshCivilianTotals();
-            }
-        }
-        poseCivilian(civ);
-    }
-    auto& cmd = agents_[0];
-    if (cmd.used && !cmd.boarded) {
-        ++waiting;
-        if (t > exfilArrive + .5) {
-            const Vec3 door = exfilHover + Vec3{-1.7f, -exfilHover.y, -1.5f};
-            steerAlongPath(cmd, door, 4.6f, dt, false);
-            if (cmd.actor.speed > .3f) {
-                cmd.actor.yaw += wrapDelta(cmd.actor.yaw, std::atan2(cmd.velocity.x, cmd.velocity.z)) *
-                                 float(1.0 - std::exp(-9.0 * dt));
-            }
-            if (planarSquared(door - cmd.actor.position) < .8f) {
-                cmd.boarded = true;
-                cmd.actor.visible = false;
-            }
-        }
-        host.updateActorFrame(cmd.actor);
-    }
-    if (waiting == 0 && liftAt_ > t + 1.0) liftAt_ = t + 1.0;
-
-    if (exfilCue_ == 0 && t > exfilArrive) {
-        exfilCue_ = 1;
-        setRadio("DELTA-1", "DUSTOFF'S DOWN - GO, GO, GO!", 2.6f, host, true, RadioUrgent);
-    } else if (exfilCue_ == 1 && t > liftAt_) {
-        exfilCue_ = 2;
-        setRadio("DELTA-1", agents_[sectors_[nora].civSlot].civilian == CivilianOutcome::Boarded
-                     ? "WHEELS UP. TELL COMMAND WE HAVE DR. MARSH."
-                     : "WHEELS UP. TELL COMMAND... WE LOST THE DOC.",
-                 3.2f, host, true, RadioUrgent);
-    }
-
-    // Cut to the rear doorway and follow the bird, framing the lawn beneath it once it settles.
-    const float settle = float(std::clamp((t - 2.5) / 2.0, 0.0, 1.0)) * (t < liftAt_ ? 1.f : 0.f);
-    const Vec3 d = bird - Vec3{0, 1.7f * settle, 0} - exfilEye;
+    // Stay where the player is standing and turn to watch the bird go.
+    const Vec3 d = bird - liftCamera_.position;
     const float yaw = std::atan2(d.x, d.z);
     const float pitch = std::clamp(-std::atan2(d.y, std::max(.01f, planar(d))), -1.1f, .4f);
-    if (first) {
-        snap.camera.yaw = yaw;
-        snap.camera.pitch = pitch;
-    }
-    const float follow = float(1.0 - std::exp(-3.0 * dt));
-    snap.camera.position = exfilEye;
+    const float follow = float(1.0 - std::exp(-2.4 * dt));
+    snap.camera.position = liftCamera_.position;
     snap.camera.yaw += wrapDelta(snap.camera.yaw, yaw) * follow;
     snap.camera.pitch += (pitch - snap.camera.pitch) * follow;
     snap.camera.fov = 66.f * pi / 180.f;
     snap.playerYaw = snap.camera.yaw;
     snap.playerPitch = snap.camera.pitch;
-
     state_.letterbox = float(std::min(.85, t * .85));
-    state_.fade = float(std::clamp((t - (end - 1.1)) / 1.1, 0.0, 1.0));
+    state_.fade = talking ? std::min(state_.fade, .35f) : std::max(state_.fade, float(std::clamp((t - (liftDuration - 1.2)) / 1.2, 0.0, 1.0)));
 }
 
 // Aliens hold firing spots around the player instead of walking straight in: they keep a good
@@ -1628,7 +1854,7 @@ bool MissionController::vaultWall(Agent& a, double dt, MissionHost& host) {
         if (!drone) roar(a.actor.position, host);
         if (!wallCalled_) {
             wallCalled_ = true;
-            setRadio("DELTA-1", "THEY'RE VAULTING THE FRONT WALL!", 2.2f, host, true, RadioChatter);
+            setRadio("DELTA-1", "OVER THE WALL.", 1.8f, host, true, RadioChatter);
         }
         return true;
     }
@@ -1649,7 +1875,7 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
         if (fromPlayer) {
             state_.friendlyFireWarn = true;
             state_.friendlyFireTimer = 2.0f;
-            setRadio("DELTA-1", "CHECK YOUR FIRE! I'M ON YOUR SIX!", 2.4f, host, true, RadioUrgent);
+            setRadio("DELTA-1", "CHECK FIRE. I'M BEHIND YOU.", 2.2f, host, true, RadioUrgent);
         }
         return;
     }
@@ -1663,9 +1889,19 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
             amount = std::min(amount, 30.f);
             state_.friendlyFireWarn = true;
             state_.friendlyFireTimer = 2.5f;
-            setRadio("DELTA-1", "HOLD FIRE! THAT'S A CIVILIAN!", 2.6f, host, true, RadioUrgent);
+            setRadio("DELTA-1", "HOLD FIRE. THAT'S A CIVILIAN.", 2.4f, host, true, RadioUrgent);
         }
         a.actor.health -= amount;
+        if (a.actor.health <= 0) a.running = a.rallying = false;
+        if (a.actor.health <= 0 && state_.phase == MissionPhase::Operation) {
+            // Nora in the later missions; the operation fails the mission on its next step.
+            a.actor.health = 0;
+            a.civilian = CivilianOutcome::Lost;
+            a.deathElapsed = 0;
+            host.playSound(Sound::Death, 0.9f, true, a.actor.position);
+            setRadio("DELTA-1", "NORA'S DOWN.", 2.4f, host, true, RadioUrgent);
+            return;
+        }
         if (a.actor.health <= 0) {
             a.actor.health = 0;
             a.civilian = CivilianOutcome::Lost;
@@ -1689,9 +1925,11 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
     a.alerted = true;
     a.radar = 3.0f;
     a.suppression = std::min(1.f, a.suppression + (fromPlayer ? 0.34f : 0.14f));
-    if (a.sector >= 0 && a.sector < 3) {
-        for (int i = 4; i < int(agents_.size()); ++i) {
-            if (agents_[i].used && !agents_[i].dead && agents_[i].sector == a.sector) agents_[i].alerted = true;
+    for (int i = 4; i < int(agents_.size()); ++i) {
+        auto& mate = agents_[i];
+        if (!mate.used || mate.dead) continue;
+        if ((a.sector >= 0 && a.sector < 3 && mate.sector == a.sector) || (a.squad >= 0 && mate.squad == a.squad)) {
+            mate.alerted = true;
         }
     }
 
@@ -1715,7 +1953,7 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
         host.playSound(Sound::ShieldBreak, 0.85f, true, a.actor.position);
         if (!interruptPraised_) {
             interruptPraised_ = true;
-            setRadio("DELTA-1", "NICE SHOT - DISRUPTED ITS RAY CANNON!", 2.8f, host, true, RadioChatter);
+            setRadio("DELTA-1", "THAT STOPPED IT.", 2.0f, host, true, RadioChatter);
         }
     } else if (fromPlayer && critical && a.role == MissionRole::AlienTrooper && a.shield <= 0.f) {
         a.staggerUntil = std::max(a.staggerUntil, elapsed_ + 0.34);
@@ -1962,12 +2200,26 @@ int MissionController::nextSector(Vec3 position) const {
 }
 
 void MissionController::updateWaypoint(const Snapshot& snap) {
-    state_.holdRadius = 0.f;
+    if (state_.phase != MissionPhase::Operation) state_.holdRadius = 0.f;
     if (exfil_) return;
     bool stageApproach = false;
     Vec3 goal;
     const Vec3 player{snap.player.position.x, 0.f, snap.player.position.z};
     switch (state_.phase) {
+    case MissionPhase::Operation:
+        if (!operationHasGoal_) {
+            state_.hasWaypoint = false;
+            return;
+        }
+        if (operationGoalDirect_) {
+            // A place to look at, not walk to: the saddle beyond the lots, a landing across the lane.
+            state_.hasWaypoint = true;
+            state_.waypoint = operationGoal_;
+            state_.waypointIsRoute = false;
+            return;
+        }
+        goal = operationGoal_;
+        break;
     case MissionPhase::Uplink:
         goal = uplinkPosition;
         break;
@@ -1976,6 +2228,9 @@ void MissionController::updateWaypoint(const Snapshot& snap) {
         goal = state_.holdCenter = mapPoint(townLz[0], townLz[1]);
         state_.holdRadius = state_.phase == MissionPhase::Incoming ? assemblyRadius : holdRadius;
         break;
+    case MissionPhase::Boarding:
+        state_.hasWaypoint = false;
+        return;
     case MissionPhase::Rescue: {
         const int s = nextSector(player);
         if (s < 0) {
@@ -2007,15 +2262,16 @@ void MissionController::updateWaypoint(const Snapshot& snap) {
     const bool changedGoal = !state_.hasWaypoint || planarSquared(routeGoal_ - goal) > .25f;
     const bool moved = planarSquared(routeFrom_ - player) > .8f * .8f;
     if (changedGoal || (elapsed_ >= routeReadyAt_ && moved)) {
+        const float clearance = state_.phase == MissionPhase::Operation ? operationPlayerClearance : .42f;
         routeReadyAt_ = elapsed_ + .35;
         routeFrom_ = player;
         routeGoal_ = routeWaypoint_ = goal;
-        if (world_.walkBlocked(player, goal) &&
+        if (world_.walkBlocked(player, goal, clearance) &&
             nav_.path(nav_.nearest(player), nav_.nearest(goal), route_)) {
             for (const int node : route_) {
                 const Vec3 pos = nav_.node(node).position;
                 if (planarSquared(pos - player) < .8f * .8f) continue;
-                if (world_.walkBlocked(player, pos)) {
+                if (world_.walkBlocked(player, pos, clearance)) {
                     if (planarSquared(routeWaypoint_ - goal) > .25f) break;
                     continue;
                 }
@@ -2036,9 +2292,14 @@ void MissionController::enterUplink(MissionHost& host) {
     state_.uplinkVisible = true;
     state_.uplinkHealth = uplinkMaxHealth;
     saveCheckpoint(MissionCheckpoint::Uplink);
-    setObjective("DESTROY THE ALIEN UPLINK", "NORTH AVENUE / SHOOT THE GLOWING CORE");
-    setRadio("DUSTOFF", "THE BEACON'S JAMMED. SHOOT OUT THAT ALIEN UPLINK ON NORTH AVENUE AND WE CAN LAND.",
-             5.0f, host, true, RadioUrgent);
+    setObjective("DESTROY THE ALIEN RECEIVER", "NORTH AVENUE / SHOOT THE GLOWING CORE");
+    // The tower is how they hear Nora's dish. Blind it and they have to come and look.
+    if (survivorAlive(nora)) {
+        setRadio("NORA MARSH", "THAT TOWER IS LISTENING TO MY DISH. SHOOT IT AND THEY LOSE US.", 4.0f, host, false,
+                 RadioUrgent);
+    } else {
+        setRadio("DELTA-1", "THAT TOWER IS TRACKING HER DISH. TAKE IT DOWN.", 3.2f, host, true, RadioUrgent);
+    }
 }
 
 void MissionController::enterIncoming(MissionHost& host) {
@@ -2047,8 +2308,100 @@ void MissionController::enterIncoming(MissionHost& host) {
     phaseTime_ = 0;
     saveCheckpoint(MissionCheckpoint::Extraction);
     setObjective("REGROUP AT THE NORTH LZ", "CHECKPOINT SAVED / MOVE TO THE FOUR FLARES");
-    setRadio("DUSTOFF", "WE HAVE YOUR BEACON, DELTA. GET TO THE FLARES. WE'RE INBOUND.",
-             4.4f, host, true, RadioUrgent);
+    setRadio("DUSTOFF", "DUSTOFF INBOUND. GET TO THE FLARES.", 3.0f, host, true, RadioUrgent);
+}
+
+// Nora's dish on the east wing still transmits on a timer. Each pulse swings the shield drone on
+// North Avenue round toward the house for a moment and drops its link to the Enforcer.
+void MissionController::updateDishPulse(double dt, MissionHost& host) {
+    state_.dishPulse = std::max(0.f, state_.dishPulse - float(dt * 1.25));
+    const auto& sec = sectors_[nora];
+    if (state_.phase != MissionPhase::Rescue || !sec.spawned || sec.resolved) return;
+    if (dishPulseAt_ <= 0) dishPulseAt_ = elapsed_ + 3.0;
+    if (elapsed_ < dishPulseAt_) return;
+    dishPulseAt_ = elapsed_ + dishPulseInterval;
+    state_.dishPulse = 1.f;
+    const Vec3 focus = dishFocus();
+    host.playSound(Sound::RadioChirp, .75f, true, focus);
+    for (size_t i = 4; i < agents_.size(); ++i) {
+        auto& drone = agents_[i];
+        if (!drone.used || drone.dead || drone.role != MissionRole::AlienDrone || drone.sector != nora) continue;
+        drone.distractedUntil = elapsed_ + dishDistraction;
+        addTracer(focus, drone.actor.position, pulseWhite, TracerStyle::ShieldLink, 1.3f);
+        if (drone.linkTarget < 4) continue;
+        auto& mate = agents_[size_t(drone.linkTarget)];
+        drone.linkTarget = -1;
+        if (!mate.used || mate.dead) continue;
+        mate.shield = 0.f;
+        mate.linked = false;
+        mate.shieldRegenAt = elapsed_ + dishDistraction;
+        mate.overcharging = false;
+        mate.chargeTime = 0;
+        mate.gunCharge = 0;
+        mate.staggerUntil = std::max(mate.staggerUntil, elapsed_ + .6);
+        host.playSound(Sound::ShieldBreak, .8f, true, mate.actor.position);
+        setTacticalCallout("LINK DISRUPTED", shieldCyan, 1.7f);
+    }
+}
+
+// The nearest alien that would see a survivor break cover: one with sight of them, of where they
+// are running to, or of the ground in between.
+bool MissionController::signalThreat(const Agent& civ, Vec3 destination, int& shooter) const {
+    const Vec3 route[]{atHeight(civ.actor.position, 1.f), atHeight((civ.actor.position + destination) * .5f, 1.f),
+                       atHeight(destination, 1.f)};
+    float best = watcherRange * watcherRange;
+    shooter = -1;
+    for (size_t i = 4; i < agents_.size(); ++i) {
+        const auto& a = agents_[i];
+        if (!a.used || a.dead || a.spawnFx > 0 || elapsed_ < a.distractedUntil) continue;
+        const float range = planarSquared(a.actor.position - civ.actor.position);
+        if (range >= best) continue;
+        const Vec3 eye = a.role == MissionRole::AlienDrone ? a.actor.position
+                                                           : atHeight(a.actor.position, alienWeakPoint.y * alienScale(a.variant));
+        if (std::any_of(std::begin(route), std::end(route), [&](Vec3 at) { return !world_.blocked(eye, at); })) {
+            best = range;
+            shooter = int(i);
+        }
+    }
+    return shooter >= 0;
+}
+
+void MissionController::updateBenSignal(const Snapshot& snap, MissionHost& host) {
+    auto& sec = sectors_[ben];
+    auto& civ = agents_[size_t(sec.civSlot)];
+    if (!sec.spawned || sec.resolved || civ.civilian != CivilianOutcome::Pinned) return;
+    const float range = planar(civ.actor.position - snap.player.position);
+    if (range > benSignalRange ||
+        world_.blocked(atHeight(snap.player.position, snap.eyeHeight), atHeight(civ.actor.position, .9f))) return;
+    setSignalHint("SIGNAL BEN");
+    const bool beside = range < 3.f && livingAliens(ben) == 0;
+    if (elapsed_ < signalReadyAt_ || (!beside && !signalEdge_)) return;
+    int shooter = -1;
+    const bool watched = signalThreat(civ, snap.player.position, shooter);
+    // Standing beside him only brings him when nothing is watching; only a wave draws fire.
+    if (watched && !signalEdge_) return;
+    signalReadyAt_ = elapsed_ + signalCooldown;
+    if (watched) {
+        const auto& a = agents_[size_t(shooter)];
+        const Vec3 muzzle = rayGunMuzzle(a);
+        launchPlasma(muzzle, normalized(atHeight(civ.actor.position, .6f) - muzzle), false, flinchDamage, sec.civSlot,
+                     48.f, snap);
+        host.playSound(a.role == MissionRole::AlienDrone ? Sound::DroneFire : Sound::PlasmaFire, .8f, true, muzzle);
+        setRadio("BEN MARSH", "I CAN'T. THEY'RE RIGHT THERE.", 2.4f, host, false, RadioUrgent, ben);
+        return;
+    }
+    civ.civilian = CivilianOutcome::Evacuating;
+    civ.rallying = true;
+    sec.resolved = true;
+    refreshCivilianTotals();
+    host.playSound(Sound::CivilianSaved, .85f, false, {});
+    setRadio(family[ben].name, survivorLine(ben), 3.6f, host, false);
+}
+
+const char* MissionController::survivorLine(int sector) const {
+    const auto outcome = agents_[size_t(sectors_[nora].civSlot)].civilian;
+    if (sector == nora || outcome == CivilianOutcome::Pinned) return family[sector].noraPinned;
+    return outcome == CivilianOutcome::Lost ? family[sector].noraLost : family[sector].noraSafe;
 }
 
 void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
@@ -2059,7 +2412,12 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
         const float rangeSq = planarSquared(player - sec.center);
         if (!sec.spawned && rangeSq < 17.5f * 17.5f) {
             spawnSectorWave(s);
-            if (sec.spawned) setRadio("DELTA-1", family[s].callout, 4.2f, host, true, RadioOrder, s);
+            if (sec.spawned) {
+                setRadio("DELTA-1", family[s].callout, 3.4f, host, true, RadioOrder, s);
+                if (s == nora) {
+                    setRadio("NORA MARSH", "WATCH THE DRONE WHEN MY DISH FLASHES.", 3.4f, host, false, RadioStory, s);
+                }
+            }
         }
         if (!sec.spawned) continue;
         if (rangeSq < 17.5f * 17.5f &&
@@ -2068,13 +2426,16 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
             activeSector_ = s;
         }
         auto& civ = agents_[sec.civSlot];
+        if (s == ben) {
+            updateBenSignal(snap, host);
+            continue;
+        }
         if (s == walt && civ.civilian == CivilianOutcome::Pinned && livingAliens(s) != 0 &&
             rangeSq < 3.4f * 3.4f && (snap.crouch || snap.prone) && !districtAlerted(s) &&
             !world_.blocked(atHeight(player, snap.eyeHeight), atHeight(civ.actor.position, .75f))) {
             activeSector_ = s;
             civ.civilian = CivilianOutcome::Escorting;
-            setRadio("WALT MARSH", "I'M WITH YOU. STAY LOW. THERE'S A STONE WALL UP THE LANE.",
-                     4.f, host, false, RadioUrgent, s);
+            setRadio("WALT MARSH", "STAY BEHIND ME. I KNOW THIS YARD.", 3.2f, host, false, RadioUrgent, s);
         }
         if (civ.civilian == CivilianOutcome::Escorting) {
             if (districtAlerted(s) || sec.coverLeg < std::size(waltCoverRoute) ||
@@ -2086,8 +2447,8 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
         sec.resolved = true;
         refreshCivilianTotals();
         host.playSound(Sound::CivilianSaved, .85f, false, {});
-        const bool noraPinned = s != nora && agents_[sectors_[nora].civSlot].civilian == CivilianOutcome::Pinned;
-        setRadio(family[s].name, noraPinned ? family[s].worried : family[s].rescued, 3.8f, host, false);
+        setRadio(family[s].name, survivorLine(s), 3.8f, host, false, RadioStory);
+        if (s == nora) setRadio("DELTA-1", "ALL RIGHT, DOC. STAY BEHIND THE WALL WITH THE OTHERS.", 3.2f, host, true);
     }
 
     state_.aliensRemaining = livingAliens();
@@ -2105,8 +2466,13 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
     const auto& sec = sectors_[next];
     const bool escort = agents_[sec.civSlot].civilian == CivilianOutcome::Escorting;
     const int step = escort ? (districtAlerted(next) ? 5 : 4)
-                            : !sec.spawned ? 0 : livingAliens(next) == 0 ? 2 : next == walt && !districtAlerted(next) ? 3 : 1;
-    const int objective = (state_.civiliansSaved + state_.civiliansLost) * 18 + next * 6 + step;
+                   : !sec.spawned ? 0
+                   : next == ben ? 6
+                   : livingAliens(next) == 0 ? 2 : next == walt && !districtAlerted(next) ? 3
+                   : next == nora && std::any_of(agents_.begin() + 4, agents_.end(), [](const Agent& a) {
+                         return a.used && !a.dead && a.sector == nora && a.role == MissionRole::AlienDrone;
+                     }) ? 7 : 1;
+    const int objective = (state_.civiliansSaved + state_.civiliansLost) * 18 + next * 8 + step;
     if (objective != rescueObjective_) {
         rescueObjective_ = objective;
         char title[40], instruction[64];
@@ -2114,8 +2480,10 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
         constexpr const char* actions[]{"FIND", "CLEAR HOSTILES NEAR", "REACH"};
         if (step < 3) std::snprintf(instruction, sizeof(instruction), "%s %s", actions[step], family[next].objective);
         else if (step == 3) copyText(instruction, sizeof(instruction), "CROUCH TO REACH WALT, OR CLEAR THE PATROL");
-        else if (step == 4) copyText(instruction, sizeof(instruction), "STAY LOW AND ESCORT WALT TO THE STONE WALL");
-        else copyText(instruction, sizeof(instruction), "WALT IS IN COVER. CLEAR THE PATROL TO CONTINUE");
+        else if (step == 4) copyText(instruction, sizeof(instruction), "STAY LOW AND FOLLOW WALT TO THE STONE WALL");
+        else if (step == 5) copyText(instruction, sizeof(instruction), "WALT IS IN COVER. CLEAR THE PATROL TO CONTINUE");
+        else if (step == 6) copyText(instruction, sizeof(instruction), "SIGNAL BEN ACROSS WHEN NOTHING CAN SEE HIM");
+        else copyText(instruction, sizeof(instruction), "HIT THE BIG ONE WHILE THE DISH HAS THE DRONE");
         setObjective(title, instruction);
     }
 
@@ -2130,7 +2498,7 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
         dropAlien(MissionRole::AlienTrooper, spot, 0, snap, host) < 0) return;
     ++streetPatrols_;
     nextPatrolAt_ = elapsed_ + 22.0;
-    setRadio("DELTA-1", "ROVING PATROL IN THE MIST AHEAD!", 3.0f, host, true, RadioChatter);
+    setRadio("DELTA-1", "PATROL AHEAD.", 2.0f, host, true, RadioChatter);
 }
 
 void MissionController::enterExtraction(Snapshot& snap, MissionHost& host) {
@@ -2142,7 +2510,6 @@ void MissionController::enterExtraction(Snapshot& snap, MissionHost& host) {
     nextReinforceAt_ = 6.0;
     reinforcements_ = 0;
     evacBeat_ = 0;
-    lzCallSent_ = false;
     spawnExtractionWave(snap, host);
     snap.apacheReady = true;
     setObjective("HOLD THE NORTH TOWN LZ", "");
@@ -2158,7 +2525,7 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
                 --pendingFlankers_;
                 if (!flankersCalled_) {
                     flankersCalled_ = true;
-                    setRadio("DELTA-1", "DROP BEAMS ON SOUTH BOULEVARD - PUSH OUT THROUGH THE BREACH!", 3.4f, host, true, RadioUrgent);
+                    setRadio("DELTA-1", "MORE COMING DOWN ON THE BOULEVARD.", 2.8f, host, true, RadioUrgent);
                 }
             }
         }
@@ -2172,7 +2539,7 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
             host.refillPlayer(false);
             saveCheckpoint(MissionCheckpoint::Rescue);
             setObjective("BREAKOUT CLEAR - MOVE INTO TOWN", "CHECKPOINT SAVED / AMMO RESUPPLIED");
-            setRadio("DELTA-1", "CRASH SITE CLEAR... CATCH YOUR BREATH. WE'RE PUSHING OUT INTO TOWN.", 2.6f, host, true, RadioUrgent);
+            setRadio("DELTA-1", "CLEAR. TAKE A SECOND.", 2.2f, host, true, RadioUrgent);
         }
         return;
     }
@@ -2181,13 +2548,13 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
         phaseTime_ += dt;
         if (!regroupBriefSent_ && phaseTime_ >= 2.0) {
             regroupBriefSent_ = true;
-            setRadio("DELTA-1", "THE MARSHES SCATTERED - BEN'S ON EAST RIDGE, NORA ON NORTH AVE, WALT ON WEST TIMBERLINE.", 4.6f, host, true);
+            setRadio("DELTA-1", "WE CAME FOR THE PACKAGE. DR. NORA MARSH. HER SON RAN EAST, HER FATHER WEST.", 4.6f, host, true, RadioStory);
         }
         if (phaseTime_ >= regroupDuration) {
             state_.phase = MissionPhase::Rescue;
             phaseTime_ = 0;
             nextPatrolAt_ = elapsed_ + 10.0;
-            setObjective("SWEEP THE TOWN 0/3", "FIND BEN (EAST), DR. MARSH (NORTH) AND WALT (WEST)");
+            setObjective("SWEEP THE TOWN 0/3", "FIND BEN (EAST), NORA (NORTH) AND WALT (WEST)");
         }
         return;
     }
@@ -2216,7 +2583,7 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
         if (phaseTime_ == 0) {
             clearRadioQueue();
             host.playSound(Sound::AlienHorn, .88f, false, {});
-            setRadio("DELTA-1", "DROP BEAMS ON NORTH AVENUE! APACHE IS CLEARED HOT!", 4.2f, host, true, RadioUrgent);
+            setRadio("DELTA-1", "THEY'VE LOST THE SIGNAL. THEY'RE COMING TO LOOK.", 3.2f, host, true, RadioUrgent);
         }
         phaseTime_ += dt;
         if (phaseTime_ >= incomingLeadIn) enterExtraction(snap, host);
@@ -2240,22 +2607,20 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
             }
             if (evacBeat_ == 0 && evacTimer_ <= evacDuration_ * 0.8) {
                 evacBeat_ = 1;
+                // The idea the rest of the campaign is built on. It waits for a gap; it is never dropped.
                 if (survivorAlive(nora)) {
-                    setRadio(family[nora].name, "THEY FOLLOWED THE ARRAY SIGNAL. WE NEED TO GET THIS DATA OUT!", 3.4f, host, false,
-                             RadioChatter);
+                    setRadio("NORA MARSH", "IF MY DISH CAN CALL THEM IN, IT CAN SEND THEM SOMEWHERE ELSE.", 4.0f, host,
+                             false, RadioStory);
                 }
             } else if (evacBeat_ == 1 && evacTimer_ <= evacDuration_ * 0.55) {
                 evacBeat_ = 2;
-                if (!mistRemarked_) {
-                    mistRemarked_ = true;
-                    setRadio("DELTA-1", "MIST IS ROLLING IN OFF THE RIDGES - WATCH FOR THEIR RAY GLOW!", 3.6f, host, true, RadioChatter);
-                } else {
-                    setRadio("DELTA-1", "KEEP THEM OFF THE LZ! DUSTOFF IS ON THE WAY!", 3.4f, host, true, RadioChatter);
-                }
+                setRadio("DELTA-1", "DUSTOFF IS CLOSE.", 2.0f, host, true, RadioChatter);
             } else if (evacBeat_ == 2 && evacTimer_ <= 20.0) {
                 evacBeat_ = 3;
-                host.playSound(Sound::AlienHorn, 0.72f, false, {});
-                setRadio("DELTA-1", "TWENTY SECONDS! HEAVY PUSH INCOMING - HOLD THIS LINE!", 3.2f, host, true, RadioOrder);
+                if (!state_.campaign) {
+                    host.playSound(Sound::AlienHorn, 0.72f, false, {});
+                    setRadio("DELTA-1", "TWENTY SECONDS.", 2.0f, host, true, RadioOrder);
+                }
             }
             const int secs = int(std::ceil(evacTimer_));
             char sub[64];
@@ -2265,22 +2630,11 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
         }
         state_.evacSeconds = float(evacTimer_);
         if (evacTimer_ > 0) return;
-        state_.aliensRemaining = int(std::count_if(agents_.begin() + 4, agents_.end(), [&](const Agent& a) {
-            return a.used && !a.dead && planarSquared(a.actor.position - lz) < lzThreatRadius * lzThreatRadius;
-        }));
-        if (state_.aliensRemaining > 0) {
-            if (!lzCallSent_) {
-                lzCallSent_ = true;
-                setRadio("DELTA-1", "DUSTOFF ON STATION! CLEAR THE LZ - FINISH THEM!", 3.4f, host, true, RadioUrgent);
-            }
-            char sub[64];
-            std::snprintf(sub, sizeof(sub), "%d %s ON THE LZ", state_.aliensRemaining,
-                          state_.aliensRemaining == 1 ? "HOSTILE" : "HOSTILES");
-            setObjective("CLEAR THE LZ", sub);
-            return;
-        }
-        beginExfil(host);
+        beginDustoff(host);
+        return;
     }
+
+    if (state_.phase == MissionPhase::Boarding) updateBoarding(snap, dt, host);
 }
 
 void MissionController::step(Snapshot& snap, const Input& input, double dt, bool playerFired,
@@ -2304,6 +2658,9 @@ void MissionController::step(Snapshot& snap, const Input& input, double dt, bool
     if (state_.friendlyFireTimer <= 0) state_.friendlyFireWarn = false;
     state_.warningLock = false;
     updateMistDensity(dt);
+    signalEdge_ = input.edge(Signal);
+    signalHeld_ = input.down(Signal);
+    setSignalHint(nullptr);
 
     if (state_.phase == MissionPhase::Failed) {
         failDelay_ -= dt;
@@ -2312,7 +2669,7 @@ void MissionController::step(Snapshot& snap, const Input& input, double dt, bool
     }
     if (state_.phase == MissionPhase::Victory) return;
     if (exfil_) {
-        // The clock stopped when the LZ went quiet; the cutscene plays on its own time.
+        // The clock stopped when the last survivor boarded; the lift plays on its own time.
         updateExfil(snap, input, dt, host);
         pumpRadio(host);
         return;
@@ -2329,14 +2686,14 @@ void MissionController::step(Snapshot& snap, const Input& input, double dt, bool
         copyText(state_.failReason, sizeof(state_.failReason), "DELTA OPERATIVE KIA");
         writeEpilogue();
         failDelay_ = 2.0;
-        setRadio("DELTA-1", "MAN DOWN! DELTA OPERATIVE IS DOWN!", 3.0f, host, true, RadioUrgent);
+        setRadio("DELTA-1", "MAN DOWN.", 2.0f, host, true, RadioUrgent);
         return;
     }
 
     if (state_.phase == MissionPhase::Intro) {
         updateIntro(snap, input, dt, host);
         updateCommander(snap, dt, host);
-        for (int c = 1; c <= 3; ++c) updateCivilian(c, snap, dt);
+        for (int c = 1; c <= 3; ++c) updateCivilian(c, snap, dt, host);
         pumpRadio(host);
         return;
     }
@@ -2348,10 +2705,12 @@ void MissionController::step(Snapshot& snap, const Input& input, double dt, bool
     plannedThisTick_ = false;
     assignAttackTokens(snap);
     updateDroneLinks(dt);
+    updateDishPulse(dt, host);
     updateCommander(snap, dt, host);
-    for (int c = 1; c <= 3; ++c) updateCivilian(c, snap, dt);
+    for (int c = 1; c <= 3; ++c) updateCivilian(c, snap, dt, host);
     for (int i = 4; i < int(agents_.size()); ++i) updateAlien(i, snap, dt, playerFired, host);
-    checkPhaseTransitions(snap, dt, host);
+    if (state_.phase == MissionPhase::Operation) stepOperation(snap, dt, host);
+    else checkPhaseTransitions(snap, dt, host);
     pumpRadio(host);
     updateWaypoint(snap);
 }
@@ -2372,7 +2731,7 @@ void MissionController::publish(std::shared_ptr<const MissionSnapshot>& target) 
             a.actor, a.role, a.variant, a.tacRole, a.used && a.actor.visible,
             a.isDead(), a.civilian, a.alerted, a.radar,
             a.gunYaw, a.gunPitch, a.gunCharge, a.gunRecoil, shieldRatio, staggerRatio,
-            a.overcharging, a.linked, std::max(0.f, float(a.spawnFx) / arrivalDuration)
+            a.overcharging, a.linked, std::max(0.f, float(a.spawnFx) / arrivalDuration), a.chargedShot
         };
     }
     target = published_;

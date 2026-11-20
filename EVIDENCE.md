@@ -40,8 +40,30 @@ The [checked-in browser traces](reference/fixtures) cover long-lane combat, glas
 
 The 360-tick `ffa-apache` native trace checks both live rivals and the incoming Apache in one rendered frame at each resolution. It uses a fixed seed and records both rival states and the attacker and rival slots of gameplay events. The current 3,917,641-byte pack adds one bidirectional route out of the isolated south-edge pocket. The host test drives a rival out of that pocket, and the two rivals share A* search buffers while retaining separate paths. [Current pack manifest](assets/fall-of-duty.fodp.json)
 
+Journal-only playback skips renderer initialization and framebuffer allocation. Across five paired desktop runs of all 12 fixtures, median wall time for replay verification fell from 1.83 to 1.12 seconds. All 24 gameplay journals matched byte for byte.
+
 The native tests complete first-to-ten duels against both rivals. The firmware and SD release have been cross-built and checked for flash layout and image checksums. The [Guition qualification procedure](BOARD.md#replay-and-measurement) covers the remaining on-device tests for frame delivery, audio, input, and latency.
 
 ## Briar House campaign
 
-The 737-tick breakout trace opens fire from overwatch and records a plasma shock and the arrival of flankers. The 842-tick landing-zone trace resumes from the extraction checkpoint and records the timed hold, plasma shock, and the Apache fly-in. Each fixture produces an identical gameplay journal at 320×180 and 400×225. The platform tests also finish a fresh mission and a checkpoint-retry run, covering skipped and natural boarding, both Walt escort outcomes, a civilian loss after rescue, and an obstructed boarding approach. [Campaign fixtures](reference/fixtures)
+There are three campaign traces:
+
+- **Breakout (737 ticks).** Opens fire from overwatch and records a plasma shock and the arrival of flankers.
+- **Landing zone (842 ticks).** Resumes from the extraction checkpoint and records the timed hold, plasma shock and the Apache fly-in.
+- **Finale (1,320 ticks).** Starts The Array at the rear door. It holds Signal to steer the mothership's beam while riflemen push the house, and records the dish link, plasma hits and a shock.
+
+Each trace produces an identical gameplay journal at 320×180 and 400×225. The journal now also records the operation stage, the saddle lock, the dish link and the beam's distance from the dish. [Campaign fixtures](reference/fixtures)
+
+The platform tests also finish a fresh Briar House and a checkpoint-retry run, covering skipped and natural lifts and both Walt escort outcomes. Rule tests on the mission controller cover:
+
+- **Briar House.** Ben waved over from 12–16 m, the dish pulse dropping the Enforcer's linked shield, a Dustoff signal under watch drawing fire, Nora refusing the bird, a civilian lost after rescue, and an obstructed boarding path.
+- **Timberline.** Played without Nora: emitter refusals, calls landing unaware, the jammer hijack, the heavy call creeping toward the kit, and a retry that keeps the calls already answered.
+- **The Array.** Drifting onto the dish ends the mission, a burned clearing changes the ending, the last jammer holds the lock until shot, and Nora comes when signalled. A second run plays The Array without Nora and ends on Delta-1's line.
+
+The desktop platform test launches **Campaign** from the title screen and drives all three missions at difficulty 5 using scripted movement, aim, fire, Signal and menu input. The scripted player aims instantly, so its campaign clock of **3:25** is far below a human run. The test checks:
+
+- **Briar House.** Ben comes across on a Signal from range.
+- **Timberline.** Opens with Nora in the room under the dish. Painted ground moves the saucer, drops land unaware, and four calls complete it.
+- **The Array.** Opens with the garden squad unaware and ends with the beam steered around the clearing, a last jammer, the fleet setting down, and the signal to Nora. [Platform test](host/platform_tests.cpp)
+
+On desktop, a batch of 76,670 nearest-node queries across the 3,335-node valley graph matched the original linear search exactly. The median of five runs averaged 0.40 µs per lookup with the column search and 1.62 µs with the full scan. The search uses the existing node order and allocates no additional heap storage. [Navigation code](game_bot.hpp)

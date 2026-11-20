@@ -33,7 +33,9 @@ enum Button : uint32_t {
     Fire = 1u << 0, Aim = 1u << 1, Sprint = 1u << 2, Jump = 1u << 3, Stance = 1u << 4,
     Reload = 1u << 5, Swap = 1u << 6, Streak = 1u << 7, Pause = 1u << 8,
     Confirm = 1u << 9, Back = 1u << 10, Up = 1u << 11, Down = 1u << 12,
-    Left = 1u << 13, Right = 1u << 14
+    Left = 1u << 13, Right = 1u << 14,
+    // Campaign: call people, drops and ships toward you or the point you are aiming at.
+    Signal = 1u << 15
 };
 
 struct Input {
