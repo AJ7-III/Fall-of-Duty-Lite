@@ -126,6 +126,11 @@ struct BakedLight {
     float radius, strength;
 };
 
+struct FireSource {
+    Vec3 base;
+    float width, height;
+};
+
 // A column of smoke the renderer animates: puffs climb `height`, lean by `drift` at the top,
 // grow from `size` and recycle every 1 / rate seconds.
 struct SmokeSource {
@@ -162,8 +167,12 @@ constexpr Vec3 transportRotorMount{0, 3.35f, .15f};
 constexpr uint16_t alienIdlePoses = 2, alienStridePoses = 6, alienAimPoses = 2, alienRecoilPoses = 2;
 constexpr uint16_t alienTotalPoses = alienIdlePoses + alienStridePoses + alienAimPoses + alienRecoilPoses;
 constexpr uint16_t civilianCowerPoses = 2, civilianRunPoses = 6, civilianStandPose = civilianCowerPoses + civilianRunPoses;
+constexpr uint16_t civilianStandPoses = 2;
 
 struct Assets {
+    struct ArenaBaseline {
+        size_t materials = 0, textures = 0, audio = 0;
+    };
     Mesh world, weapon[3], apache, jet;
     std::vector<Mesh> rivalFrames;
     std::vector<std::vector<RivalHitbox>> rivalHitboxes;
@@ -175,17 +184,21 @@ struct Assets {
     Mesh alienTrooper, alienDrone;
     // Position-only poses that share alienTrooper's topology: idle breaths, lope, ray-gun aim, recoil.
     std::vector<Mesh> alienTrooperPoses;
-    // Enforcers: the same body armored with bone crest, spikes and blades, on the same pose layout.
+    // Enforcers share the pose layout and carry bone armor across the shoulders and arms.
     Mesh alienEnforcer;
     std::vector<Mesh> alienEnforcerPoses;
     // Sculpted alien ray guns held by troopers and enforcers, with spinning accelerator rings.
     Mesh alienRayGun, alienRayRings;
     Mesh alienHeavyRayGun, alienHeavyRayRings;
-    // Unarmed civilian: cower, run cycle, then a standing pose; outfits come from civilianUniforms.
+    std::array<Vec3, alienTotalPoses> alienGunSockets{};
+    Mesh alienUplink, alienUplinkCore;
+    // Unarmed civilian: cower, run cycle and breathing poses share the same mesh and outfit remaps.
     Mesh civilianMesh;
     std::vector<Mesh> civilianPoses;
     // Utility helicopter for the campaign's evac bird; the rotor spins about its own origin.
     Mesh transportHelo, transportRotor;
+    std::vector<FireSource> fires;
+    std::vector<Vec3> roadFlares;
     std::vector<SmokeSource> smoke;
     std::vector<MistBank> mist;
     std::array<Mesh, 3> alienFleet;
@@ -217,6 +230,7 @@ struct Assets {
     uint16_t walkFrameCount = 0, runFrameCount = 0;
     Arena arena = Arena::ShipBox;
     BriarHouseMode briarHouseMode = BriarHouseMode::Standard;
+    ArenaBaseline briarBaseline;
     ArenaExtent extent;
     std::array<SpawnPoint, 4> spawns{{
         {{-13.5f, 0, -13.5f}, pi / 4}, {{13.5f, 0, 13.5f}, -3 * pi / 4},

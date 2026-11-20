@@ -15,7 +15,7 @@ config FOD_CLASSIC_VISUALS
     default n
 
 config FOD_REPLAY_SCENE
-    string "SD replay scene (empty for live duel, long-lane or apache)"
+    string "SD replay scene (empty for live play)"
     depends on !FOD_BOARD_DIAGNOSTIC
     default ""
 

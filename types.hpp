@@ -53,7 +53,7 @@ enum class Sound : uint8_t {
     Death, Uav, Laptop, Airstrike, Rotor, Rain, KillConfirm, HeadshotConfirm, VoiceStart, VoiceKill,
     VoiceVictory, VoiceAlternateStart, VoiceAlternateKill, VoiceAlternateVictory,
     PlasmaFire, AlienDown, ConcussionRing, RadioChirp, CivilianSaved, DroneFire,
-    Heartbeat, AlienHorn, InvasionHum, AlienRoar, RayCharge, ShieldBreak, Count
+    Heartbeat, AlienHorn, InvasionHum, AlienRoar, RayCharge, ShieldBreak, PlasmaShock, Count
 };
 
 constexpr bool isVoiceSound(Sound sound) {

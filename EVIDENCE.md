@@ -41,3 +41,7 @@ The [checked-in browser traces](reference/fixtures) cover long-lane combat, glas
 The 360-tick `ffa-apache` native trace checks both live rivals and the incoming Apache in one rendered frame at each resolution. It uses a fixed seed and records both rival states and the attacker and rival slots of gameplay events. The current 3,917,641-byte pack adds one bidirectional route out of the isolated south-edge pocket. The host test drives a rival out of that pocket, and the two rivals share A* search buffers while retaining separate paths. [Current pack manifest](assets/fall-of-duty.fodp.json)
 
 The native tests complete first-to-ten duels against both rivals. The firmware and SD release have been cross-built and checked for flash layout and image checksums. The [Guition qualification procedure](BOARD.md#replay-and-measurement) covers the remaining on-device tests for frame delivery, audio, input, and latency.
+
+## Briar House campaign
+
+The 737-tick breakout trace opens fire from overwatch and records a plasma shock and the arrival of flankers. The 842-tick landing-zone trace resumes from the extraction checkpoint and records the timed hold, plasma shock, and the Apache fly-in. Each fixture produces an identical gameplay journal at 320×180 and 400×225. The platform tests also finish a fresh mission and a checkpoint-retry run, covering skipped and natural boarding, both Walt escort outcomes, a civilian loss after rescue, and an obstructed boarding approach. [Campaign fixtures](reference/fixtures)

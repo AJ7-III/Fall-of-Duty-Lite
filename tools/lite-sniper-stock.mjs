@@ -63,10 +63,12 @@ function buildStock(parent, rubber) {
       const fiber = .5 * Math.sin(x * .23 + y * .037) + 1.1 * Math.sin(y * .17);
       const u = x * 2 * Math.PI / size, v = y * 2 * Math.PI / size;
       const brush = Math.sin(2 * v + .70 * Math.cos(u + 2 * v)) + .44 * Math.cos(2 * u - 3 * v);
-      const tan = Math.max(0, Math.min(1, (brush - .46) * 2.5));
-      const shade = Math.max(0, -brush - .21) * 15;
-      const wear = grain + fiber - shade;
-      image.data.set([84 + 39 * tan + wear, 98 + 13 * tan + wear, 71 + 3 * tan + wear, 255], i * 4);
+      const tan = Math.max(0, Math.min(1, (brush - .35) * 2.3));
+      const charcoal = Math.max(0, Math.min(1, (-brush - .49) * 2.7));
+      const scuff = hash % 211 < 4 ? 11 : 0;
+      const wear = grain + fiber + scuff;
+      image.data.set([84 + 44 * tan - 28 * charcoal + wear, 96 + 13 * tan - 31 * charcoal + wear,
+        72 + 10 * tan - 13 * charcoal + wear, 255], i * 4);
     }
     ctx.putImageData(image, 0, 0);
   });
@@ -93,8 +95,10 @@ export function buildLiteSniper(scene) {
         const h = radius * Math.cos(angle), v = radius * Math.sin(angle);
         const glow = Math.exp(-5 * (h + .19) ** 2 - 19 * (v - .30) ** 2);
         const glint = Math.exp(-92 * (h - .17) ** 2 - 150 * (v - .44) ** 2);
-        const light = 35 * glow + 39 * glint;
-        image.data.set([13 + light * .60, 23 + light * .95, 26 + light, 255], (y * size + x) * 4);
+        const rim = Math.max(0, (radius - .81) / .19) * (0.5 + 0.5 * Math.cos(angle + 1.1));
+        const reflection = 44 * glow + 56 * glint;
+        image.data.set([12 + reflection * .34 + rim * 22, 22 + reflection * .94 + rim * 8,
+          28 + reflection + rim * 13, 255], (y * size + x) * 4);
       }
     }
     ctx.putImageData(image, 0, 0);

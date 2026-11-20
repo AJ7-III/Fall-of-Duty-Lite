@@ -55,8 +55,11 @@ public:
     explicit World(const Assets& assets) : assets_(assets) {
         boxBounds_.reserve(assets.obstacles.size());
         for (const auto& b : assets.obstacles) {
-            const float ex = std::abs(b.cos) * b.hw + std::abs(b.sin) * b.hd;
-            const float ez = std::abs(b.sin) * b.hw + std::abs(b.cos) * b.hd;
+            // Packed rotations can be slightly short of unit length. The inverse
+            // transform then makes the actual obstacle wider than a pure rotation.
+            const float scale = std::max(1.f, 1.f / (b.cos * b.cos + b.sin * b.sin));
+            const float ex = (std::abs(b.cos) * b.hw + std::abs(b.sin) * b.hd) * scale;
+            const float ez = (std::abs(b.sin) * b.hw + std::abs(b.cos) * b.hd) * scale;
             boxBounds_.push_back({{b.cx - ex, b.minY, b.cz - ez}, {b.cx + ex, b.maxY, b.cz + ez}});
         }
     }
@@ -72,8 +75,11 @@ public:
     float clampZ(float z) const { return std::clamp(z, -assets_.extent.z, assets_.extent.z); }
 
     bool canStand(Vec3 pos, float eye) const {
-        for (const auto& b : assets_.obstacles) {
+        const float margin = rotationMargin(.38f);
+        for (size_t i = 0; i < boxBounds_.size(); ++i) {
+            const auto& b = assets_.obstacles[i];
             if (b.maxY <= pos.y + .05f || b.minY >= pos.y + eye + .15f) continue;
+            if (outsideXZ(pos, boxBounds_[i], margin)) continue;
             const Vec3 p = local(b, pos);
             if (std::abs(p.x) < b.hw + .38f && std::abs(p.z) < b.hd + .38f) return false;
         }
@@ -81,10 +87,18 @@ public:
     }
 
     bool walkBlocked(Vec3 from, Vec3 to) const {
-        for (const auto& b : assets_.obstacles) {
+        constexpr float pad = .42f;
+        const float margin = rotationMargin(pad);
+        const Vec3 delta = to - from;
+        const float left = std::min(from.x, to.x) - margin, right = std::max(from.x, to.x) + margin;
+        const float front = std::min(from.z, to.z) - margin, back = std::max(from.z, to.z) + margin;
+        for (size_t i = 0; i < boxBounds_.size(); ++i) {
+            const auto& bounds = boxBounds_[i];
+            if (bounds.min.x > right || bounds.max.x < left || bounds.min.z > back || bounds.max.z < front) continue;
+            const auto& b = assets_.obstacles[i];
             if (b.minY > 1.75f || b.maxY < .15f) continue;
-            const Vec3 p = local(b, from), d = localDirection(b, to - from);
-            const float w = b.hw + .42f, h = b.hd + .42f;
+            const Vec3 p = local(b, from), d = localDirection(b, delta);
+            const float w = b.hw + pad, h = b.hd + pad;
             if ((std::abs(d.x) < 1e-8f && std::abs(p.x) >= w) ||
                 (std::abs(d.z) < 1e-8f && std::abs(p.z) >= h)) continue;
             float first = 0, last = 1;
@@ -135,6 +149,14 @@ private:
     const Assets& assets_;
     std::vector<Bounds> boxBounds_;
 
+    // Rotating an expanded obstacle can add up to sqrt(2) times the local clearance on either axis.
+    static constexpr float rotationMargin(float clearance) { return clearance * 1.415f + .0001f; }
+
+    static bool outsideXZ(Vec3 p, const Bounds& box, float margin) {
+        return p.x < box.min.x - margin || p.x > box.max.x + margin ||
+               p.z < box.min.z - margin || p.z > box.max.z + margin;
+    }
+
     static float triangle(Vec3 p, Vec3 d, const std::array<Vec3, 3>& corners) {
         const auto& [a, b, c] = corners;
         const Vec3 e = b - a, f = c - a;
@@ -153,13 +175,20 @@ private:
     }
 
     float boxRay(Vec3 p, Vec3 d, float maxDistance, bool any) const {
+        const Vec3 end = p + d * maxDistance;
+        constexpr float epsilon = .0001f;
+        const Vec3 lo{std::min(p.x, end.x) - epsilon, std::min(p.y, end.y) - epsilon, std::min(p.z, end.z) - epsilon};
+        const Vec3 hi{std::max(p.x, end.x) + epsilon, std::max(p.y, end.y) + epsilon, std::max(p.z, end.z) + epsilon};
         float best = maxDistance;
         bool hit = false;
         for (size_t i = 0; i < boxBounds_.size(); ++i) {
+            const auto& bounds = boxBounds_[i];
+            if (bounds.min.x > hi.x || bounds.max.x < lo.x || bounds.min.z > hi.z ||
+                bounds.max.z < lo.z || bounds.min.y > hi.y || bounds.max.y < lo.y) continue;
             const auto& b = assets_.obstacles[i];
             if (!b.blocksSight) continue;
             float first = 0;
-            if (!intersects(p, d, boxBounds_[i], first, best)) continue;
+            if (!intersects(p, d, bounds, first, best)) continue;
             first = 0;
             if (intersects(local(b, p), localDirection(b, d),
                            {{-b.hw, b.minY, -b.hd}, {b.hw, b.maxY, b.hd}}, first, best)) {
@@ -173,9 +202,12 @@ private:
 
     bool moveStep(Vec3& pos, Vec3& v, float dt, float height, float radius) const {
         Vec3 next{clampX(pos.x + v.x * dt), pos.y, clampZ(pos.z + v.z * dt)};
+        const float margin = rotationMargin(radius);
         for (int pass = 0; pass < 2; ++pass) {
             bool pushed = false;
-            for (const auto& b : assets_.obstacles) {
+            for (size_t i = 0; i < boxBounds_.size(); ++i) {
+                if (outsideXZ(next, boxBounds_[i], margin)) continue;
+                const auto& b = assets_.obstacles[i];
                 if (pos.y >= b.maxY || pos.y + height <= b.minY) continue;
                 Vec3 p = local(b, next);
                 const float x = b.hw + radius - std::abs(p.x), z = b.hd + radius - std::abs(p.z);
@@ -205,7 +237,9 @@ private:
         next.y += (vy + .5f * gravity * dt) * dt;
         v.y += gravity * dt;
         float floor = 0, roof = infinity;
-        for (const auto& b : assets_.obstacles) {
+        for (size_t i = 0; i < boxBounds_.size(); ++i) {
+            if (outsideXZ(next, boxBounds_[i], margin)) continue;
+            const auto& b = assets_.obstacles[i];
             const bool landing = v.y <= 0 && apex >= b.maxY - .05f && next.y <= b.maxY;
             const bool bonk = vy > 0 && pos.y + height <= b.minY + .05f && apex + height > b.minY;
             if (!landing && !bonk) continue;

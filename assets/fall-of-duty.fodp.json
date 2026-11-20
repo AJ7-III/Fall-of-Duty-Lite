@@ -1,8 +1,8 @@
 {
   "format": "FODPACK",
-  "sourceRevision": "d51ab91098444897e71b29dfce1ac9cbab7add05",
+  "sourceRevision": "44aa4a0efa5ae28338838ef14b34ef89df751cae",
   "sourceDirty": true,
-  "inputLockSha256": "8625be2922221e3150f09ce4150ba33fb64aebc3d500331dfde73306e9f109b7",
+  "inputLockSha256": "a969c7dfff40685aafb100fb8aefbd9222359e5cd2f5104a82bc9f18e320b22c",
   "babylon": "9.36.0",
   "playwright": "1.65.0",
   "art": {
@@ -915,7 +915,7 @@
     true
   ],
   "uniqueShotVertices": 20293,
-  "storedBytes": 3917641,
+  "storedBytes": 3959160,
   "sections": [
     {
       "name": "materials",
@@ -926,10 +926,10 @@
     },
     {
       "name": "textures",
-      "storedBytes": 473592,
+      "storedBytes": 515111,
       "unpackedBytes": 2404624,
       "decodedPayloadBytes": 2404352,
-      "crc32": "b91d3de2"
+      "crc32": "398ae460"
     },
     {
       "name": "mesh geometry",
@@ -1016,5 +1016,5 @@
       "crc32": "82663211"
     }
   ],
-  "sha256": "5d762a4a7636a564e1246680a995b6ace08f066ab460083b1151dfe93588c23c"
+  "sha256": "9249fe4599dd6eb74aa2cfed0bda5808c81ea18cdf0550977f7701e0c13cd63c"
 }

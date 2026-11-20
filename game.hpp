@@ -131,6 +131,7 @@ public:
     void start(uint32_t seed, int difficulty, bool alternateRival = false);
     void start(uint32_t seed, int difficulty, Opponent opponent);
     void startMission(uint32_t seed, int difficulty, bool fromCheckpoint = false);
+    void startExtractionReplay(uint32_t seed, int difficulty);
     bool isMission() const;
     bool canRetryCheckpoint() const;
     void pause();

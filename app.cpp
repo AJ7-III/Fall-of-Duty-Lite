@@ -6,6 +6,24 @@
 #include <cstring>
 
 namespace fod {
+namespace {
+
+void moveSelection(int& row, const Input& input, int rows) {
+    const int direction = int(input.edge(Down)) - int(input.edge(Up));
+    if (direction) row = (row + rows + direction) % rows;
+}
+
+int touchMenuRow(const Input& input, int rows) {
+    const int y = input.touchY - menuY;
+    if (input.touchX < menuX || input.touchX >= menuX + menuWidth || y < 0 || y >= rows * menuRowHeight) return -1;
+    return y / menuRowHeight;
+}
+
+void toggleArena(Arena& arena) {
+    arena = arena == Arena::ShipBox ? Arena::BriarHouse : Arena::ShipBox;
+}
+
+} // namespace
 
 App::App(const Assets& assets, uint32_t voiceSeed)
     : game(assets, voiceSeed), audio(assets, voiceSeed ? voiceSeed ^ 0x29ea2831u : 0u),
@@ -23,13 +41,17 @@ void App::startImmediate(bool asCampaign) {
     menu_.selection = PlayRow;
     audio.setVolume(menu_.volume);
     audio.pauseSpeech(false);
+    beginMatch(false);
+}
+
+void App::beginMatch(bool retryCheckpoint) {
     audio.stopSpeech();
-    if (asCampaign) game.startMission(seed_++, menu_.difficulty, false);
+    if (menu_.campaign) game.startMission(seed_++, menu_.difficulty, retryCheckpoint);
     else game.start(seed_++, menu_.difficulty, menu_.opponent);
     routeAudio();
 }
 
-void App::stopRotor() {
+void App::stopAmbientLoops() {
     if (rotor_) {
         audio.stop(Sound::Rotor);
         rotor_ = false;
@@ -45,9 +67,7 @@ void App::routeAudio() {
     for (size_t i = 0; i < game.eventCount(); ++i) {
         const auto& event = game.events()[i];
         if (event.kind != EventKind::Sound) continue;
-        const bool voice = event.sound >= Sound::VoiceStart && event.sound <= Sound::VoiceAlternateVictory;
-        if (voice && !menu_.voice) continue;
-        if (event.sound == Sound::RadioChirp && !menu_.voice) continue;
+        if (!menu_.voice && (isVoiceSound(event.sound) || event.sound == Sound::RadioChirp)) continue;
         float gain = event.volume, pan = 0;
         if (event.positional) {
             const Vec3 direction = event.position - snapshot.camera.position;
@@ -83,11 +103,6 @@ void App::routeAudio() {
         audio.stop(Sound::InvasionHum);
         invasionHum_ = false;
     }
-}
-
-void App::select(int step) {
-    const int count = state().match == Match::Start ? MenuRows - 1 : MenuRows;
-    menu_.selection = (menu_.selection + count + step) % count;
 }
 
 void App::change(int direction) {
@@ -135,167 +150,165 @@ void App::startOrResume(const Input& input) {
     audio.pauseSpeech(false);
     if (state().match == Match::Paused) game.resume(input.down(Fire));
     else {
-        audio.stopSpeech();
-        if (menu_.campaign) {
-            const bool retryCheckpoint = state().match == Match::Results && state().mission &&
-                                         state().mission->phase == MissionPhase::Failed && game.canRetryCheckpoint();
-            game.startMission(seed_++, menu_.difficulty, retryCheckpoint);
-        } else {
-            game.start(seed_++, menu_.difficulty, menu_.opponent);
-        }
-        routeAudio();
+        const auto& snapshot = state();
+        const bool retryCheckpoint = menu_.campaign && snapshot.match == Match::Results && snapshot.mission &&
+                                     snapshot.mission->phase == MissionPhase::Failed && game.canRetryCheckpoint();
+        beginMatch(retryCheckpoint);
     }
     constexpr uint32_t actions = Fire | Reload | Stance | Swap | Streak | Jump;
     blockedActions_ = input.held & actions;
 }
 
+void App::returnToStartMenu() {
+    menu_.setup = false;
+    menu_.selection = int(menu_.campaign ? StartItem::Campaign : StartItem::BotMatch);
+}
+
+void App::startMenuInput(const Input& input) {
+    moveSelection(menu_.selection, input, int(startCards.size()));
+    const auto selected = StartItem(menu_.selection);
+    if ((input.edge(Left) || input.edge(Right)) &&
+        (selected == StartItem::BotMatch || selected == StartItem::MultiplayerLan)) {
+        toggleArena(menu_.selectedArena);
+    }
+    int touch = -1;
+    if (input.touchX >= startX && input.touchX < startX + startWidth) {
+        for (size_t i = 0; i < startCards.size(); ++i) {
+            const auto& card = startCards[i];
+            if (input.touchY >= card.y && input.touchY < card.y + card.height) {
+                touch = int(i);
+                break;
+            }
+        }
+    }
+    if (touch >= 0) menu_.selection = touch;
+    if (touch < 0 && !input.edge(Confirm)) return;
+
+    switch (StartItem(menu_.selection)) {
+    case StartItem::Campaign:
+        menu_.campaign = true;
+        if (loadedArena_ == Arena::BriarHouse && loadedBriarMode_ == BriarHouseMode::Invasion) startOrResume(input);
+        else menu_.pendingLaunch = LaunchAction::Campaign;
+        break;
+    case StartItem::BotMatch:
+        menu_.campaign = false;
+        if (loadedArena_ == menu_.selectedArena &&
+            (loadedArena_ == Arena::ShipBox || loadedBriarMode_ == BriarHouseMode::Standard)) startOrResume(input);
+        else menu_.pendingLaunch = LaunchAction::BotMatch;
+        break;
+    case StartItem::MultiplayerLan:
+        menu_.lanMenu = true;
+        menu_.selection = LanStartRow;
+        break;
+    case StartItem::MatchSetup:
+        menu_.setup = true;
+        menu_.selection = DifficultyRow;
+        break;
+    case StartItem::Count:
+        break;
+    }
+}
+
+void App::lanMenuInput(const Input& input) {
+    const auto close = [&] {
+        menu_.lanMenu = false;
+        menu_.selection = int(StartItem::MultiplayerLan);
+    };
+    if (input.edge(Back) || input.edge(Pause)) {
+        close();
+        return;
+    }
+    moveSelection(menu_.selection, input, LanRows);
+    if (menu_.selection == LanArenaRow && (input.edge(Left) || input.edge(Right))) toggleArena(menu_.selectedArena);
+    const int touch = touchMenuRow(input, LanRows);
+    if (touch >= 0) menu_.selection = touch;
+    if (touch < 0 && !input.edge(Confirm)) return;
+
+    if (menu_.selection == LanStartRow) {
+#ifdef FOD_LOCAL_DUEL
+        menu_.lanMenu = false;
+        menu_.pendingLaunch = LaunchAction::LocalDuel;
+#endif
+    } else if (menu_.selection == LanArenaRow) {
+        toggleArena(menu_.selectedArena);
+    } else if (menu_.selection == LanBackRow) {
+        close();
+    }
+}
+
+void App::callsignInput(const Input& input) {
+    const bool finishTouch = input.touchX >= menuX && input.touchX < menuX + menuWidth &&
+                             input.touchY >= 374 && input.touchY < 410;
+    if (input.edge(Confirm) || input.edge(Back) || input.edge(Pause) || finishTouch) {
+        menu_.editing = false;
+        return;
+    }
+    const int size = int(menu_.callsign.size()) - 1;
+    auto& name = menu_.callsign;
+    const int gridX = input.touchX - keyboardX, gridY = input.touchY - keyboardY;
+    if (gridX >= 0 && gridX < keyboardColumns * keyWidth && gridY >= 0 && gridY < 4 * keyHeight) {
+        const char key = callsignKeys[gridY / keyHeight * keyboardColumns + gridX / keyWidth];
+        const int length = int(std::strlen(name.data()));
+        if (key == '<') {
+            const int index = std::min(menu_.callsignCursor, length);
+            if (index > 0) {
+                std::memmove(name.data() + index - 1, name.data() + index, size_t(length - index + 1));
+                menu_.callsignCursor = index - 1;
+            }
+        } else if (menu_.callsignCursor < size) {
+            name[menu_.callsignCursor++] = key;
+        }
+        return;
+    }
+    if (input.edge(Left)) menu_.callsignCursor = std::max(0, menu_.callsignCursor - 1);
+    if (input.edge(Right)) menu_.callsignCursor = std::min({size, menu_.callsignCursor + 1, int(std::strlen(name.data()))});
+    if (menu_.callsignCursor < size && (input.edge(Up) || input.edge(Down))) {
+        static constexpr char alphabet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+        const char current = name[menu_.callsignCursor];
+        const char* found = current ? std::strchr(alphabet, current) : alphabet;
+        const int offset = found ? int(found - alphabet) : 0;
+        const int span = int(sizeof(alphabet)) - 1;
+        name[menu_.callsignCursor] = alphabet[(offset + span + (input.edge(Up) ? 1 : -1)) % span];
+    }
+}
+
 void App::menuInput(const Input& input) {
     const bool starting = state().match == Match::Start;
-    if (starting && menu_.lanMenu) {
-        if (input.edge(Back) || input.edge(Pause)) {
-            menu_.lanMenu = false;
-            menu_.selection = int(StartItem::MultiplayerLan);
-            return;
-        }
-        if (input.edge(Up)) menu_.selection = (menu_.selection + LanRows - 1) % LanRows;
-        if (input.edge(Down)) menu_.selection = (menu_.selection + 1) % LanRows;
-        if (menu_.selection == LanArenaRow && (input.edge(Left) || input.edge(Right))) {
-            menu_.selectedArena = menu_.selectedArena == Arena::ShipBox ? Arena::BriarHouse : Arena::ShipBox;
-        }
-        const bool touch = input.touchX >= menuX && input.touchX < menuX + menuWidth &&
-                           input.touchY >= menuY && input.touchY < menuY + menuRowHeight * LanRows;
-        if (touch) menu_.selection = (input.touchY - menuY) / menuRowHeight;
-        if (!touch && !input.edge(Confirm)) return;
-        if (menu_.selection == LanStartRow) {
-#ifdef FOD_LOCAL_DUEL
-            menu_.lanMenu = false;
-            menu_.pendingLaunch = LaunchAction::LocalDuel;
-#endif
-        } else if (menu_.selection == LanArenaRow) {
-            menu_.selectedArena = menu_.selectedArena == Arena::ShipBox ? Arena::BriarHouse : Arena::ShipBox;
-        } else if (menu_.selection == LanBackRow) {
-            menu_.lanMenu = false;
-            menu_.selection = int(StartItem::MultiplayerLan);
-        }
-        return;
-    }
-
-    if (starting && !menu_.setup) {
-        constexpr int items = int(StartItem::Count);
-        if (input.edge(Up)) menu_.selection = (menu_.selection + items - 1) % items;
-        if (input.edge(Down)) menu_.selection = (menu_.selection + 1) % items;
-        if ((input.edge(Left) || input.edge(Right)) &&
-            (menu_.selection == int(StartItem::BotMatch) || menu_.selection == int(StartItem::MultiplayerLan))) {
-            menu_.selectedArena = menu_.selectedArena == Arena::ShipBox ? Arena::BriarHouse : Arena::ShipBox;
-        }
-        const bool inColumn = input.touchX >= startX && input.touchX < startX + startWidth;
-        const bool hitCampaign = inColumn && input.touchY >= campaignY && input.touchY < campaignY + campaignHeight;
-        const bool hitBotMatch = inColumn && input.touchY >= startY && input.touchY < startY + startHeight;
-        const bool hitLan = inColumn && input.touchY >= lanY && input.touchY < lanY + lanHeight;
-        const bool hitSetup = inColumn && input.touchY >= setupY && input.touchY < setupY + setupHeight;
-        if (hitCampaign) menu_.selection = int(StartItem::Campaign);
-        else if (hitBotMatch) menu_.selection = int(StartItem::BotMatch);
-        else if (hitLan) menu_.selection = int(StartItem::MultiplayerLan);
-        else if (hitSetup) menu_.selection = int(StartItem::MatchSetup);
-
-        const bool activate = hitCampaign || hitBotMatch || hitLan || hitSetup || input.edge(Confirm);
-        if (!activate) return;
-
-        if (menu_.selection == int(StartItem::Campaign)) {
-            menu_.campaign = true;
-            if (loadedArena_ == Arena::BriarHouse && loadedBriarMode_ == BriarHouseMode::Invasion) {
-                startOrResume(input);
-            } else {
-                menu_.pendingLaunch = LaunchAction::Campaign;
-            }
-        } else if (menu_.selection == int(StartItem::BotMatch)) {
-            menu_.campaign = false;
-            const bool loadedMatches = loadedArena_ == menu_.selectedArena &&
-                                       (loadedArena_ == Arena::ShipBox || loadedBriarMode_ == BriarHouseMode::Standard);
-            if (loadedMatches) {
-                startOrResume(input);
-            } else {
-                menu_.pendingLaunch = LaunchAction::BotMatch;
-            }
-        } else if (menu_.selection == int(StartItem::MultiplayerLan)) {
-            menu_.lanMenu = true;
-            menu_.selection = LanStartRow;
-        } else if (menu_.selection == int(StartItem::MatchSetup)) {
-            menu_.setup = true;
-            menu_.selection = DifficultyRow;
-        }
-        return;
-    }
-    if (menu_.editing) {
-        const bool finishTouch = input.touchX >= menuX && input.touchX < menuX + menuWidth &&
-                                 input.touchY >= 374 && input.touchY < 410;
-        if (input.edge(Confirm) || input.edge(Back) || input.edge(Pause) || finishTouch) {
-            menu_.editing = false;
-            return;
-        }
-        const int size = int(menu_.callsign.size()) - 1;
-        auto& name = menu_.callsign;
-        const int gridX = input.touchX - keyboardX, gridY = input.touchY - keyboardY;
-        if (gridX >= 0 && gridX < keyboardColumns * keyWidth && gridY >= 0 && gridY < 4 * keyHeight) {
-            const char key = callsignKeys[gridY / keyHeight * keyboardColumns + gridX / keyWidth];
-            const int length = int(std::strlen(name.data()));
-            if (key == '<') {
-                const int index = std::min(menu_.callsignCursor, length);
-                if (index > 0) {
-                    std::memmove(name.data() + index - 1, name.data() + index, size_t(length - index + 1));
-                    menu_.callsignCursor = index - 1;
-                }
-            } else if (menu_.callsignCursor < size) {
-                name[menu_.callsignCursor++] = key;
-            }
-            return;
-        }
-        if (input.edge(Left)) menu_.callsignCursor = std::max(0, menu_.callsignCursor - 1);
-        if (input.edge(Right)) menu_.callsignCursor = std::min({size, menu_.callsignCursor + 1, int(std::strlen(name.data()))});
-        if (menu_.callsignCursor < size && (input.edge(Up) || input.edge(Down))) {
-            static constexpr char alphabet[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
-            const char current = name[menu_.callsignCursor];
-            const char* found = current ? std::strchr(alphabet, current) : alphabet;
-            const int offset = found ? int(found - alphabet) : 0;
-            const int span = int(sizeof(alphabet)) - 1;
-            name[menu_.callsignCursor] = alphabet[(offset + span + (input.edge(Up) ? 1 : -1)) % span];
-        }
-        return;
-    }
+    if (starting && menu_.lanMenu) return lanMenuInput(input);
+    if (starting && !menu_.setup) return startMenuInput(input);
+    if (menu_.editing) return callsignInput(input);
 
     if (starting && (input.edge(Back) || input.edge(Pause))) {
-        menu_.setup = false;
-        menu_.selection = menu_.campaign ? int(StartItem::Campaign) : int(StartItem::BotMatch);
+        returnToStartMenu();
         return;
     }
-    if (input.edge(Up)) select(-1);
-    if (input.edge(Down)) select(1);
+    const int rows = starting ? MenuRows - 1 : MenuRows;
+    moveSelection(menu_.selection, input, rows);
     if (input.edge(Left)) change(-1);
     if (input.edge(Right)) change(1);
 
-    const bool touch = input.touchX >= menuX && input.touchX < menuX + menuWidth && input.touchY >= menuY &&
-                       input.touchY < menuY + menuRowHeight * (starting ? MenuRows - 1 : MenuRows);
-    if (touch) menu_.selection = (input.touchY - menuY) / menuRowHeight;
+    const int touchedRow = touchMenuRow(input, rows);
+    const bool touch = touchedRow >= 0;
+    if (touch) menu_.selection = touchedRow;
     const bool resume = state().match == Match::Paused && (input.edge(Pause) || input.edge(Back) ||
                         ((touch || input.edge(Confirm)) && menu_.selection == PlayRow));
     const bool confirm = touch || input.edge(Confirm);
     if (!resume && !confirm) return;
     if (starting && menu_.selection == PlayRow) {
-        menu_.setup = false;
-        menu_.selection = menu_.campaign ? int(StartItem::Campaign) : int(StartItem::BotMatch);
+        returnToStartMenu();
     } else if (resume || menu_.selection == PlayRow) {
         startOrResume(input);
     } else if (menu_.selection == ExitRow) {
         game.quit();
         if (state().match == Match::Start) {
             audio.stopSpeech();
-            menu_.selection = menu_.campaign ? int(StartItem::Campaign) : int(StartItem::BotMatch);
+            returnToStartMenu();
         } else {
             menu_.selection = PlayRow;
         }
         audio.pauseSpeech(false);
         routeAudio();
-        stopRotor();
+        stopAmbientLoops();
     } else {
         change(touch && input.touchX < menuX + menuWidth / 2 ? -1 : 1);
     }
@@ -305,12 +318,7 @@ void App::tick(Input input) {
     if (input.disconnected) {
         if (connected_) {
             connected_ = false;
-            game.pause();
-            if (state().match == Match::Paused) {
-                audio.pauseSpeech(true);
-                menu_.selection = PlayRow;
-            }
-            stopRotor();
+            pauseMatch();
         }
         blockedActions_ = 0;
         if (input.touchX < 0) return;
@@ -322,10 +330,7 @@ void App::tick(Input input) {
         return;
     }
     if (input.edge(Pause) || (input.touchX >= 735 && input.touchY >= 0 && input.touchY < 30)) {
-        game.pause();
-        audio.pauseSpeech(true);
-        menu_.selection = 0;
-        stopRotor();
+        pauseMatch();
         return;
     }
     const uint32_t wasBlocked = blockedActions_;
@@ -335,9 +340,18 @@ void App::tick(Input input) {
     game.step(input);
     routeAudio();
     if (state().match == Match::Results) {
-        stopRotor();
-        menu_.selection = 0;
+        stopAmbientLoops();
+        menu_.selection = PlayRow;
     }
+}
+
+void App::pauseMatch() {
+    game.pause();
+    if (state().match == Match::Paused) {
+        audio.pauseSpeech(true);
+        menu_.selection = PlayRow;
+    }
+    stopAmbientLoops();
 }
 
 } // namespace fod

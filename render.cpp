@@ -1,5 +1,6 @@
 #include "render.hpp"
 #include "assets.hpp"
+#include "atmosphere_masks.hpp"
 #include "game_data.hpp"
 #include "light.hpp"
 #include "mission.hpp"
@@ -51,7 +52,7 @@ struct LitVertex {
     float light;
 };
 
-enum class Fill { Surface, Sky, Shadow };
+enum class Fill { Textured, Flat, Sky, Shadow };
 
 struct PosedVertex {
     Vec3 world, camera;
@@ -82,7 +83,8 @@ struct View {
         const auto radius = [extent](Vec3 normal) {
             return std::abs(normal.x) * extent.x + std::abs(normal.y) * extent.y + std::abs(normal.z) * extent.z;
         };
-        if (local.z + radius(forward) < near || local.z - radius(forward) > 110) return false;
+        const float zRadius = radius(forward);
+        if (local.z + zRadius < near || local.z - zRadius > 110) return false;
         return xSlope * local.z - local.x + radius(forward * xSlope - right) >= 0 &&
                xSlope * local.z + local.x + radius(forward * xSlope + right) >= 0 &&
                ySlope * local.z - local.y + radius(forward * ySlope - up) >= 0 &&
@@ -172,6 +174,37 @@ LitVertex cut(const LitVertex& a, const LitVertex& b, float z) {
 float depthOf(const Vertex& vertex) { return vertex.position.z; }
 float depthOf(const LitVertex& vertex) { return vertex.vertex.position.z; }
 
+bool projectSegment(const View& view, Vec3 from, Vec3 to, Projected& p, Projected& q) {
+    Vertex a{from, 0, 0}, b{to, 0, 0};
+    if (from.z < view.near && to.z < view.near) return false;
+    if (from.z < view.near) a = cut(a, b, view.near);
+    if (to.z < view.near) b = cut(b, a, view.near);
+    p = view.project(a);
+    q = view.project(b);
+    return true;
+}
+
+struct SampleRange { int first, last; };
+
+SampleRange visibleSamples(const View& view, const Projected& a, const Projected& b, int count, float pad) {
+    float first = 0.f, last = 1.f;
+    const auto clipAxis = [&](float from, float to, float size) {
+        const float lo = -pad, hi = size + pad;
+        if ((from < lo && to < lo) || (from > hi && to > hi)) return false;
+        const float step = to - from;
+        if (from < lo) first = std::max(first, (lo - from) / step);
+        else if (from > hi) first = std::max(first, (hi - from) / step);
+        if (to < lo) last = std::min(last, (lo - from) / step);
+        else if (to > hi) last = std::min(last, (hi - from) / step);
+        return first <= last;
+    };
+    if (!clipAxis(a.x, b.x, float(view.width)) || !clipAxis(a.y, b.y, float(view.height))) return {1, 0};
+    // Keep the original sampling grid. Only skip samples beyond the padded viewport.
+    return {std::max(0, int(first * count) - 1), std::min(count, int(last * count) + 1)};
+}
+
+float unitCycle(float phase) { return phase - std::trunc(phase); }
+
 bool intact(const Snapshot& state, int16_t glass) {
     return glass < 0 || glass >= 64 || !(state.brokenGlass & (uint64_t(1) << glass));
 }
@@ -243,6 +276,28 @@ uint16_t rgbClamped(float r, float g, float b) {
                std::clamp(int(b + 0.5f), 0, 255));
 }
 
+// Face axes match the panorama conversion in the exporter.
+struct SkyAxes { Vec3 normal, right, vertical; };
+constexpr SkyAxes skyAxes[]{
+    {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}}, {{0, 0, -1}, {-1, 0, 0}, {0, 1, 0}},
+    {{1, 0, 0}, {0, 0, -1}, {0, 1, 0}}, {{-1, 0, 0}, {0, 0, 1}, {0, 1, 0}},
+    {{0, 1, 0}, {1, 0, 0}, {0, 0, -1}}, {{0, -1, 0}, {1, 0, 0}, {0, 0, 1}},
+};
+
+Vec3 duskGradient(float elevation) {
+    struct Stop { float elevation; Vec3 color; };
+    constexpr Stop palette[]{
+        {-1.f, {74, 58, 65}}, {0.f, {185, 96, 76}}, {.15f, {150, 72, 76}},
+        {.39f, {86, 58, 85}}, {.68f, {39, 43, 72}}, {1.f, {24, 30, 56}},
+    };
+    size_t next = 1;
+    while (next + 1 < std::size(palette) && elevation > palette[next].elevation) ++next;
+    const auto& a = palette[next - 1];
+    const auto& b = palette[next];
+    const float t = (elevation - a.elevation) / (b.elevation - a.elevation);
+    return a.color + (b.color - a.color) * t;
+}
+
 Texture halfTexture(const Texture& source) {
     Texture texture{std::max(1, source.width / 2), std::max(1, source.height / 2), {}};
     texture.pixels.resize(texture.width * texture.height);
@@ -293,6 +348,17 @@ struct Renderer::Impl {
     std::array<uint32_t, 33> hazeBlend{};
     float hazeStart = 0;
     int duskMistBucket = -1;
+    struct AirSprite {
+        float x, y, width, height;
+        uint16_t back, front, top, bottom;
+        uint8_t alpha;
+        const atmosphere::Mask* mask;
+    };
+    static constexpr size_t mistLayers = 2, smokePuffs = 10, fireParticles = 8, flarePuffs = 2;
+    std::vector<AirSprite> airSprites;
+    struct FireOffset { float phase, x, z; };
+    struct FirePattern { std::array<FireOffset, fireParticles> flames, sparks; };
+    std::vector<FirePattern> firePatterns;
     // Per-frame glowing muzzle orbs and shield rims collected during drawMissionActor.
     struct MuzzleGlow {
         Vec3 pos{};
@@ -300,6 +366,7 @@ struct Renderer::Impl {
         uint16_t core = 0, halo = 0;
         float intensity = 0;
         bool star = false;
+        bool plasma = false;
     };
     struct ShieldGlow {
         Vec3 pos{};
@@ -325,6 +392,21 @@ struct Renderer::Impl {
         : assets(source), enhanced(look == RenderLook::Enhanced),
           invasionDusk(source.arena == Arena::BriarHouse && source.briarHouseMode == BriarHouseMode::Invasion),
           depth(maxPixels) {
+        if (invasionDusk) {
+            const size_t particles = source.mist.size() * mistLayers + source.smoke.size() * smokePuffs +
+                                     source.fires.size() * fireParticles + source.roadFlares.size() * flarePuffs;
+            airSprites.reserve(std::min<size_t>(particles, 180));
+            firePatterns.resize(source.fires.size());
+            for (size_t i = 0; i < source.fires.size(); ++i) {
+                const float width = source.fires[i].width;
+                for (size_t j = 0; j < fireParticles; ++j) {
+                    const float flame = float(i) * 1.7f + j * 2.39996f;
+                    const float spark = float(i) * 3.1f + j * 2.39996f;
+                    firePatterns[i].flames[j] = {flame, std::sin(flame) * width * .69f, std::cos(flame) * width * .58f};
+                    firePatterns[i].sparks[j] = {spark, std::sin(spark) * width, std::cos(spark) * width};
+                }
+            }
+        }
         // Opaque primitives can flush in submission order. Keep every translucent
         // primitive for the depth-tested, back-to-front pass that follows.
         solid.reserve(256);
@@ -351,7 +433,12 @@ struct Renderer::Impl {
         vertices = std::max(vertices, source.civilianMesh.vertices.size());
         vertices = std::max({vertices, source.transportHelo.vertices.size(), source.transportRotor.vertices.size()});
         vertices = std::max(vertices, source.alienDrone.vertices.size());
-        for (const auto& craft : source.alienFleet) vertices = std::max(vertices, craft.vertices.size());
+        vertices = std::max({vertices, source.alienUplink.vertices.size(), source.alienUplinkCore.vertices.size()});
+        size_t fleetAlpha = 0;
+        for (const auto& craft : source.alienFleet) {
+            vertices = std::max(vertices, craft.vertices.size());
+            fleetAlpha += alphaCount(craft);
+        }
         size_t propAlpha = 0;
         if (!source.propInstances.empty()) {
             vertices = std::max({vertices, source.shipBoxTruck.vertices.size(), source.shipBoxCar.vertices.size()});
@@ -365,7 +452,8 @@ struct Renderer::Impl {
             maxWeaponAlpha = std::max(maxWeaponAlpha, alphaCount(weapon));
             vertices = std::max(vertices, weapon.vertices.size());
         }
-        const size_t worldAlpha = alphaCount(source.world) + propAlpha + 5 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
+        const size_t worldAlpha = alphaCount(source.world) + propAlpha + fleetAlpha + 5 * maxActorAlpha +
+                                  alphaCount(source.apache) + 3 * alphaCount(source.jet);
         translucent.reserve(2 * std::max(worldAlpha, maxWeaponAlpha)); // One near-plane split per triangle.
         posedVertices.resize(vertices);
         visible.reserve(source.world.chunks.size());
@@ -412,105 +500,58 @@ struct Renderer::Impl {
         }
     }
 
-    // Build a legendary Colorado Front Range red-orange dusk sunset cubemap modulated by the
-    // pack's existing cloud faces so sunset clouds burn fiery orange-crimson on their undersides
-    // against deep twilight violet overhead.
+    // The palette cools with elevation and away from the sun. Use the pack's
+    // cloud luminance directly, so building either arena never changes the sky asset.
     void buildSunsetSky() {
-        static constexpr Vec3 faces[][3] = {
-            {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}},
-            {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},
-            {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}},
+        const auto atmosphere = [](Vec3 dir, float cloud) {
+            Vec3 color = duskGradient(dir.y);
+            const float sun = std::max(0.f, dot(dir, sunsetSunDir));
+            const float horizon = std::max(0.f, 1.f - std::abs(dir.y) * 1.8f);
+            const float corona = std::pow(sun, 14.f), disk = std::pow(sun, 192.f);
+            color += Vec3{71, 44, 9} * (sun * sun * horizon) + Vec3{52, 82, 38} * corona
+                   + Vec3{42, 46, 65} * disk;
+            const Vec3 lowCloud{38.f + 32.f * sun, 24.f + 26.f * sun, 11.f};
+            color += (Vec3{-16, -19, -10} * (1.f - horizon) + lowCloud * horizon) * (cloud * 2.f - 1.f);
+            const float deck = atmosphere::noise(int(125.f + 54.f * dir.x + 30.f * dir.z),
+                                                 int(360.f + 227.f * dir.y + 12.f * dir.z), 13);
+            const float bank = std::clamp((deck * .64f + cloud * .36f - .35f) * 2.55f, 0.f, 1.f);
+            const float elevation = std::clamp(1.f - 2.7f * std::abs(dir.y - .21f), 0.f, 1.f);
+            color += Vec3{-54.f + 23.f * sun, -34.f, -19.f} * (bank * elevation);
+            return rgbClamped(color.x, color.y, color.z);
         };
-        constexpr int S = skyFaceSize;
-        for (size_t f = 0; f < 6; ++f) {
-            sunsetSky[f].resize(size_t(S) * S);
-            const auto& [normal, right, upAxis] = faces[f];
-            const bool hasCloud = assets.sky[f].size() == size_t(S) * S;
-            for (int y = 0; y < S; ++y) {
-                const float v = (float(y) + 0.5f) / float(S) * 2.f - 1.f;
-                for (int x = 0; x < S; ++x) {
-                    const float u = (float(x) + 0.5f) / float(S) * 2.f - 1.f;
-                    const Vec3 dir = normalized(normal + right * u + upAxis * v);
-                    const float e = dir.y;
-                    const float sunDot = std::max(0.f, dot(dir, sunsetSunDir));
-                    const float cloud = hasCloud ? float(assets.sky[f][size_t(y) * S + x]) / 255.f : 0.45f;
-
-                    float r = 0, g = 0, b = 0;
-                    if (e >= 0.f) {
-                        // Multi-stop Colorado sunset vertical ramp: molten red-orange horizon ->
-                        // burning alpenglow crimson -> dusk magenta-plum -> twilight indigo zenith.
-                        if (e < 0.14f) {
-                            const float t = e / 0.14f;
-                            r = 248.f - 18.f * t;
-                            g = 104.f - 32.f * t;
-                            b = 40.f - 4.f * t;
-                        } else if (e < 0.34f) {
-                            const float t = (e - 0.14f) / 0.20f;
-                            r = 230.f - 78.f * t;
-                            g = 72.f - 30.f * t;
-                            b = 36.f + 20.f * t;
-                        } else if (e < 0.62f) {
-                            const float t = (e - 0.34f) / 0.28f;
-                            r = 152.f - 82.f * t;
-                            g = 42.f - 14.f * t;
-                            b = 56.f + 2.f * t;
-                        } else {
-                            const float t = std::min(1.f, (e - 0.62f) / 0.38f);
-                            r = 70.f - 42.f * t;
-                            g = 28.f - 10.f * t;
-                            b = 58.f - 12.f * t;
-                        }
-                        // Broad western sunset blaze + solar corona + glowing sun disk through mist.
-                        const float wideGlow = std::pow(sunDot, 2.4f) * std::clamp(1.15f - e * 1.4f, 0.f, 1.f);
-                        const float halo = std::pow(sunDot, 12.f);
-                        const float disk = std::pow(sunDot, 72.f);
-                        r += wideGlow * 48.f + halo * 54.f + disk * 40.f;
-                        g += wideGlow * 44.f + halo * 76.f + disk * 92.f;
-                        b += wideGlow * 6.f + halo * 26.f + disk * 78.f;
-
-                        // Dramatic backlit sunset clouds: glowing orange-gold undersides low,
-                        // dark moody crimson-violet silhouettes high.
-                        const float cloudDelta = (cloud - 0.5f) * 2.f;
-                        const float lowBand = std::clamp(1.f - e * 2.0f, 0.f, 1.f);
-                        const float lit = lowBand * (0.45f + 0.55f * sunDot);
-                        r += cloudDelta * (44.f * lit - 16.f * (1.f - lowBand));
-                        g += cloudDelta * (24.f * lit - 14.f * (1.f - lowBand));
-                        b += cloudDelta * (-4.f * lit + 10.f * (1.f - lowBand));
-                        // Soft horizon mist veil blending the lower sky seamlessly into the town fog.
-                        const float mistVeil = std::pow(1.f - std::min(1.f, e * 3.8f), 2.f);
-                        const float mR = 220.f + 24.f * sunDot;
-                        const float mG = 96.f + 20.f * sunDot;
-                        const float mB = 56.f - 6.f * sunDot;
-                        r += (mR - r) * mistVeil * 0.45f;
-                        g += (mG - g) * mistVeil * 0.45f;
-                        b += (mB - b) * mistVeil * 0.45f;
-                    } else {
-                        // Below horizon: misty glowing dusk terracotta fading into twilight shadow.
-                        const float t = std::min(1.f, -e * 2.5f);
-                        r = (218.f + 20.f * sunDot) * (1.f - t * 0.52f);
-                        g = (94.f + 16.f * sunDot) * (1.f - t * 0.56f);
-                        b = (56.f) * (1.f - t * 0.35f);
-                    }
-                    sunsetSky[f][size_t(y) * S + x] = rgbClamped(r, g, b);
+        constexpr int size = skyFaceSize;
+        for (size_t face = 0; face < sunsetSky.size(); ++face) {
+            auto& pixels = sunsetSky[face];
+            pixels.resize(size * size);
+            const auto& cloud = assets.sky[face];
+            const bool hasCloud = cloud.size() == pixels.size();
+            const auto& [normal, right, vertical] = skyAxes[face];
+            for (int y = 0; y < size; ++y) {
+                const float v = (2.f * y + 1.f) / size - 1.f;
+                for (int x = 0; x < size; ++x) {
+                    const float u = (2.f * x + 1.f) / size - 1.f;
+                    const size_t index = size_t(y) * size + x;
+                    const float luminance = hasCloud ? cloud[index] / 255.f : .5f;
+                    pixels[index] = atmosphere(normalized(normal + right * u + vertical * v), luminance);
                 }
             }
         }
     }
 
-    // Update Colorado red-orange dusk mist: directional sun-through-mist scattering updates every
-    // frame (33 integer ops), while the 1024-entry depth curve only rebuilds as mist descends.
+    // The color tracks the western sky. The depth curve only rebuilds as the mist thickens.
     void updateDuskMist(float density, Vec3 lookDir) {
         density = std::clamp(density, 0.25f, 1.0f);
         const float sunAlign = std::clamp(dot(lookDir, sunsetSunDir) * 0.5f + 0.5f, 0.f, 1.f);
         const float warm = sunAlign * sunAlign * 0.45f + sunAlign * 0.55f;
-        // Toward the western sunset: luminous burning red-orange mist; away: moody copper-rose dusk.
-        const uint16_t tone = rgbClamped(148.f + 92.f * warm, 66.f + 46.f * warm, 68.f - 16.f * warm);
+        const float cold = std::clamp((density - .72f) * 3.f, 0.f, .8f);
+        const auto shade = rgbClamped(127.f - 35.f * cold, 113.f + 3.f * cold, 133.f + 19.f * cold);
+        const uint16_t tone = blend(shade, rgb(222, 139, 102), unsigned(warm * (248.f - cold * 96.f)));
         for (uint32_t level = 0; level < hazeBlend.size(); ++level)
             hazeBlend[level] = (((uint32_t(tone) << 16) | tone) & 0x07e0f81f) * level;
         const int bucket = int(density * 40.f + 0.5f);
         if (bucket == duskMistBucket) return;
         duskMistBucket = bucket;
-        const float start = 9.5f - 4.0f * density;   // 7.5m early dusk -> 5.9m thick valley mist
+        const float start = 13.5f - 7.5f * density;
         const float reach = 35.f - 13.f * density;   // Smooth atmospheric roll-off
         const float limit = 0.74f + 0.16f * density; // Up to 0.90 in deep distance
         hazeStart = 1.f / start;
@@ -694,6 +735,7 @@ struct Renderer::Impl {
             const auto& b = posedVertices[tri.b];
             const auto& c = posedVertices[tri.c];
             const auto material = uniform ? uniform[tri.material] : tri.material;
+            if (assets.materials[material].alpha == 0) continue;
             const bool doubleSided = assets.materials[material].doubleSided;
             const auto faceNormal = [&] { return cross(b.world - a.world, c.world - a.world); };
             Vec3 normal{};
@@ -794,12 +836,14 @@ struct Renderer::Impl {
         return uint16_t(value | (value >> 16));
     }
 
-    template<Fill fill = Fill::Surface, bool detail = false, bool countPixels = false>
+    template<Fill fill, bool detail = false, bool countPixels = false>
     void raster(const Primitive& t, bool opaque, const uint8_t* skyPixels = nullptr, const uint16_t* sunsetPixels = nullptr) {
         constexpr bool backdrop = fill == Fill::Sky, shadow = fill == Fill::Shadow;
+        constexpr bool textured = fill == Fill::Textured, surface = textured || fill == Fill::Flat;
+        constexpr bool usesUv = textured || backdrop;
         const auto& [a, b, c] = t.p;
-        const Material* material = fill == Fill::Surface ? &assets.materials[t.material] : nullptr;
-        const Texture* base = material && material->texture >= 0 ? &assets.textures[material->texture] : nullptr;
+        const Material* material = surface ? &assets.materials[t.material] : nullptr;
+        const Texture* base = textured ? &assets.textures[material->texture] : nullptr;
         const int minX = int(std::max(0.0f, std::ceil(std::min({a.x, b.x, c.x}) - 0.5f)));
         const int minY = int(std::max(0.0f, std::ceil(std::min({a.y, b.y, c.y}) - 0.5f)));
         const int maxX = int(std::min(float(view.width - 1), std::floor(std::max({a.x, b.x, c.x}) - 0.5f)));
@@ -816,8 +860,8 @@ struct Renderer::Impl {
             return (aa * delta[0] + bb * delta[1] + cc * delta[2]) * inverseArea;
         };
         const float dzdx = gradient(a.depth, b.depth, c.depth, dx);
-        const float dudx = gradient(a.u, b.u, c.u, dx);
-        const float dvdx = gradient(a.v, b.v, c.v, dx);
+        const float dudx = usesUv ? gradient(a.u, b.u, c.u, dx) : 0.f;
+        const float dvdx = usesUv ? gradient(a.v, b.v, c.v, dx) : 0.f;
 
         float dzdy = 0, dudy = 0, dvdy = 0;
         const std::vector<Texture>* levels = nullptr;
@@ -858,7 +902,7 @@ struct Renderer::Impl {
         const GroundPatch* patch = detail && base && t.patch != SceneLight::noPatch ? &light.patches[t.patch] : nullptr;
         const bool smooth = detail && !patch && (t.light[0] != t.light[1] || t.light[0] != t.light[2]);
         const bool varying = smooth || patch;
-        const bool hazy = detail && fill == Fill::Surface && std::min({a.depth, b.depth, c.depth}) < hazeStart;
+        const bool hazy = detail && surface && std::min({a.depth, b.depth, c.depth}) < hazeStart;
         const int span = patch || perspectiveMips ? spanPixels : 0;
         const float rowLimit = float(maxX - minX + 1);
         // A sliver can change light faster than one level range per pixel. Bound the step so it stays an integer.
@@ -891,8 +935,8 @@ struct Renderer::Impl {
             e1 += dx[1] * left;
             e2 += dx[2] * left;
             float z = (a.depth * e0 + b.depth * e1 + c.depth * e2) * inverseArea;
-            float u = (a.u * e0 + b.u * e1 + c.u * e2) * inverseArea;
-            float v = (a.v * e0 + b.v * e1 + c.v * e2) * inverseArea;
+            float u = usesUv ? (a.u * e0 + b.u * e1 + c.u * e2) * inverseArea : 0.f;
+            float v = usesUv ? (a.v * e0 + b.v * e1 + c.v * e2) * inverseArea : 0.f;
 
             int lit = t.light[0] << 16, lightStep = cornerStep;
             bool mapped = false;
@@ -960,7 +1004,7 @@ struct Renderer::Impl {
                         continue;
                     }
                     uint16_t pixel = flat;
-                    if (texture) {
+                    if constexpr (textured) {
                         const float invZ = 1.0f / z;
                         const float texU = u * invZ, texV = v * invZ;
                         const int tx = texel(texU * texture->width, texture->width);
@@ -998,8 +1042,14 @@ struct Renderer::Impl {
     template<bool countPixels>
     void drawSurfaces(const std::vector<Primitive>& batch, bool opaque) {
         for (const auto& primitive : batch) {
-            if (enhanced && detailed(primitive)) raster<Fill::Surface, true, countPixels>(primitive, opaque);
-            else raster<Fill::Surface, false, countPixels>(primitive, opaque);
+            const bool detail = enhanced && detailed(primitive);
+            if (assets.materials[primitive.material].texture >= 0) {
+                if (detail) raster<Fill::Textured, true, countPixels>(primitive, opaque);
+                else raster<Fill::Textured, false, countPixels>(primitive, opaque);
+            } else {
+                if (detail) raster<Fill::Flat, true, countPixels>(primitive, opaque);
+                else raster<Fill::Flat, false, countPixels>(primitive, opaque);
+            }
         }
     }
 
@@ -1061,13 +1111,14 @@ struct Renderer::Impl {
     void drawMissionActor(const MissionActor& ma, const Snapshot& state) {
         if (!ma.active || !ma.actor.visible) return;
         const auto& actor = ma.actor;
+        const Vec3 extent = ma.role == MissionRole::AlienDrone ? Vec3{1.f, .6f, 1.f}
+                          : ma.role == MissionRole::AlienTrooper ? Vec3{1.9f, 2.9f, 1.9f} : Vec3{2.f, 2.2f, 2.f};
+        if (!view.sees({actor.position - Vec3{extent.x, .6f, extent.z}, actor.position + extent})) return;
+        const float fall = std::clamp(actor.fall, 0.f, 1.f);
+        meshLight = standing(actor.position);
         if (ma.role == MissionRole::Civilian && !assets.civilianPoses.empty()) {
             const auto& poses = assets.civilianPoses;
-            const float fall = std::clamp(actor.fall, 0.0f, 1.0f);
             const auto transform = orientation(actor.position + Vec3{0, fall * 0.2f, 0}, actor.yaw, -fall * 1.46f, fall * 0.12f);
-            const Bounds bounds{actor.position + Vec3{-2, -0.4f, -2}, actor.position + Vec3{2, 2.2f, 2}};
-            if (!view.sees(bounds)) return;
-            meshLight = standing(actor.position);
             const auto& outfit = assets.civilianUniforms[ma.variant % 3];
             const auto& pose = poses[std::min<size_t>(actor.frame, poses.size() - 1)];
             const auto& next = poses[std::min<size_t>(actor.nextFrame, poses.size() - 1)];
@@ -1080,14 +1131,10 @@ struct Renderer::Impl {
             const auto& frames = assets.rivalFrames;
             const auto& mesh = frames[std::min<size_t>(actor.frame, frames.size() - 1)];
             const auto& next = frames[std::min<size_t>(actor.nextFrame, frames.size() - 1)];
-            const float fall = std::clamp(actor.fall, 0.0f, 1.0f);
             const float fallPitch = -fall * 1.46f;
             auto transform = orientation(actor.position + Vec3{0, fall * 0.24f, 0}, actor.yaw, fallPitch, fall * 0.12f);
-            if (ma.role == MissionRole::Civilian && !ma.rescued && !ma.dead) transform.y *= 0.78f;
-            const Bounds bounds{actor.position + Vec3{-2, -0.4f, -2}, actor.position + Vec3{2, 2.2f, 2}};
-            if (!view.sees(bounds)) return;
+            if (ma.role == MissionRole::Civilian && ma.civilian == CivilianOutcome::Pinned) transform.y *= 0.78f;
             const Mesh* topology = mesh.triangles.empty() ? &frames.front() : &mesh;
-            meshLight = standing(actor.position);
             const uint16_t* uniform = nullptr;
             if (ma.role == MissionRole::Commander && !assets.commanderUniform.empty()) {
                 uniform = assets.commanderUniform.data();
@@ -1104,7 +1151,6 @@ struct Renderer::Impl {
             const auto& poses = armored ? assets.alienEnforcerPoses : assets.alienTrooperPoses;
             const auto& body = armored ? assets.alienEnforcer : assets.alienTrooper;
             const bool posed = !poses.empty();
-            const float fall = std::clamp(actor.fall, 0.0f, 1.0f);
             // Pose frames carry the gait; the rigid bob and sway only stand in without them.
             const bool slide = !posed && !ma.dead && actor.speed > 0.3f;
             const float bob = slide ? std::abs(std::sin(actor.phase * 2 * pi)) * 0.08f : 0.f;
@@ -1113,15 +1159,12 @@ struct Renderer::Impl {
             const float staggerPitch = !ma.dead ? -0.18f * ma.stagger : 0.f;
             auto transform = orientation(actor.position + Vec3{0, fall * 0.22f + bob, 0}, actor.yaw,
                                          -fall * 1.45f + staggerPitch, sway + staggerRoll);
-            const float s = ma.variant > 0 ? 1.08f : 1.f;
+            const float s = alienScale(ma.variant);
             if (ma.variant > 0) {
                 transform.x *= s;
                 transform.y *= s;
                 transform.z *= s;
             }
-            const Bounds bounds{actor.position + Vec3{-1.6f, -0.3f, -1.6f}, actor.position + Vec3{1.6f, 2.9f, 1.6f}};
-            if (!view.sees(bounds)) return;
-            meshLight = standing(actor.position);
             const uint16_t* uniform = (ma.variant > 0 && !assets.enforcerUniform.empty())
                 ? assets.enforcerUniform.data() : nullptr;
             if (posed) {
@@ -1135,26 +1178,9 @@ struct Renderer::Impl {
             const Mesh& gunMesh = armored ? assets.alienHeavyRayGun : assets.alienRayGun;
             const Mesh& ringMesh = armored ? assets.alienHeavyRayRings : assets.alienRayRings;
             if (!gunMesh.triangles.empty()) {
-                const uint16_t aimBase = alienIdlePoses + alienStridePoses;
-                const float aimPose = (actor.frame >= aimBase) ? 1.f
-                                    : (actor.nextFrame >= aimBase ? actor.frameBlend : 0.f);
-                const float aimAmount = std::max(aimPose, std::max(ma.gunCharge, ma.gunRecoil));
-                const float strideSway = (!ma.dead && actor.speed > 0.4f && aimAmount < 0.5f)
-                    ? std::sin(actor.phase * 2.f * pi) * 0.06f * (1.f - aimAmount) : 0.f;
-                // Match right-hand wrist socket from writeCreature (low-ready -> shoulder-aim + recoil kick).
-                const Vec3 readyLocal{0.58f, 1.30f, 0.58f + strideSway};
-                const Vec3 aimLocal{0.34f, 1.46f + 0.09f * ma.gunRecoil, 0.62f - 0.13f * ma.gunRecoil};
-                const Vec3 gripLocal = readyLocal + (aimLocal - readyLocal) * aimAmount;
-                const Vec3 gripWorld = transform(gripLocal);
-                const float gunPitch = (1.f - fall) * (ma.gunPitch * aimAmount + 0.16f * (1.f - aimAmount) -
-                                       0.22f * ma.gunRecoil + staggerPitch * 0.8f) - fall * 1.35f;
-                const float gunYaw = actor.yaw + (1.f - aimAmount) * (-0.18f + strideSway);
-                auto gunXform = orientation(gripWorld, gunYaw, gunPitch, sway * 0.5f + staggerRoll);
-                if (ma.variant > 0) {
-                    gunXform.x *= s;
-                    gunXform.y *= s;
-                    gunXform.z *= s;
-                }
+                const auto rig = alienGunFrame(transform(alienGunSocket(assets, actor)),
+                                               ma.gunYaw + fall * .25f, ma.gunPitch + fall * 1.2f, ma.variant);
+                const Transform gunXform{rig.grip, rig.right, rig.up, rig.axis};
                 submit(gunMesh, state, gunXform, MeshSpace::World, nullptr, 0, true, nullptr, uniform);
 
                 if (!ringMesh.triangles.empty()) {
@@ -1164,26 +1190,24 @@ struct Renderer::Impl {
                     const float pulseZ = (ma.gunCharge > 0.05f ? std::sin(float(state.realTime) * 18.f) * 0.025f * ma.gunCharge : 0.f)
                                        - 0.04f * ma.gunRecoil;
                     Transform ringXform = gunXform;
-                    ringXform.origin = gunXform({0, 0.08f, pulseZ});
+                    ringXform.origin = gunXform({0, rayBoreHeight, pulseZ});
                     ringXform.x = gunXform.x * cs + gunXform.y * sn;
                     ringXform.y = gunXform.y * cs - gunXform.x * sn;
                     submit(ringMesh, state, ringXform, MeshSpace::World, nullptr, 0, true, nullptr, uniform);
                 }
 
-                // Collect glowing muzzle charge orb & firing starburst for depth-tested post-pass.
+                // Composite the forming cloud once the world and weapon have written depth.
                 if (!ma.dead && (ma.gunCharge > 0.04f || ma.gunRecoil > 0.08f) && muzzleGlowCount < muzzleGlows.size()) {
-                    const float tipZ = armored ? 1.02f : 0.88f;
-                    const Vec3 muzzlePos = gunXform({0, 0.08f, tipZ});
-                    const bool hot = armored || ma.overcharging;
+                    const Vec3 muzzlePos = rig.muzzle(ma.variant);
+                    const bool hot = ma.overcharging;
                     const float power = std::max(ma.gunCharge * (ma.overcharging ? 1.15f : 0.72f), ma.gunRecoil * 1.0f);
                     const float pulse = 0.88f + 0.16f * std::sin(float(state.realTime) * (ma.overcharging ? 34.f : 20.f));
                     muzzleGlows[muzzleGlowCount++] = {
                         muzzlePos,
                         (0.06f + 0.10f * std::min(power, 1.15f)) * pulse * s,
-                        hot ? rgb(255, 246, 224) : rgb(228, 255, 255),
-                        hot ? rgb(255, 76, 62) : rgb(52, 242, 255),
+                        0, 0,
                         std::min(1.f, power),
-                        ma.gunRecoil > 0.25f || ma.overcharging
+                        hot, true
                     };
                 }
             }
@@ -1199,13 +1223,25 @@ struct Renderer::Impl {
         }
         if (ma.role == MissionRole::AlienDrone) {
             if (assets.alienDrone.triangles.empty()) return;
-            const float pitch = ma.dead ? 0.55f : (actor.speed > 0.5f ? 0.14f : 0.f);
-            auto transform = orientation(actor.position, actor.yaw, pitch, ma.dead ? 0.45f : 0.f);
-            const Bounds bounds{actor.position + Vec3{-1.f, -0.6f, -1.f}, actor.position + Vec3{1.f, 0.6f, 1.f}};
-            if (!view.sees(bounds)) return;
-            meshLight = standing({actor.position.x, 0, actor.position.z});
+            const float pitch = ma.dead ? .55f : ma.alerted ? ma.gunPitch : actor.speed > .5f ? .14f : 0.f;
+            auto transform = orientation(actor.position, ma.alerted && !ma.dead ? ma.gunYaw : actor.yaw,
+                                         pitch, ma.dead ? .45f : 0.f);
             submit(assets.alienDrone, state, transform, MeshSpace::World);
         }
+    }
+
+    void drawUplink(const Snapshot& state) {
+        if (!state.mission->uplinkVisible || assets.alienUplink.triangles.empty()) return;
+        const auto bounds = assets.alienUplink.chunks.front().bounds;
+        if (!view.sees({bounds.min + uplinkPosition, bounds.max + uplinkPosition})) return;
+        meshLight = standing(uplinkPosition);
+        submit(assets.alienUplink, state, orientation(uplinkPosition, 0, 0, 0), MeshSpace::World);
+        if (state.mission->uplinkHealth <= 0.f) return;
+        const auto center = uplinkPosition + uplinkEmitter;
+        const float spin = float(state.realTime) * 2.5f;
+        submit(assets.alienUplinkCore, state, orientation(center, spin, 0, 0), MeshSpace::World);
+        const float pulse = .62f + .22f * std::sin(spin * 2.f);
+        muzzleGlows[muzzleGlowCount++] = {center, .50f, rgb(255, 206, 176), rgb(255, 58, 108), pulse, true};
     }
 
     // A figure in shade dims with the ground under it, yet stays easy to pick out.
@@ -1325,19 +1361,9 @@ struct Renderer::Impl {
         const float horizon = view.height * 0.5f - std::tan(camera.pitch) * view.focal;
         if (invasionDusk) {
             for (int y = 0; y < view.height; ++y) {
-                const float elev = std::clamp((horizon - float(y)) / float(view.height), -0.3f, 1.0f);
-                uint16_t pixel;
-                if (elev < 0.f) {
-                    const float t = std::clamp(-elev / 0.3f, 0.f, 1.f);
-                    pixel = rgbClamped(216.f - 96.f * t, 96.f - 46.f * t, 54.f - 10.f * t);
-                } else if (elev < 0.25f) {
-                    const float t = elev / 0.25f;
-                    pixel = rgbClamped(248.f - 36.f * t, 108.f - 42.f * t, 42.f + 6.f * t);
-                } else {
-                    const float t = std::clamp((elev - 0.25f) / 0.75f, 0.f, 1.f);
-                    pixel = rgbClamped(212.f - 172.f * t, 66.f - 44.f * t, 48.f + 4.f * t);
-                }
-                std::fill_n(color + y * view.width, view.width, pixel);
+                const float elevation = std::clamp((horizon - float(y)) / float(view.height), -1.f, 1.f);
+                const Vec3 tone = duskGradient(elevation);
+                std::fill_n(color + y * view.width, view.width, rgbClamped(tone.x, tone.y, tone.z));
             }
             return;
         }
@@ -1353,16 +1379,10 @@ struct Renderer::Impl {
         const bool useSunset = invasionDusk && !sunsetSky[0].empty();
         if (!useSunset && assets.sky[0].empty()) return;
         const auto start = timestamp();
-        // Face axes match the panorama conversion in the exporter.
-        static constexpr Vec3 faces[][3] = {
-            {{0,0,1},{1,0,0},{0,1,0}}, {{0,0,-1},{-1,0,0},{0,1,0}},
-            {{1,0,0},{0,0,-1},{0,1,0}}, {{-1,0,0},{0,0,1},{0,1,0}},
-            {{0,1,0},{1,0,0},{0,0,-1}}, {{0,-1,0},{1,0,0},{0,0,1}},
-        };
         const Vec3 eye = view.position;
         view.position = {};
         for (size_t face = 0; face < assets.sky.size(); ++face) {
-            const auto& [normal, right, up] = faces[face];
+            const auto& [normal, right, up] = skyAxes[face];
             const Vertex corners[] = {
                 {view.transform(normal - right - up), 0, 0}, {view.transform(normal + right - up), 1, 0},
                 {view.transform(normal + right + up), 1, 1}, {view.transform(normal - right + up), 0, 1},
@@ -1431,46 +1451,119 @@ struct Renderer::Impl {
         }
     }
 
+    void drawPlasmaCloud(Vec3 position, float radius, float intensity, unsigned phase, bool charged) {
+        const Vec3 center = view.transform(position);
+        if (center.z < view.near + .025f) return;
+        const auto projected = view.project({center, 0, 0});
+        const float pixels = std::clamp(radius * view.focal / center.z, 1.3f, std::max(1.3f, view.width * .11f));
+        const int cx = int(projected.x), cy = int(projected.y);
+        const int r = int(pixels + 1.f);
+        const int x0 = std::max(0, cx - r), x1 = std::min(view.width - 1, cx + r);
+        const int y0 = std::max(0, cy - r), y1 = std::min(view.height - 1, cy + r);
+        if (x0 > x1 || y0 > y1) return;
+        const float invZ = 1.f / std::max(view.near, center.z - radius * .22f);
+        const uint16_t z = enhanced ? encodedDepth(invZ) : uint16_t(std::min(65535.f, invZ * view.near * 65534.f));
+        constexpr uint16_t fog = rgb(50, 113, 227), skyBlue = rgb(101, 199, 255), spark = rgb(211, 243, 255);
+        const float unit = 1.f / pixels;
+        for (int y = y0; y <= y1; ++y) {
+            const float dy = (y - cy) * unit;
+            const unsigned sy = unsigned(int(dy * 13.f) + 16);
+            const int row = y * view.width;
+            for (int x = x0; x <= x1; ++x) {
+                const int at = row + x;
+                if (z + 3 < depth[at]) continue;
+                const float dx = (x - cx) * unit;
+                const float d = dx * dx + dy * dy;
+                if (d > .99f) continue;
+                const unsigned sx = unsigned(int(dx * 13.f) + 16);
+                const unsigned a = skyDither[((sy * 2 + phase / 4) & 63u) * 64 + ((sx * 2 + phase / 3) & 63u)];
+                const unsigned b = skyDither[((sy + phase / 6) & 63u) * 64 + ((sx - phase / 8) & 63u)];
+                // Offset lobes and granular turbulence keep the outline and interior in motion.
+                const float bulge = dx * (dy > 0 ? -.23f : .21f) + dy * .11f;
+                const float density = std::clamp(.89f - d + bulge + .085f * float(int(a) - 1), 0.f, 1.f);
+                const unsigned alpha = unsigned(221.f * intensity * density);
+                if (alpha < 5) continue;
+                const auto tint = blend(fog, skyBlue, std::min(255u, unsigned(density * 126.f) + b * 29u));
+                color[at] = blend(color[at], tint, alpha);
+            }
+        }
+        if (pixels < 2.25f || intensity < .22f) {
+            if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1 && z + 3 >= depth[cy * view.width + cx])
+                color[cy * view.width + cx] = blend(color[cy * view.width + cx], spark, unsigned(173.f * intensity));
+            return;
+        }
+
+        // Short forked arcs live inside the mist and share its depth test.
+        uint32_t seed = (phase + 1) * 0x045d9f3bu;
+        const auto random = [&] {
+            seed = seed * 1664525u + 1013904223u;
+            return float(seed >> 24) / 255.f - .5f;
+        };
+        for (int fork = 0; fork < (charged ? 3 : 2); ++fork) {
+            const float side = fork % 2 ? -1.f : 1.f;
+            float x = float(cx) - side * pixels * .52f, y = float(cy) + random() * pixels;
+            for (int segment = 0; segment < 4; ++segment) {
+                const float nextX = x + side * pixels * .27f;
+                const float nextY = cy + random() * pixels * 1.28f;
+                const int count = std::max(1, int(std::max(std::abs(nextX - x), std::abs(nextY - y))));
+                for (int i = 0; i <= count; ++i) {
+                    const float t = float(i) / count;
+                    const int px = int(x + (nextX - x) * t), py = int(y + (nextY - y) * t);
+                    if (px < x0 || px > x1 || py < y0 || py > y1) continue;
+                    const int at = py * view.width + px;
+                    if (z + 3 >= depth[at]) color[at] = blend(color[at], spark, unsigned(182.f * intensity));
+                }
+                x = nextX;
+                y = nextY;
+            }
+        }
+    }
+
     void drawMissionTracer(const MissionTracer& shot, float realTime) {
         if (shot.time <= 0) return;
         if (shot.style == TracerStyle::Ballistic) {
             drawTracer({shot.start, shot.end, shot.time}, shot.color);
             return;
         }
-        Vertex a{view.transform(shot.start), 0, 0};
-        Vertex b{view.transform(shot.end), 0, 0};
-        if (a.position.z < view.near && b.position.z < view.near) return;
-        if (a.position.z < view.near) a = cut(a, b, view.near);
-        if (b.position.z < view.near) b = cut(b, a, view.near);
-        const auto p = view.project(a), q = view.project(b);
+        if (shot.style == TracerStyle::PlasmaImpact) {
+            const float life = std::min(1.f, shot.time);
+            drawPlasmaCloud(shot.start, .16f + .26f * (1.f - life), life,
+                            unsigned(realTime * 44.f), shot.time > 1.f);
+            return;
+        }
+        Projected p, q;
+        if (!projectSegment(view, view.transform(shot.start), view.transform(shot.end), p, q)) return;
         const float dx = q.x - p.x, dy = q.y - p.y;
+        const int count = int(std::clamp(std::max(std::abs(dx), std::abs(dy)), 1.0f, 1.8f * view.width));
+        const float resScale = float(view.width) / 400.f;
+        const bool link = shot.style == TracerStyle::ShieldLink;
+        const auto visible = count > 48 ? visibleSamples(view, p, q, count, 9.f + (link ? 2.2f * resScale : 0.f))
+                                        : SampleRange{0, count};
+        if (visible.first > visible.last) return;
         const float segLen = std::sqrt(dx * dx + dy * dy);
         if (segLen < 0.5f) return;
-        const int count = int(std::clamp(std::max(std::abs(dx), std::abs(dy)), 1.0f, 1.8f * view.width));
         const float nx = -dy / segLen, ny = dx / segLen; // Screen-space perpendicular normal
-        const bool heavy = shot.style == TracerStyle::HeavyRay;
         const bool drop = shot.style == TracerStyle::DropBeam;
-        const bool link = shot.style == TracerStyle::ShieldLink;
         const bool scan = shot.style == TracerStyle::Scanner;
-        const uint16_t coreColor = heavy ? rgb(255, 246, 228) : link ? rgb(196, 255, 255) : rgb(236, 255, 255);
-        const float baseWidth = heavy ? 3.2f : drop ? 4.2f : scan ? 1.1f : link ? 1.6f : 1.9f;
-        const float resScale = float(view.width) / 400.f;
+        const uint16_t coreColor = drop ? blend(shot.color, rgb(235, 249, 255), 164)
+                                        : link ? rgb(196, 255, 255) : rgb(236, 255, 255);
+        const float baseWidth = drop ? 5.6f : scan ? 1.1f : 1.6f;
         const float life = std::clamp(shot.time, 0.f, 1.f);
-        const float phaseShift = (1.f - life) * (heavy ? 18.f : 12.f) + realTime * (link ? 9.f : 0.f);
+        const float phaseShift = (1.f - life) * 12.f + realTime * (link ? 9.f : 0.f);
 
-        for (int i = 0; i <= count; ++i) {
+        for (int i = visible.first; i <= visible.last; ++i) {
             const float t = float(i) / float(count);
             const float inverseZ = p.depth + (q.depth - p.depth) * t;
             const uint16_t z = enhanced ? encodedDepth(inverseZ) : uint16_t(std::clamp(inverseZ * view.near * 65534.f, 0.f, 65535.f));
-            // Undulate shield-link beams smoothly; pulse ray bolts with traveling plasma rings!
             const float wave = link ? std::sin(t * 14.f - phaseShift) * 2.2f * resScale : 0.f;
-            const float pulse = (!scan && !drop) ? (0.65f + 0.35f * std::sin(t * (heavy ? 24.f : 18.f) - phaseShift)) : 1.f;
+            const float pulse = !scan ? (.73f + .27f * std::sin(t * 22.f - phaseShift)) : 1.f;
             const float cx = p.x + dx * t + nx * wave;
             const float cy = p.y + dy * t + ny * wave;
             const float persp = std::clamp(inverseZ * 10.f, 0.55f, 2.2f);
-            const int halfW = std::clamp(int(baseWidth * resScale * persp * (0.75f + 0.35f * pulse)), 1, 7);
-            const unsigned outerA = unsigned(std::clamp(int((scan ? 90.f : heavy ? 215.f : 175.f) * life * pulse), 28, 224));
-            const unsigned coreA = unsigned(std::clamp(int((scan ? 130.f : 242.f) * life), 56, 248));
+            const float taper = drop ? .38f + .62f * t : 1.f;
+            const int halfW = std::clamp(int(baseWidth * resScale * persp * taper * (0.75f + 0.35f * pulse)), 1, 7);
+            const unsigned outerA = unsigned(std::clamp(int((scan ? 90.f : 175.f) * life * pulse), drop ? 0 : 28, 224));
+            const unsigned coreA = unsigned(std::clamp(int((scan ? 130.f : 242.f) * life), drop ? 0 : 56, 248));
 
             for (int off = -halfW; off <= halfW; ++off) {
                 const int px = int(cx + nx * float(off));
@@ -1479,17 +1572,39 @@ struct Renderer::Impl {
                 const int at = py * view.width + px;
                 if (z + 2 < depth[at]) continue;
                 const int ad = std::abs(off);
-                if (ad == 0 || (heavy && ad == 1)) {
+                if (ad == 0) {
                     color[at] = blend(color[at], coreColor, coreA);
                 } else {
-                    const unsigned fallA = outerA * unsigned(halfW + 1 - ad) / unsigned(halfW + 1);
-                    color[at] = blend(color[at], shot.color, fallA);
+                    const unsigned remain = unsigned(halfW + 1 - ad);
+                    const unsigned span = unsigned(halfW + 1);
+                    const unsigned alpha = drop ? outerA * remain * remain / (span * span) : outerA * remain / span;
+                    color[at] = blend(color[at], shot.color, alpha);
                 }
             }
         }
-        // Impact flash bloom where a ray bolt or heavy beam strikes cover or target!
-        if ((shot.style == TracerStyle::RayBolt || heavy) && life > 0.25f) {
-            drawGlowDisc(shot.end, heavy ? 0.24f : 0.14f, coreColor, shot.color, life * (heavy ? 0.95f : 0.72f), heavy);
+
+    }
+
+    void drawArrival(const MissionActor& actor, float time) {
+        const float life = actor.arrival, age = 1.f - life;
+        const Vec3 feet = actor.actor.position + Vec3{0, .10f, 0};
+        const auto p = view.transform(feet);
+        if (p.z < view.near || p.z > 70.f || std::abs(p.x) > view.xSlope * p.z + 2.5f) return;
+        const float strength = life * (.77f + .16f * std::sin(age * 23.f));
+        const uint16_t tint = actor.variant > 0 ? rgb(255, 116, 163) : rgb(64, 211, 255);
+        drawMissionTracer({feet + Vec3{0, 21.f, 0}, feet, strength, tint, TracerStyle::DropBeam}, time);
+        drawGlowDisc(feet + Vec3{0, .12f, 0}, .54f + age * .45f, rgb(217, 250, 255), tint, strength, false);
+        if (p.z > 31.f) return;
+        const float radius = .37f + age * 1.10f;
+        constexpr float c = .86603f;
+        constexpr Vec3 outline[]{{1, 0, 0}, {c, 0, .5f}, {.5f, 0, c}, {0, 0, 1}, {-.5f, 0, c}, {-c, 0, .5f},
+                                 {-1, 0, 0}, {-c, 0, -.5f}, {-.5f, 0, -c}, {0, 0, -1}, {.5f, 0, -c}, {c, 0, -.5f}};
+        Vec3 from = view.transform(feet + outline[std::size(outline) - 1] * radius);
+        const unsigned alpha = unsigned(strength * .76f * 220.f);
+        for (const Vec3 offset : outline) {
+            const Vec3 to = view.transform(feet + offset * radius);
+            drawViewTracer(from, to, tint, alpha);
+            from = to;
         }
     }
 
@@ -1533,126 +1648,228 @@ struct Renderer::Impl {
         }
     }
 
-    // Low-lying dusk valley mist rolling across the town, road, lawns and patio, backlit by
-    // the red-orange Colorado sunset! Depth-tested so mist curls around walls, trees and aliens.
-    void groundMist(const Snapshot& state) {
-        if (assets.mist.empty()) return;
-        const float t = float(state.realTime);
-        const float density = (state.mission && state.mission->active) ? state.mission->mistDensity : 0.74f;
-        const float baseAlpha = std::clamp(density * 118.f, 44.f, 118.f);
-        constexpr int wisps = 3;
-        for (size_t b = 0; b < assets.mist.size(); ++b) {
-            const auto& bank = assets.mist[b];
-            for (int i = 0; i < wisps; ++i) {
-                const float life = std::fmod(t * bank.rate + float(i) / wisps + float(b) * .29f, 1.f);
-                const float fade = std::sin(life * pi);
-                if (fade < 0.08f) continue;
-                const Vec3 at = bank.base + bank.drift * (life - 0.5f) +
-                                Vec3{0, std::sin(t * 0.45f + float(b + i)) * 0.28f - 0.25f * density, 0};
-                const Vertex centre{view.transform(at), 0, 0};
-                if (centre.position.z < view.near + 1.4f || centre.position.z > 88.f) continue;
-                const auto p = view.project(centre);
-                const float rx = std::min(float(view.width) * 0.34f, bank.width * (0.75f + 0.35f * fade) * view.focal / centre.position.z);
-                const float ry = std::min(float(view.height) * 0.26f, bank.height * (0.80f + 0.25f * fade) * view.focal / centre.position.z);
-                if (rx < 3.f || ry < 2.f) continue;
-                const int irx = int(rx), iry = int(ry), cx = int(p.x), cy = int(p.y);
-                if (cx + irx < 0 || cx - irx >= view.width || cy + iry < 0 || cy - iry >= view.height) continue;
-                const uint16_t z = enhanced ? encodedDepth(p.depth) : uint16_t(std::clamp(p.depth * view.near * 65534.f, 0.f, 65535.f));
-                // Dynamic Colorado sunset scattering per mist bank: fiery orange-coral toward the
-                // setting sun, glowing dusty rose-terracotta in the eastern twilight shadow.
-                const Vec3 toBank = normalized(at - view.position);
-                const float sunAlign = std::clamp(dot(toBank, sunsetSunDir) * 0.5f + 0.5f, 0.f, 1.f);
-                const uint16_t tint = rgbClamped(164.f + 86.f * sunAlign, 74.f + 50.f * sunAlign, 68.f - 14.f * sunAlign);
-                const float closeFade = std::clamp((centre.position.z - 2.2f) / 5.5f, 0.18f, 1.f);
-                const unsigned peak = unsigned(baseAlpha * fade * closeFade);
-                if (peak < 8) continue;
-                const float invRx2 = 1.f / (rx * rx), invRy2 = 1.f / (ry * ry);
-                const int y0 = std::max(0, cy - iry), y1 = std::min(view.height - 1, cy + iry);
-                const int x0 = std::max(0, cx - irx), x1 = std::min(view.width - 1, cx + irx);
-                // Smooth 2x1 horizontal span stepping for large puffs keeps mist ultra-fast on HD & handheld.
-                const int step = irx > 48 ? 2 : 1;
-                for (int y = y0; y <= y1; ++y) {
-                    const float dy = float(y - cy);
-                    const float ny2 = dy * dy * invRy2;
-                    if (ny2 >= 1.f) continue;
-                    const int rowOff = y * view.width;
-                    for (int x = x0; x <= x1; x += step) {
-                        const float dx = float(x - cx);
-                        const float fall = 1.f - dx * dx * invRx2 - ny2;
-                        if (fall <= 0.f) continue;
-                        const unsigned a = unsigned(float(peak) * fall * fall);
-                        if (a < 4) continue;
-                        const int atIdx = rowOff + x;
-                        if (z + 1 >= depth[atIdx]) color[atIdx] = blend(color[atIdx], tint, a);
-                        if (step == 2 && x + 1 <= x1 && z + 1 >= depth[atIdx + 1]) {
-                            color[atIdx + 1] = blend(color[atIdx + 1], tint, a);
-                        }
-                    }
-                }
+    void queueAir(Vec3 world, float width, float height, float thickness, float opacity,
+                  uint16_t top, uint16_t bottom, const atmosphere::Mask& mask) {
+        const Vec3 at = view.transform(world);
+        if (at.z < view.near + .12f || at.z > 96.f || airSprites.size() == airSprites.capacity()) return;
+        const auto p = view.project({at, 0, 0});
+        const float rx = std::min(width * view.focal * p.depth, view.width * .33f);
+        const float ry = std::min(height * view.focal * p.depth, view.height * .28f);
+        if (rx < 1.f || ry < 1.f || p.x + rx < 0 || p.x - rx >= view.width ||
+            p.y + ry < 0 || p.y - ry >= view.height) return;
+        const float nearFade = std::clamp((at.z - thickness - .18f) * .8f, 0.f, 1.f);
+        const unsigned alpha = unsigned(std::clamp(opacity * nearFade, 0.f, 255.f));
+        if (alpha < 5) return;
+        const auto zAt = [&](float z) {
+            const float inv = 1.f / std::max(view.near, z);
+            return enhanced ? encodedDepth(inv) : uint16_t(std::min(65535.f, inv * view.near * 65534.f));
+        };
+        airSprites.push_back({
+            p.x, p.y, rx, ry, zAt(at.z + thickness), zAt(at.z - thickness), top, bottom, uint8_t(alpha), &mask
+        });
+    }
+
+    void drawAir(const AirSprite& p) {
+        constexpr int texels = atmosphere::maskSize, shift = 10;
+        const float left = p.x - p.width, top = p.y - p.height;
+        const int x0 = std::max(0, int(std::ceil(left))), x1 = std::min(view.width, int(p.x + p.width));
+        const int y0 = std::max(0, int(std::ceil(top))), y1 = std::min(view.height, int(p.y + p.height));
+        if (x0 >= x1 || y0 >= y1) return;
+        const int stride = p.width >= 37.f ? 2 : 1;
+        const float tx = float(texels << shift) / (2.f * p.width), ty = float(texels) / (2.f * p.height);
+        const int du = int(tx * stride), first = int((x0 - left) * tx);
+        const int samples = (x1 - x0 + stride - 1) / stride;
+        const float samplesPerUnit = 1.f / std::max(du, 1);
+        const unsigned falloff = 256u * 256u / unsigned(std::max(1, int(p.front) - p.back));
+        for (int y = y0; y < y1; ++y) {
+            const int row = std::clamp(int((y - top) * ty), 0, texels - 1);
+            const auto span = p.mask->spans[row];
+            if (span.end == 0) continue;
+            const auto* density = p.mask->pixels.data() + row * texels;
+            int begin = 0, end = samples;
+            if (samples > 24 && du > 0) {
+                // Leave a sample of slack at either edge to preserve the exact fixed-point lookup.
+                begin = std::max(0, int(((span.first << shift) - first) * samplesPerUnit) - 1);
+                end = std::min(samples, int(((span.end << shift) - first) * samplesPerUnit) + 2);
+            }
+            const uint16_t tint = p.top == p.bottom ? p.top : blend(p.top, p.bottom, unsigned(row * 255 / (texels - 1)));
+            const int offset = y * view.width;
+            for (int i = begin, u = first + begin * du; i < end; ++i, u += du) {
+                const unsigned alpha = unsigned(p.alpha) * density[std::min(texels - 1, u >> shift)] >> 8;
+                if (alpha < 4) continue;
+                const int x = x0 + i * stride;
+                const auto pixel = [&](int i) {
+                    const unsigned world = depth[i];
+                    if (world > p.front) return;
+                    const unsigned fade = world > p.back ? 256u - ((world - p.back) * falloff >> 8) : 256u;
+                    color[i] = blend(color[i], tint, alpha * fade >> 8);
+                };
+                pixel(offset + x);
+                if (stride == 2 && x + 1 < x1) pixel(offset + x + 1);
             }
         }
     }
+
+    void valleyMist(float time, float density, float gust) {
+        const float baseAlpha = 61.f + density * 100.f;
+        for (size_t b = 0; b < assets.mist.size(); ++b) {
+            const auto& bank = assets.mist[b];
+            const float sun = std::max(0.f, dot(normalized(bank.base - view.position), sunsetSunDir));
+            const auto tint = blend(rgb(111, 128, 157), rgb(219, 162, 132), unsigned(sun * 203.f));
+            for (size_t i = 0; i < mistLayers; ++i) {
+                const float life = unitCycle(time * bank.rate + float(b) * .29f + float(i) / mistLayers);
+                const float fade = 4.f * life * (1.f - life);
+                const Vec3 at = bank.base + bank.drift * (life - .5f + gust * .18f) +
+                                Vec3{0, .15f + i * .42f - .52f * density, 0};
+                queueAir(at, bank.width * (.92f + .27f * life), bank.height * (.37f + i * .20f),
+                         .65f + i * .31f, baseAlpha * fade * (i ? .64f : 1.f), tint, tint,
+                         atmosphere::clouds[(b + i) % atmosphere::clouds.size()]);
+            }
+        }
+    }
+
     void drawTracer(const Tracer& shot, uint16_t tint = rgb(255, 195, 107)) {
         if (shot.time <= 0) return;
-        Vertex a{view.transform(shot.start), 0, 0};
-        Vertex b{view.transform(shot.end), 0, 0};
-        if (a.position.z < view.near && b.position.z < view.near) return;
-        if (a.position.z < view.near) a = cut(a, b, view.near);
-        if (b.position.z < view.near) b = cut(b, a, view.near);
-        const auto p = view.project(a), q = view.project(b);
+        const unsigned alpha = unsigned(std::clamp(int(shot.time * 220.f), 72, 220));
+        drawViewTracer(view.transform(shot.start), view.transform(shot.end), tint, alpha);
+    }
+
+    void drawViewTracer(Vec3 from, Vec3 to, uint16_t tint, unsigned alpha) {
+        if (alpha < 4) return;
+        Projected p, q;
+        if (!projectSegment(view, from, to, p, q)) return;
         const float dx = q.x - p.x, dy = q.y - p.y;
         const int count = int(std::clamp(std::max(std::abs(dx), std::abs(dy)), 1.0f, 2.0f * view.width));
-        for (int i = 0; i <= count; ++i) {
+        const auto visible = count > 32 ? visibleSamples(view, p, q, count, 2.f) : SampleRange{0, count};
+        for (int i = visible.first; i <= visible.last; ++i) {
             const float t = float(i) / count;
             const int x = int(p.x + dx * t), y = int(p.y + dy * t);
             if (x < 0 || x >= view.width || y < 0 || y >= view.height) continue;
             const float inverseZ = p.depth + (q.depth - p.depth) * t;
             const float z = enhanced ? encodedDepth(inverseZ) : inverseZ * view.near * 65534;
             const int at = y * view.width + x;
-            const unsigned alpha = unsigned(std::clamp(int(shot.time * 220.f), 72, 220));
             if (z + 1 >= depth[at]) color[at] = blend(color[at], tint, alpha);
         }
     }
 
-    // Rising plumes: soft puffs climb each source's column, widening, leaning downwind and
-    // thinning out, then recycle. Each puff is depth-tested against the scene as a disc.
-    void smoke(const Snapshot& state) {
-        const float t = float(state.realTime);
-        constexpr int puffs = 16;
-        for (size_t s = 0; s < assets.smoke.size(); ++s) {
-            const auto& src = assets.smoke[s];
-            for (int i = 0; i < puffs; ++i) {
-                const float life = std::fmod(t * src.rate + float(i) / puffs + float(s) * .37f, 1.f);
-                const Vec3 wander{std::sin(float(i) * 2.1f + t * .5f) * .7f * life, src.height * life,
-                                  std::cos(float(i) * 1.7f + t * .4f) * .5f * life};
-                const Vec3 at = src.base + wander + src.drift * (life * life);
-                const float radius = src.size * (.45f + 1.7f * life);
-                const Vertex centre{view.transform(at), 0, 0};
-                if (centre.position.z < view.near + radius) continue;
-                const auto p = view.project(centre);
-                const float pixels = radius * view.focal / centre.position.z;
-                if (pixels < 1.f) continue;
-                const int r = int(pixels + 1), cx = int(p.x), cy = int(p.y);
-                if (cx + r < 0 || cx - r >= view.width || cy + r < 0 || cy - r >= view.height) continue;
-                const float z = enhanced ? encodedDepth(p.depth) : p.depth * view.near * 65534;
-                // Fade in over the fire, thin out as it spreads; sunset-lit ember-copper low, dusky rose-smoke high.
-                const float strength = std::min(1.f, life * 6.f) * (1.f - life);
-                const unsigned peak = unsigned(150.f * strength);
-                if (peak < 6) continue;
-                const int warm = int(42.f * (1.f - life));
-                const uint16_t tint = invasionDusk ? rgb(88 + warm, 52 + warm / 2, 54) : rgb(52 + warm, 50 + warm / 2, 52);
-                const float inv = 1.f / (pixels * pixels);
-                for (int y = std::max(0, cy - r); y <= std::min(view.height - 1, cy + r); ++y) {
-                    const float dy = float(y - cy);
-                    for (int x = std::max(0, cx - r); x <= std::min(view.width - 1, cx + r); ++x) {
-                        const float dx = float(x - cx), fall = 1.f - (dx * dx + dy * dy) * inv;
-                        if (fall <= 0) continue;
-                        const int at = y * view.width + x;
-                        if (z + 1 >= depth[at]) color[at] = blend(color[at], tint, unsigned(float(peak) * fall));
-                    }
-                }
+    void smokePlumes(float time, float gust) {
+        std::array<Vec3, smokePuffs> curls{};
+        for (size_t j = 0; j < curls.size(); ++j) {
+            const float curl = time * .52f + j * 1.7f;
+            curls[j] = {std::sin(curl), 0, std::cos(curl)};
+        }
+        for (size_t i = 0; i < assets.smoke.size(); ++i) {
+            const auto& src = assets.smoke[i];
+            for (size_t j = 0; j < smokePuffs; ++j) {
+                const float life = unitCycle(time * src.rate + float(j) / smokePuffs + float(i) * .37f);
+                const float rise = life * (.47f + .53f * life);
+                const Vec3 at = src.base + src.drift * (rise * (.8f + gust * .25f)) +
+                                Vec3{curls[j].x * rise * 1.8f, src.height * rise, curls[j].z * life};
+                const float spread = src.size * (.46f + life * 1.4f);
+                const float strength = std::min(1.f, life * 12.f) * (1.f - life);
+                const unsigned heat = unsigned(180.f * (1.f - life) * (1.f - life));
+                const auto rim = blend(rgb(111, 111, 134), rgb(134, 86, 69), heat);
+                const auto soot = blend(rgb(47, 51, 65), rgb(58, 37, 34), heat);
+                queueAir(at, spread, spread * 1.32f, spread * .48f, 243.f * strength, rim, soot,
+                         atmosphere::clouds[(i + j) % atmosphere::clouds.size()]);
             }
         }
+    }
+
+    void firePlumes(float time, float gust) {
+        constexpr uint16_t orange = rgb(255, 76, 10), yellow = rgb(255, 208, 88), hot = rgb(255, 247, 180);
+        for (size_t i = 0; i < assets.fires.size(); ++i) {
+            const auto& src = assets.fires[i];
+            for (size_t j = 0; j < fireParticles; ++j) {
+                const auto& pattern = firePatterns[i].flames[j];
+                const float life = unitCycle(time * (.84f + .10f * (j % 4)) + pattern.phase * .55f);
+                const float height = src.height * (.22f + .32f * life);
+                const Vec3 offset{pattern.x + life * (.38f + .31f * gust),
+                                  height * .68f + src.height * life * .48f, pattern.z};
+                const float light = 4.f * life * (1.f - life);
+                const float width = src.width * (.47f - life * .20f);
+                queueAir(src.base + offset, width, height, .12f + width * .24f, light * 253.f,
+                         orange, (j & 1) ? yellow : hot, atmosphere::flames[j % atmosphere::flames.size()]);
+            }
+        }
+    }
+
+    void fireSparks(float time, float gust) {
+        for (size_t i = 0; i < assets.fires.size(); ++i) {
+            const auto& src = assets.fires[i];
+            if (view.transform(src.base).z > 42.f) continue;
+            for (size_t j = 0; j < fireParticles; ++j) {
+                const auto& pattern = firePatterns[i].sparks[j];
+                const float life = unitCycle(time * (.43f + (j % 4) * .11f) + pattern.phase);
+                const Vec3 rise{pattern.x + life * (1.8f + gust),
+                                src.height * (.46f + life * (1.8f + .15f * j)), pattern.z};
+                const Vec3 tip = src.base + rise;
+                drawTracer({tip - Vec3{.09f, .15f + life * .12f, 0}, tip, (1.f - life) * .79f},
+                           life < .3f ? rgb(255, 213, 111) : rgb(240, 115, 48));
+            }
+        }
+    }
+
+    void flareSmoke(float time, float gust) {
+        for (size_t i = 0; i < assets.roadFlares.size(); ++i) {
+            const Vec3 tip = assets.roadFlares[i];
+            for (size_t j = 0; j < flarePuffs; ++j) {
+                const float age = unitCycle(time * .44f + i * .23f + float(j) / flarePuffs);
+                const Vec3 drift{age * age * (.76f + .38f * gust), .13f + age * .94f, -.24f * age};
+                queueAir(tip + drift, .14f + age * .34f, .24f + age * .25f, .17f, 120.f * (1.f - age),
+                         rgb(118, 82, 91), rgb(229, 63, 60), atmosphere::clouds[(i + j) % atmosphere::clouds.size()]);
+            }
+        }
+    }
+
+    void rainSquall(float time, float strength, float gust) {
+        if (strength < .06f) return;
+        const auto wrap = [](float x, float span) { return x - std::floor(x / span) * span; };
+        uint32_t seed = 41281u;
+        const auto random = [&seed] {
+            seed = seed * 1664525u + 1013904223u;
+            return float(seed >> 16) / 65536.f;
+        };
+        const Vec3 wind{1.6f + gust * 1.1f, 0, -.55f};
+        const uint16_t tint = rgbClamped(138.f + strength * 30.f, 153.f + strength * 30.f, 177.f + strength * 26.f);
+        const unsigned alpha = unsigned((strength * .51f) * 220.f);
+        const int drops = enhanced ? 150 : 94;
+        for (int i = 0; i < drops; ++i) {
+            const float x = random() * 26.f, z = random() * 26.f, start = random() * 8.f;
+            const Vec3 at{view.position.x + wrap(x + time * wind.x - view.position.x, 26.f) - 13.f,
+                          wrap(start - time * (10.f + i % 4), 8.f),
+                          view.position.z + wrap(z + time * wind.z - view.position.z, 26.f) - 13.f};
+            const auto projected = view.transform(at);
+            if (projected.z < 2.8f || std::abs(projected.x) > view.xSlope * projected.z + .3f ||
+                std::abs(projected.y) > view.ySlope * projected.z + .6f) continue;
+            const Vec3 end = at + Vec3{wind.x * .10f, -.38f - (i % 3) * .065f, wind.z * .10f};
+            drawViewTracer(projected, view.transform(end), tint, alpha);
+        }
+    }
+
+    void campaignAtmosphere(const Snapshot& state) {
+        const auto start = timestamp();
+        const float time = float(state.realTime);
+        const float density = state.mission && state.mission->active ? state.mission->mistDensity : .74f;
+        const float gust = std::sin(time * .61f) * .66f + std::sin(time * 1.17f) * .34f;
+        airSprites.clear();
+        valleyMist(time, density, gust);
+        smokePlumes(time, gust);
+        firePlumes(time, gust);
+        flareSmoke(time, gust);
+        std::sort(airSprites.begin(), airSprites.end(),
+                  [](const AirSprite& a, const AirSprite& b) { return a.back < b.back; });
+        for (const auto& sprite : airSprites) drawAir(sprite);
+        fireSparks(time, gust);
+        for (size_t i = 0; i < assets.roadFlares.size(); ++i) {
+            const float glow = .72f + .20f * std::sin(time * 9.3f + i);
+            drawGlowDisc(assets.roadFlares[i] + Vec3{0, .025f, 0}, .25f, rgb(255, 235, 197),
+                         rgb(255, 56, 45), glow, false);
+        }
+        if (state.mission && state.mission->phase == MissionPhase::Extraction && !state.mission->cinematic) {
+            rainSquall(time, std::clamp((density - .855f) * 11.f, 0.f, 1.f), gust);
+        }
+        recordRasterTime(start);
     }
 
     void weather(const Snapshot& state) {
@@ -1683,34 +1900,6 @@ struct Renderer::Impl {
             for (int n = 0; n < 4; ++n) {
                 const int at = (y + n) * view.width + x + n / 3;
                 color[at] = blend(color[at], rgb(168, 186, 202), 36);
-            }
-        }
-    }
-
-    void invasionAtmosphere(const Snapshot& state, bool title) {
-        // Slow drifting ash motes and glowing embers; single trig pair outside loop for zero hot-loop sin() cost.
-        uint32_t seed = 918273u;
-        const int count = enhanced ? 46 : 24;
-        const float t = float(state.realTime);
-        const int s = int(std::sin(t * 0.9f) * 12.f), c = int(std::cos(t * 0.9f) * 12.f);
-        const int sway[4]{s, c, -s, -c};
-        const int wSpan = view.width - 2, hSpan = view.height - 2;
-        for (int i = 0; i < count; ++i) {
-            seed = seed * 1664525u + 1013904223u;
-            const float speed = 7.f + float((seed >> 24) & 15) * 1.4f;
-            const int drift = int(t * speed);
-            const int rawX = int((seed >> 10) & 0x7fffu) + (drift * 9) / 20 + sway[i & 3];
-            const int x = ((rawX % wSpan) + wSpan) % wSpan;
-            const int rawY = int((seed >> 2) & 0x7fffu) - drift;
-            const int y = ((rawY % hSpan) + hSpan) % hSpan;
-            const bool ember = (i & 3) == 0;
-            const bool cyan = !title && (i % 9) == 0;
-            const uint16_t tint = cyan ? rgb(88, 240, 255) : ember ? rgb(255, 134, 62) : rgb(214, 128, 92);
-            const unsigned alpha = ember || cyan ? 132u : 58u;
-            const int at = y * view.width + x;
-            color[at] = blend(color[at], tint, alpha);
-            if (enhanced && (ember || cyan) && x + 1 < view.width) {
-                color[at + 1] = blend(color[at + 1], tint, alpha / 2);
             }
         }
     }
@@ -1777,6 +1966,7 @@ struct Renderer::Impl {
         if (!title) {
             if (missionActive) {
                 for (const auto& ma : state.mission->actors) drawMissionActor(ma, state);
+                drawUplink(state);
             } else {
                 drawActor(state.rival, state, false, state.alternateRival, rivalHeightScale);
                 if (state.freeForAll) drawActor(state.secondRival, state, false, true);
@@ -1844,14 +2034,26 @@ struct Renderer::Impl {
         }
         drawSkyCube();
         draw(translucent, false);
-        if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion) {
-            groundMist(state);
-        }
+        if (invasionDusk) campaignAtmosphere(state);
         if (missionActive) {
             drawShieldGlows(float(state.realTime));
+            for (const auto& actor : state.mission->actors) {
+                if (actor.active && !actor.dead && actor.arrival > 0.f) drawArrival(actor, float(state.realTime));
+            }
+            const unsigned plasmaPhase = unsigned(state.realTime * 42.0);
             for (size_t i = 0; i < muzzleGlowCount; ++i) {
                 const auto& mg = muzzleGlows[i];
-                drawGlowDisc(mg.pos, mg.radius, mg.core, mg.halo, mg.intensity, mg.star);
+                if (mg.plasma) drawPlasmaCloud(mg.pos, mg.radius, mg.intensity, plasmaPhase + unsigned(i) * 11u, mg.star);
+                else drawGlowDisc(mg.pos, mg.radius, mg.core, mg.halo, mg.intensity, mg.star);
+            }
+            for (size_t i = 0; i < state.mission->plasma.size(); ++i) {
+                const auto& cloud = state.mission->plasma[i];
+                if (cloud.radius <= 0.f) continue;
+                const unsigned phase = plasmaPhase + unsigned(i) * 19u;
+                drawPlasmaCloud(cloud.position - cloud.direction * (cloud.radius * .94f),
+                                cloud.radius * .79f, .25f, phase + 7u, false);
+                drawPlasmaCloud(cloud.position, cloud.radius * 1.24f, cloud.charged ? .98f : .85f,
+                                phase, cloud.charged);
             }
             for (const auto& shot : state.mission->tracers) {
                 if (shot.time > 0) drawMissionTracer(shot, float(state.realTime));
@@ -1867,10 +2069,6 @@ struct Renderer::Impl {
             }
         }
         if (assets.arena == Arena::ShipBox) weather(state);
-        else if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion) {
-            smoke(state);
-            invasionAtmosphere(state, title);
-        }
         const bool introWeaponHidden = missionActive && state.lower >= 0.99f &&
                                        (state.mission->phase == MissionPhase::Intro || state.mission->cinematic);
         if (!title && !state.dead && !introWeaponHidden && state.device == Device::None && state.scope < 0.6f &&
@@ -1910,6 +2108,8 @@ uint64_t Renderer::workingBytes() const {
     uint64_t duskSky = 0;
     for (const auto& face : impl_->sunsetSky) duskSky += face.capacity() * sizeof(uint16_t);
     return sizeof(Impl) + mips + duskSky + impl_->light.bytes() + (impl_->depth.capacity() + impl_->edgeRow.capacity()) * sizeof(uint16_t) +
+           impl_->airSprites.capacity() * sizeof(Impl::AirSprite) +
+           impl_->firePatterns.capacity() * sizeof(Impl::FirePattern) +
            impl_->culledNormals.capacity() * sizeof(Vec3) + impl_->worldLights.capacity() +
            impl_->posedVertices.capacity() * sizeof(PosedVertex) +
            (impl_->solid.capacity() + impl_->translucent.capacity()) * sizeof(Primitive) +

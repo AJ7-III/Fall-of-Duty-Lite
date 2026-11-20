@@ -29,7 +29,7 @@ def main():
     base = Path(__file__).resolve().parent
     scenes = args.scene or sorted(path.name.removesuffix(".fodtrace") for path in args.reference.glob("*.fodtrace"))
     if not scenes:
-        raise SystemExit("No browser traces; run capture-reference.mjs first.")
+        raise SystemExit("No replay traces found.")
     summary = {
         "clock": "steady_clock wall time on host, uncapped, no live scanout or GPIO",
         "system": platform.platform(),
@@ -44,6 +44,7 @@ def main():
 
     for scene in scenes:
         trace = args.reference / f"{scene}.fodtrace"
+        header, initial, *_ = trace.read_text().splitlines()
         browser = args.reference / f"{scene}.browser.json"
         journal = args.out / f"{scene}.400.jsonl"
         compact = args.out / f"{scene}.320.jsonl"
@@ -55,11 +56,26 @@ def main():
             raise RuntimeError(f"Resolution changed gameplay in {scene}")
         if result["missingDraws"] or result["unusedDraws"]:
             raise RuntimeError(f"Replay random draws changed in {scene}")
-        if trace.read_text().splitlines()[0] == "FODTRACE 2":
+        if header in {"FODTRACE 2", "FODTRACE 3"}:
             ticks = [json.loads(line) for line in journal.read_text().splitlines()]
+            key = "mission" if header == "FODTRACE 3" else "secondRival"
             if ([sample["tick"] for sample in ticks] != list(range(1, result["inputTicks"] + 1))
-                    or any("secondRival" not in sample for sample in ticks)):
-                raise RuntimeError(f"Free-for-all journal is incomplete in {scene}")
+                    or any(key not in sample for sample in ticks)):
+                raise RuntimeError(f"Native journal is incomplete in {scene}")
+            if key == "mission":
+                mission = [sample["mission"] for sample in ticks]
+                phases = sorted({sample["phase"] for sample in mission})
+                start = initial.split()[-1]
+                if start == "breakout":
+                    valid = phases == [0, 1, 2] and max(sample["aliens"] for sample in mission) == 4
+                else:
+                    valid = (phases == [6, 7] and any(sample["apache"] for sample in ticks)
+                             and any(sample["hold"] > 0 and sample["perimeter"] == 15 for sample in mission))
+                if not valid or not any(sample["plasma"] > 0 for sample in mission) or not any(
+                        sample["shock"] > 0 for sample in mission):
+                    raise RuntimeError(f"Campaign replay missed its combat beats in {scene}")
+                result["missionPhases"] = phases
+                result["peakPlasma"] = max(sample["plasma"] for sample in mission)
         else:
             report = args.out / f"{scene}.comparison.json"
             subprocess.run([sys.executable, str(base / "compare-replay.py"), str(browser), str(journal),
@@ -76,7 +92,7 @@ def main():
             for mode in (400, 320):
                 output = args.out / f"{mark.stem}.{mode}.ppm"
                 simulate(["--trace", trace, "--image-tick", tick, "--image", output, "--mode", mode])
-        if scene in {"long-lane", "apache", "ffa-apache"} and not args.skip_bench:
+        if (header == "FODTRACE 3" or scene in {"long-lane", "apache", "ffa-apache"}) and not args.skip_bench:
             output = simulate(["--bench", trace, "--frames", args.frames, "--warmup", args.warmup, "--mode", "both"])
             result["hostTiming"] = [json.loads(line) for line in output.splitlines()]
         summary["scenes"][scene] = result

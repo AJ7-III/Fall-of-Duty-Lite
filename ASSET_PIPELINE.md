@@ -15,7 +15,7 @@ The exporter runs the browser asset builders in local Chromium. It writes to `ou
 
 ## Texture finishing
 
-The exporter grades and sharpens selected surfaces at their final texture dimensions before converting them to RGB565. The [sharpening pass](tools/texture-treatment.mjs) applies a bounded luminance adjustment to keep lettering, joints, and corrugations readable.
+The exporter grades and sharpens surfaces at their final texture dimensions before converting them to RGB565. The [texture finishing pass](tools/texture-treatment.mjs) uses separate profiles for printed art, painted metal, paving, soil and weapon materials. It limits sharpening and adds seamless patina to surfaces such as corrugated steel and concrete.
 
 The cloud tones are sampled in panorama space before export to six 64×64 luminance faces. The renderer interpolates cloud tones and looks up the sky color in a small RGB565 palette. The game draws the HUD at display resolution.
 
@@ -23,7 +23,9 @@ The exporter samples one in three of the browser yard's grass placements and bui
 
 ## Infantry and weapon finishes
 
-The native infantry builder uses a contoured head mesh and separate 64×64 face textures for all three characters. Longer legs and torsos raise their silhouettes by 5 cm with the soles at the original height. Padded fingers, wide cuffs, and fuller sleeves give the first-person grips more volume. The closer wrist position blends out during weapon motion. RGB565 textures supply the camouflage cloth, the painted M40A3 stock, and the highlight in its scope glass.
+The native infantry builder uses a contoured head mesh and separate 64×64 face textures for all three characters. Longer legs and torsos raise their silhouettes by 5 cm with the soles at the original height. Padded fingers, wide cuffs, and fuller sleeves give the first-person grips more volume. The closer wrist position blends out during weapon motion. RGB565 textures distinguish woven sleeves, stippled gloves, walnut and blued steel. The M40A3 has a three-tone painted stock and a tinted highlight on the lens.
+
+Briar House builds its masonry, shingles, floors, cabin siding and glass locally from procedural tiles. Its campaign renderer uses the shared cloud data with a separate dusk palette.
 
 ## Pack layout
 

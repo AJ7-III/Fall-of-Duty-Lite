@@ -70,8 +70,8 @@ public:
     const NavNode& node(int i) const { return assets_.navNodes[i]; }
 
     int nearest(Vec3 p) const {
-        const int side = int(std::sqrt(size_));
-        if (side == 26 && size_ == 676) {
+        constexpr int side = 26;
+        if (size_ == side * side) {
             const int ix = int(std::floor((p.x + 15.) / step + .5));
             const int iz = int(std::floor((p.z + 15.) / step + .5));
             for (int ring = 0; ring <= 3; ++ring) {
@@ -114,7 +114,6 @@ public:
             out.push_back(first);
             return true;
         }
-        std::fill(g_.begin(), g_.end(), infinity);
         std::fill(state_.begin(), state_.end(), 0);
         used_ = 0;
         g_[first] = 0;
@@ -134,8 +133,9 @@ public:
             for (uint32_t i = from.first; i < from.first + from.count; ++i) {
                 const auto& edge = assets_.navEdges[i];
                 const int to = int(edge.to);
+                if (state_[to] == 2) continue;
                 const double cost = double(g_[here]) + edgeCost(edge.cost);
-                if (state_[to] == 2 || cost >= g_[to]) continue;
+                if (cost >= (state_[to] == 1 ? g_[to] : infinity)) continue;
                 g_[to] = float(cost);
                 f_[to] = float(cost + distance(to, goal));
                 parent_[to] = here;

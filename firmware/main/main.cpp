@@ -565,7 +565,23 @@ void gameplay() {
     fod::Assets assets;
     loadPack(assets);
     const char* name = CONFIG_FOD_REPLAY_SCENE;
-    const uint8_t launch = *name ? uint8_t(LaunchDefault) : board::takeLaunch();
+    fod::ReplayTrace trace;
+    fod::ReplayTrace* replay = nullptr;
+    if (*name) {
+        if (std::strlen(name) > 48 ||
+            std::strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::strlen(name)) {
+            showRecovery("INVALID REPLAY NAME");
+            return;
+        }
+        std::string error, path = std::string("/sd/") + name + ".fodtrace";
+        if (!trace.load(path.c_str(), error, assets.extent)) {
+            ESP_LOGE(tag, "cannot load %s (%s)", path.c_str(), error.c_str());
+            showRecovery(error.c_str());
+            return;
+        }
+        replay = &trace;
+    }
+    const uint8_t launch = replay ? uint8_t(replay->campaign() ? LaunchCampaign : LaunchDefault) : board::takeLaunch();
     if (launch == LaunchCampaign || launch == LaunchBriarMatch) {
         showLoading(launchTitle(launch));
         const auto begin = board::timeUs();
@@ -582,23 +598,9 @@ void gameplay() {
                  static_cast<unsigned long long>(assets.residentBytes));
         board::logMemory("arena-built");
     }
-    fod::App app(assets, *name ? 0u : esp_random());
+    fod::App app(assets, replay ? 0u : esp_random());
     toMenu(board::readSettings(), app.settings());
-    fod::ReplayTrace trace;
-    fod::ReplayTrace* replay = nullptr;
-    if (*name) {
-        if (std::strlen(name) > 48 ||
-            std::strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != std::strlen(name)) {
-            showRecovery("INVALID REPLAY NAME");
-            return;
-        }
-        std::string error, path = std::string("/sd/") + name + ".fodtrace";
-        if (!trace.load(path.c_str(), error)) {
-            ESP_LOGE(tag, "cannot load %s (%s)", path.c_str(), error.c_str());
-            showRecovery(error.c_str());
-            return;
-        }
-        replay = &trace;
+    if (replay) {
 #if CONFIG_FOD_REPLAY_COMPACT
         app.settings().compact = true;
 #else

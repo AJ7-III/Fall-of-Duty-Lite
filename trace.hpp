@@ -14,11 +14,15 @@ public:
     bool load(const char* path, std::string& error, ArenaExtent extent = {});
     void begin(App& app);
     bool step(App& app);
+    bool campaign() const { return campaignStart_ != CampaignStart::None; }
     size_t length() const { return inputs_.size(); }
     size_t unusedDraws() const;
     uint32_t missingDraws() const { return missingDraws_; }
 
 private:
+    enum class CampaignStart { None, Breakout, LandingZone };
+    CampaignStart campaignStart_ = CampaignStart::None;
+
     struct Draw {
         uint32_t tick = 0;
         std::array<char, 40> site{};

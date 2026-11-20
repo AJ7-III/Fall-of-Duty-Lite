@@ -1,6 +1,7 @@
 #include "app.hpp"
 #include "assets.hpp"
 #include "briar_house.hpp"
+#include "briar_mission_data.hpp"
 #include "mission.hpp"
 #include "mission_internal.hpp"
 #include "game_bot.hpp"
@@ -167,7 +168,7 @@ void checkTouchAndReconnect(const Assets& assets) {
     App app(assets);
     Input input;
     input.touchX = startX + 16;
-    input.touchY = setupY + 16;
+    input.touchY = startCard(StartItem::MatchSetup).y + 16;
     app.tick(input);
     check(app.settings().setup && app.state().match == Match::Start, "Touch Match Setup should open settings.");
     input.touchX = 620;
@@ -189,7 +190,7 @@ void checkTouchAndReconnect(const Assets& assets) {
     check(!app.settings().setup && app.state().match == Match::Start, "Back to Start should close settings.");
     app.settings().voice = false;
     input.touchX = startX + 16;
-    input.touchY = startY + 16;
+    input.touchY = startCard(StartItem::BotMatch).y + 16;
     app.tick(input);
     check(app.state().match == Match::Playing, "Touch should start the live duel.");
     check(app.state().difficulty == 5, "A new installation should start at difficulty level 5.");
@@ -224,7 +225,7 @@ void checkFreeForAllMenu(const Assets& assets) {
     App app(assets);
     Input input;
     input.touchX = startX + 16;
-    input.touchY = setupY + 16;
+    input.touchY = startCard(StartItem::MatchSetup).y + 16;
     app.tick(input);
     input.touchX = menuX + menuWidth - 8;
     input.touchY = menuY + RivalRow * menuRowHeight + 2;
@@ -914,6 +915,251 @@ void checkBriarHouse(Assets& assets) {
 #endif
 }
 
+void playBriarHouse(const Assets& assets, const game_detail::World& world, game_detail::Navigation& nav, bool retries) {
+    using namespace game_detail;
+    const auto point = [](float x, float y) { return Vec3{(x - 316) * .05f, 0.f, (212.5f - y) * .05f}; };
+    Game mission(assets, 23);
+    mission.startMission(42, 3, false);
+    for (int i = 0; i < 65; ++i) mission.step({});
+    check(mission.state().mission->titleCard > 0.f && mission.state().mission->phase == MissionPhase::Intro,
+          "Mission 1 must open on the title card.");
+    mission.step(Input{0, 0, 0, 0, Jump, Jump});
+    check(mission.state().mission->titleCard == 0.f && mission.state().mission->phase == MissionPhase::Intro,
+          "Jump must move the title card on to the wake-up.");
+    for (int i = 0; i < 65; ++i) mission.step({});
+    mission.step(Input{0, 0, 0, 0, Jump, Jump});
+    check(mission.state().mission->phase == MissionPhase::Overwatch, "Jump must allow skipping the wake-up intro.");
+    check(mission.canRetryCheckpoint() && mission.state().mission->checkpointStage == MissionCheckpoint::Overwatch,
+          "Reaching the overwatch must save a checkpoint so a breach death skips the intro.");
+    {
+        // The road patrol stands well beyond the front wall: a real sniper shot from the portico.
+        const auto& m = *mission.state().mission;
+        float nearest = 1e9f;
+        for (int i = 4; i < int(MissionSnapshot::maxActors); ++i) {
+            if (m.actors[i].active) nearest = std::min(nearest, planar(m.actors[i].actor.position - point(368, 380)));
+        }
+        check(nearest > 12.f, "Overwatch targets must patrol the road beyond the front wall.");
+    }
+    // Reloading the overwatch checkpoint skips the intro and resets the patrol.
+    if (retries) mission.startMission(41, 3, true);
+    mission.step({});
+    check(mission.state().mission->phase == MissionPhase::Overwatch && mission.state().mission->retries == int(retries) &&
+              mission.state().mission->aliensRemaining == 3 && mission.state().eyeHeight > 1.6f,
+          "The overwatch checkpoint must resume standing on the portico with the road patrol reset.");
+    {
+        // Campaign quick-swap: a tap returns to the previous weapon, holding Swap reaches the third.
+        const auto tap = [&] {
+            mission.step(Input{0, 0, 0, 0, Swap, Swap});
+            for (int t = 0; t < 40; ++t) mission.step({});
+        };
+        check(mission.state().weapon == Weapon::Mp44, "The mission must start on the MP44.");
+        tap();
+        check(mission.state().weapon == Weapon::Sniper, "The first tap must bring up the M40A3 for the overwatch.");
+        tap();
+        check(mission.state().weapon == Weapon::Mp44, "A second tap must go straight back to the MP44.");
+        mission.step(Input{0, 0, 0, 0, Swap, Swap});
+        for (int t = 0; t < 40; ++t) mission.step(Input{0, 0, 0, 0, Swap, 0});
+        check(mission.state().weapon == Weapon::Pistol, "Holding Swap must reach the USP .45.");
+        tap();
+        check(mission.state().weapon == Weapon::Mp44, "A tap from the USP must return to the MP44.");
+        check(mission.state().mission->phase == MissionPhase::Overwatch, "Swapping must not trigger the breach.");
+    }
+
+    const auto walkToward = [&](Vec3 target) {
+        const Vec3 pos = mission.state().player.position;
+        std::vector<int> route;
+        if (world.blocked(atHeight(pos, .65f), atHeight(target, .65f)) &&
+            nav.path(nav.nearest(pos), nav.nearest(target), route) && route.size() > 1) {
+            target = nav.node(route[1]).position;
+        }
+        const Vec3 dir = normalized({target.x - pos.x, 0, target.z - pos.z});
+        const float sy = std::sin(mission.state().playerYaw), cy = std::cos(mission.state().playerYaw);
+        mission.step(Input{dir.x * cy - dir.z * sy, dir.x * sy + dir.z * cy, 0, 0, Sprint});
+    };
+    const auto aimAt = [&](Vec3 target) {
+        const Vec3 delta = target - mission.state().camera.position;
+        const float dy = std::remainder(std::atan2(delta.x, delta.z) - mission.state().playerYaw, 2 * pi);
+        const float dp = -std::atan2(delta.y, std::max(.01f, planar(delta))) - mission.state().playerPitch;
+        Input in{};
+        in.lookX = std::clamp(dy, -.35f, .35f);
+        in.lookY = std::clamp(dp, -.35f, .35f);
+        if (std::abs(dy) < .035f && std::abs(dp) < .035f) {
+            const auto& state = mission.state();
+            const Vec3 shot = normalized(delta);
+            const Vec3 right{std::cos(state.playerYaw), 0, -std::sin(state.playerYaw)};
+            for (int i = 1; i <= 3; ++i) {
+                const auto& civ = state.mission->actors[i];
+                if (!civ.active || civ.dead) continue;
+                const Vec3 fromEye = atHeight(civ.actor.position, .8f) - state.camera.position;
+                const float along = dot(fromEye, shot);
+                const Vec3 crossing = fromEye - shot * along;
+                if (along > 0 && along < length(delta) + 1.f &&
+                    std::abs(dot(crossing, right)) < .5f + .10f * along &&
+                    std::abs(crossing.y) < 1.f + .10f * along) {
+                    in.moveX = dot(crossing, right) < 0.f ? 1.f : -1.f;
+                    return in;
+                }
+            }
+            in.held = in.pressed = Fire;
+        }
+        return in;
+    };
+
+    // Helper to aim directly at an active alien and fire until eliminated.
+    const auto clearActiveAliens = [&](int maxTicks) {
+        for (int t = 0; t < maxTicks && mission.state().match == Match::Playing; ++t) {
+            const auto& m = *mission.state().mission;
+            int target = -1;
+            float best = 1e9f;
+            for (int i = 4; i < int(MissionSnapshot::maxActors); ++i) {
+                if (!m.actors[i].active || m.actors[i].dead) continue;
+                const float d = planar(m.actors[i].actor.position - mission.state().player.position);
+                if (d < best) { best = d; target = i; }
+            }
+            if (target < 0) return;
+            const auto& ma = m.actors[target];
+            const Vec3 aim = ma.role == MissionRole::AlienDrone ? ma.actor.position : atHeight(ma.actor.position, 1.35f);
+            if (world.blocked(mission.state().camera.position, aim)) walkToward(ma.actor.position);
+            else mission.step(aimAt(aim));
+        }
+    };
+
+    // The lawn team and the rear-door flankers both have to fall before the Breach ends.
+    const auto fighting = [&] {
+        const auto phase = mission.state().mission->phase;
+        return mission.state().match == Match::Playing && (phase == MissionPhase::Overwatch || phase == MissionPhase::Breach);
+    };
+    for (int round = 0; round < 12 && fighting(); ++round) {
+        clearActiveAliens(600);
+        for (int t = 0; t < 60 && fighting() && mission.state().mission->aliensRemaining == 0; ++t) mission.step({});
+    }
+    check(mission.state().mission->phase == MissionPhase::Regroup && mission.canRetryCheckpoint(),
+          "Clearing Breach must enter the quiet Regroup lull and unlock the checkpoint.");
+    check(mission.state().mission->aliensKilled >= 4,
+          "A flanking team must hit the rear doors once the lawn push thins out.");
+    for (int t = 0; t < 260 && mission.state().mission->phase == MissionPhase::Regroup; ++t) mission.step({});
+    check(mission.state().mission->phase == MissionPhase::Rescue,
+          "Regroup lull must transition cleanly into the Rescue phase.");
+
+    // Verify retry from checkpoint starts directly in Rescue outside Briar House on South Boulevard,
+    // without prematurely triggering the distant town districts.
+    if (retries) {
+        mission.startMission(43, 3, true);
+        mission.step({});
+        check(mission.state().mission->phase == MissionPhase::Rescue && mission.state().mission->introProgress == 1.f,
+              "Retrying from checkpoint must resume directly in Rescue phase.");
+        check(mission.state().mission->aliensRemaining == 0,
+              "Starting on South Boulevard must not prematurely trigger distant town rescue districts.");
+    }
+
+    // Sweep all three surrounding town districts (East Ridge, North Valley, West Timberline),
+    // verifying that the rescue objectives and Extraction LZ cover ground well outside Briar House.
+    const Vec3 sectorTargets[3]{point(920, 445), point(535, -215), point(-298, 252)};
+    auto outsideEstate = [](Vec3 p) { return std::abs(p.x) > 19.f || std::abs(p.z) > 15.5f; };
+    for (int s = 0; s < 3; ++s) {
+        check(outsideEstate(sectorTargets[s]), "Each town rescue district must lie outside Briar House.");
+        const int civSlot = s + 1;
+        for (int t = 0; t < 1800 && !civilianRescued(mission.state().mission->actors[civSlot].civilian); ++t) {
+            if (mission.state().mission->aliensRemaining > 0) clearActiveAliens(180);
+            else walkToward(sectorTargets[s]);
+        }
+    }
+    check(mission.state().mission->civiliansSaved == 3, "Clearing and reaching all districts must rescue all 3 civilians.");
+    check(mission.state().mission->phase == MissionPhase::Uplink && mission.state().mission->uplinkHealth > 0.f,
+          "The completed sweep must reveal the jammer objective.");
+    check(mission.state().mission->hasWaypoint && outsideEstate(uplinkPosition),
+          "The North Avenue uplink must publish route guidance.");
+    check(mission.canRetryCheckpoint() && mission.state().mission->checkpointStage == MissionCheckpoint::Uplink,
+          "Finishing the sweep must save a checkpoint before the uplink.");
+    if (retries) {
+        const int killsAtCheckpoint = mission.state().mission->aliensKilled;
+        mission.startMission(44, 3, true);
+        mission.step({});
+        {
+            const auto& cp = *mission.state().mission;
+            check(cp.phase == MissionPhase::Uplink && cp.civiliansSaved == 3 && cp.retries == 3 &&
+                      cp.aliensKilled == killsAtCheckpoint && cp.missionSeconds > 20.f,
+                  "The uplink checkpoint must carry all civilian rescues, kills, and mission time.");
+            int sheltering = 0;
+            for (int c = 1; c <= 3; ++c) sheltering += cp.actors[c].active && civilianRescued(cp.actors[c].civilian);
+            check(sheltering == 3, "Civilian outcomes must survive a checkpoint reload.");
+        }
+    }
+
+    const Vec3 core = uplinkPosition + uplinkEmitter;
+    const float initialIntegrity = mission.state().mission->uplinkHealth;
+    for (int t = 0; t < 1800 && mission.state().mission->phase == MissionPhase::Uplink; ++t) {
+        if (planar(mission.state().player.position - uplinkPosition) > 16.f ||
+            world.blocked(mission.state().camera.position, core)) walkToward(uplinkPosition);
+        else mission.step(aimAt(core));
+    }
+    check(mission.state().mission->phase == MissionPhase::Incoming && initialIntegrity > 0.f &&
+              mission.state().mission->uplinkHealth == 0.f && !mission.state().apacheReady,
+          "Player rounds must destroy the uplink before the major counterattack.");
+    check(mission.state().mission->checkpointStage == MissionCheckpoint::Extraction, "Destroying the uplink must save a separate extraction checkpoint.");
+
+    if (retries) {
+        mission.startMission(45, 3, true);
+        check(mission.state().mission->phase == MissionPhase::Incoming && mission.state().mission->uplinkHealth == 0.f &&
+                  mission.state().mission->uplinkVisible && mission.state().mission->retries == 4,
+              "The extraction checkpoint must keep the uplink disabled.");
+    }
+
+    const Vec3 lz = point(210, -220);
+    for (int t = 0; t < 650 && mission.state().mission->phase == MissionPhase::Incoming; ++t) {
+        if (planar(mission.state().player.position - lz) > 5.f) walkToward(lz);
+        else mission.step({});
+    }
+    check(mission.state().mission->phase == MissionPhase::Extraction && mission.state().apacheReady &&
+              mission.state().mission->evacSeconds > 40.f,
+          "Reaching the North LZ must sound the warhorn and start the timed hold with Apache support.");
+
+    // Deploy US Apache support and hold until the evac birds arrive.
+    mission.step(Input{0, 0, 0, 0, Streak, Streak});
+    for (int t = 0; t < 60 && !mission.state().apacheActive; ++t) mission.step({});
+    check(mission.state().apacheActive, "Pressing Streak during Extraction must deploy the US Apache gunship.");
+    const int killsBeforeHold = mission.state().mission->aliensKilled;
+    const Vec3 beyondPerimeter = point(525, -220);
+    for (int t = 0; t < 240 && planar(mission.state().player.position - lz) < 15.1f; ++t) walkToward(beyondPerimeter);
+    const float pausedHold = mission.state().mission->evacSeconds;
+    for (int t = 0; t < 30; ++t) mission.step({});
+    check(planar(mission.state().player.position - lz) > 15.f && mission.state().mission->evacSeconds == pausedHold &&
+              std::string_view(mission.state().mission->objective) == "RETURN TO THE NORTH LZ",
+          "The evacuation countdown must pause while the player is outside the landing zone.");
+    bool sawExfil = false, allBoarded = false;
+    for (int t = 0; t < 120 * 60 && mission.state().match == Match::Playing; ++t) {
+        if (planar(mission.state().player.position - lz) >= 14.f) walkToward(lz);
+        else if (mission.state().mission->aliensRemaining > 0) clearActiveAliens(60);
+        else mission.step({});
+        const auto& m = *mission.state().mission;
+        if (m.cinematic && m.evacVisible) {
+            sawExfil = true;
+            allBoarded = allBoarded || (m.civiliansBoarded == 3 && !m.actors[0].active);
+            if (!retries) {
+                for (int wait = 0; wait < 65; ++wait) mission.step({});
+                check(mission.state().mission->civiliansBoarded == 0,
+                      "The exfil skip check must run before anyone has boarded.");
+                mission.step(Input{0, 0, 0, 0, Jump, Jump});
+            }
+        }
+    }
+    check(sawExfil && (!retries || allBoarded), "Clearing the LZ must play the exfil with every survivor and Delta-1 boarding the bird.");
+    check(mission.state().match == Match::Results && mission.state().mission->phase == MissionPhase::Victory,
+          "Holding the North LZ until evac must complete Mission 1 with Victory.");
+    const auto& result = *mission.state().mission;
+    check(result.civiliansBoarded == 3 && result.civiliansSaved == 3 && result.civiliansLost == 0 &&
+              result.retries == (retries ? 4 : 0) && std::string_view(result.epilogue).find("ALL THREE") == 0,
+          "Natural and skipped exfil must produce the same successful civilian outcomes.");
+    check(mission.state().mission->evacSeconds == 0.f,
+          "Victory must wait for the evac countdown to finish.");
+    check(mission.state().mission->aliensKilled - killsBeforeHold > 4,
+          "Reinforcements must keep landing during the timed hold.");
+    // Verify returning to Main Menu clears stale mission state cleanly.
+    mission.quit();
+    check(mission.state().match == Match::Start && !mission.state().mission,
+          "Returning to Main Menu from mission results must clear stale mission state.");
+}
+
 void checkBriarHouseMission(Assets& assets) {
     using namespace game_detail;
     buildBriarHouse(assets, BriarHouseMode::Invasion);
@@ -922,6 +1168,8 @@ void checkBriarHouseMission(Assets& assets) {
     check(!assets.alienTrooper.triangles.empty() && !assets.alienDrone.triangles.empty() &&
           !assets.alienFleet[0].triangles.empty() && !assets.alienFleet[0].chunks.empty(),
           "Invasion mode must generate welded procedural alien trooper, drone, and frustum-bounded fleet meshes.");
+    check(!assets.alienUplink.chunks.empty() && !assets.alienUplinkCore.triangles.empty(),
+          "The destructible uplink must have a visible base and emitter mesh.");
     // The creature carries tendrils, fangs and claws but stays well under the 2,424-vertex infantry rig.
     check(assets.alienTrooper.vertices.size() < 900 && assets.alienDrone.vertices.size() < 80,
           "Procedural alien meshes must weld duplicate vertices to minimize per-frame transforms.");
@@ -933,7 +1181,8 @@ void checkBriarHouseMission(Assets& assets) {
           "Invasion mode must build animated ray guns and spinning accelerator rings for troopers and enforcers.");
     check(assets.alienRayGun.vertices.size() < 260 && assets.alienHeavyRayGun.vertices.size() < 320,
           "Procedural alien ray guns must stay welded and compact for fast per-frame rendering.");
-    check(!assets.mist.empty(), "Invasion mode must place descending dusk valley mist banks.");
+    check(!assets.mist.empty() && !assets.fires.empty() && !assets.smoke.empty() && assets.roadFlares.size() >= 4,
+          "Invasion mode must place dusk mist, fires, smoke, and the extraction flares.");
     check(!assets.shipBoxTruck.triangles.empty() && !assets.shipBoxCar.triangles.empty() &&
           !assets.shipBoxCrate.triangles.empty() && !assets.shipBoxBarrel.triangles.empty() &&
           !assets.shipBoxLamp.triangles.empty() && !assets.shipBoxContainer.triangles.empty() &&
@@ -945,8 +1194,13 @@ void checkBriarHouseMission(Assets& assets) {
     for (const auto& pose : assets.alienEnforcerPoses) {
         check(pose.vertexCount() == assets.alienEnforcer.vertices.size(), "Enforcer poses must match the enforcer mesh.");
     }
-    check(!assets.transportHelo.triangles.empty() && !assets.transportRotor.triangles.empty() && !assets.smoke.empty(),
-          "Invasion mode must build the evac helicopter and the smoke plumes over the burning valley.");
+    check(!assets.transportHelo.triangles.empty() && !assets.transportRotor.triangles.empty(),
+          "Invasion mode must build the evac helicopter and its spinning rotor.");
+    check(assets.civilianPoses.size() == civilianStandPose + civilianStandPoses &&
+              std::all_of(assets.civilianPoses.begin(), assets.civilianPoses.end(), [&](const Mesh& pose) {
+                  return pose.vertexCount() == assets.civilianMesh.vertexCount() && pose.triangles.empty();
+              }),
+          "Civilian cower, run, and breathing frames must share the same outfit topology.");
     for (const auto& pose : assets.alienTrooperPoses) {
         check(pose.vertexCount() == assets.alienTrooper.vertices.size() && pose.triangles.empty(),
               "Alien poses must be position-only frames on the base mesh's topology.");
@@ -1088,215 +1342,17 @@ void checkBriarHouseMission(Assets& assets) {
     scaleWorld(color.data(), 400, 225, fb.data(), false, false);
     drawHud(assets, app.state(), app.settings(), fb.data(), false);
 
-    // Full end-to-end playthrough: Intro -> Overwatch (open fire!) -> Breach -> Regroup -> Rescue -> Incoming -> Extraction -> Victory.
-    Game mission(assets, 23);
-    mission.startMission(42, 3, false);
-    for (int i = 0; i < 65; ++i) mission.step({});
-    check(mission.state().mission->titleCard > 0.f && mission.state().mission->phase == MissionPhase::Intro,
-          "Mission 1 must open on the title card.");
-    mission.step(Input{0, 0, 0, 0, Jump, Jump});
-    check(mission.state().mission->titleCard == 0.f && mission.state().mission->phase == MissionPhase::Intro,
-          "Jump must move the title card on to the wake-up.");
-    for (int i = 0; i < 65; ++i) mission.step({});
-    mission.step(Input{0, 0, 0, 0, Jump, Jump});
-    check(mission.state().mission->phase == MissionPhase::Overwatch, "Jump must allow skipping the wake-up intro.");
-    check(mission.canRetryCheckpoint() && mission.state().mission->checkpointStage == 1,
-          "Reaching the overwatch must save a checkpoint so a breach death skips the intro.");
-    {
-        // The road patrol stands well beyond the front wall: a real sniper shot from the portico.
-        const auto& m = *mission.state().mission;
-        float nearest = 1e9f;
-        for (int i = 4; i < int(MissionSnapshot::maxActors); ++i) {
-            if (m.actors[i].active) nearest = std::min(nearest, planar(m.actors[i].actor.position - point(368, 380)));
-        }
-        check(nearest > 12.f, "Overwatch targets must patrol the road beyond the front wall.");
-    }
-    // Reloading the overwatch checkpoint skips the intro and resets the patrol.
-    mission.startMission(41, 3, true);
-    mission.step({});
-    check(mission.state().mission->phase == MissionPhase::Overwatch && mission.state().mission->retries == 1 &&
-              mission.state().mission->aliensRemaining == 3 && mission.state().eyeHeight > 1.6f,
-          "The overwatch checkpoint must resume standing on the portico with the road patrol reset.");
-    {
-        // Campaign quick-swap: a tap returns to the previous weapon, holding Swap reaches the third.
-        const auto tap = [&] {
-            mission.step(Input{0, 0, 0, 0, Swap, Swap});
-            for (int t = 0; t < 40; ++t) mission.step({});
-        };
-        check(mission.state().weapon == Weapon::Mp44, "The mission must start on the MP44.");
-        tap();
-        check(mission.state().weapon == Weapon::Sniper, "The first tap must bring up the M40A3 for the overwatch.");
-        tap();
-        check(mission.state().weapon == Weapon::Mp44, "A second tap must go straight back to the MP44.");
-        mission.step(Input{0, 0, 0, 0, Swap, Swap});
-        for (int t = 0; t < 40; ++t) mission.step(Input{0, 0, 0, 0, Swap, 0});
-        check(mission.state().weapon == Weapon::Pistol, "Holding Swap must reach the USP .45.");
-        tap();
-        check(mission.state().weapon == Weapon::Mp44, "A tap from the USP must return to the MP44.");
-        check(mission.state().mission->phase == MissionPhase::Overwatch, "Swapping must not trigger the breach.");
-    }
-
-    // Helper to aim directly at an active alien and fire until eliminated.
-    const auto clearActiveAliens = [&](int maxTicks) {
-        for (int t = 0; t < maxTicks && mission.state().match == Match::Playing; ++t) {
-            const auto& m = *mission.state().mission;
-            int target = -1;
-            float best = 1e9f;
-            for (int i = 4; i < int(MissionSnapshot::maxActors); ++i) {
-                if (!m.actors[i].active || m.actors[i].dead) continue;
-                const float d = planar(m.actors[i].actor.position - mission.state().player.position);
-                if (d < best) { best = d; target = i; }
-            }
-            if (target < 0) return;
-            const auto& ma = m.actors[target];
-            const Vec3 aim = ma.role == MissionRole::AlienDrone ? ma.actor.position : atHeight(ma.actor.position, 1.35f);
-            const Vec3 eye = mission.state().camera.position;
-            const Vec3 delta = aim - eye;
-            const float wantYaw = std::atan2(delta.x, delta.z);
-            const float wantPitch = -std::atan2(delta.y, std::max(.01f, planar(delta)));
-            float dy = std::fmod(wantYaw - mission.state().playerYaw, 2 * pi);
-            if (dy > pi) dy -= 2 * pi;
-            if (dy < -pi) dy += 2 * pi;
-            const float dp = wantPitch - mission.state().playerPitch;
-            const bool sees = !world.blocked(eye, aim);
-            Input in{};
-            in.lookX = std::clamp(dy, -0.35f, 0.35f);
-            in.lookY = std::clamp(dp, -0.35f, 0.35f);
-            if (!sees) {
-                std::vector<int> route;
-                if (nav.path(nav.nearest(mission.state().player.position), nav.nearest(ma.actor.position), route) &&
-                    route.size() > 1) {
-                    const Vec3 step = nav.node(route[1]).position - mission.state().player.position;
-                    const float sy = std::sin(mission.state().playerYaw), cy = std::cos(mission.state().playerYaw);
-                    const Vec3 dir = normalized({step.x, 0, step.z});
-                    in.moveY = dir.x * sy + dir.z * cy;
-                    in.moveX = dir.x * cy - dir.z * sy;
-                }
-            } else if (std::abs(dy) < 0.08f && std::abs(dp) < 0.08f) {
-                in.held = Fire | Aim;
-                in.pressed = Fire;
-            }
-            mission.step(in);
-        }
-    };
-
-    // The lawn team and the rear-door flankers both have to fall before the Breach ends.
-    const auto fighting = [&] {
-        const auto phase = mission.state().mission->phase;
-        return mission.state().match == Match::Playing && (phase == MissionPhase::Overwatch || phase == MissionPhase::Breach);
-    };
-    for (int round = 0; round < 12 && fighting(); ++round) {
-        clearActiveAliens(600);
-        for (int t = 0; t < 60 && fighting() && mission.state().mission->aliensRemaining == 0; ++t) mission.step({});
-    }
-    check(mission.state().mission->phase == MissionPhase::Regroup && mission.canRetryCheckpoint(),
-          "Clearing Breach must enter the quiet Regroup lull and unlock the checkpoint.");
-    check(mission.state().mission->aliensKilled >= 4,
-          "A flanking team must hit the rear doors once the lawn push thins out.");
-    for (int t = 0; t < 260 && mission.state().mission->phase == MissionPhase::Regroup; ++t) mission.step({});
-    check(mission.state().mission->phase == MissionPhase::Rescue,
-          "Regroup lull must transition cleanly into the Rescue phase.");
-
-    // Verify retry from checkpoint starts directly in Rescue outside Briar House on South Boulevard,
-    // without prematurely triggering the distant town districts.
-    mission.startMission(43, 3, true);
-    mission.step({});
-    check(mission.state().mission->phase == MissionPhase::Rescue && mission.state().mission->introProgress == 1.f,
-          "Retrying from checkpoint must resume directly in Rescue phase.");
-    check(mission.state().mission->aliensRemaining == 0,
-          "Starting on South Boulevard must not prematurely trigger distant town rescue districts.");
-
-    // Sweep all three surrounding town districts (East Ridge, North Valley, West Timberline),
-    // verifying that the rescue objectives and Extraction LZ cover ground well outside Briar House.
-    const Vec3 sectorTargets[3]{point(920, 445), point(535, -215), point(-298, 252)};
-    auto outsideEstate = [](Vec3 p) { return std::abs(p.x) > 19.f || std::abs(p.z) > 15.5f; };
-    for (int s = 0; s < 3; ++s) {
-        check(outsideEstate(sectorTargets[s]), "Each town rescue district must lie outside Briar House.");
-        const int civSlot = s + 1;
-        for (int t = 0; t < 1800 && !mission.state().mission->actors[civSlot].rescued &&
-                        planar(mission.state().player.position - sectorTargets[s]) > 10.0f; ++t) {
-            if (mission.state().mission->aliensRemaining > 0) {
-                clearActiveAliens(300);
-                continue;
-            }
-            std::vector<int> route;
-            if (nav.path(nav.nearest(mission.state().player.position), nav.nearest(sectorTargets[s]), route) &&
-                route.size() > 1) {
-                const Vec3 step = nav.node(route[1]).position - mission.state().player.position;
-                const float sy = std::sin(mission.state().playerYaw), cy = std::cos(mission.state().playerYaw);
-                const Vec3 dir = normalized({step.x, 0, step.z});
-                mission.step(Input{dir.x * cy - dir.z * sy, dir.x * sy + dir.z * cy, 0, 0, Sprint});
-            } else {
-                mission.step({});
-            }
-        }
-        clearActiveAliens(1600);
-        for (int t = 0; t < 120 && !mission.state().mission->actors[civSlot].rescued; ++t) mission.step({});
-    }
-    check(mission.state().mission->civiliansSaved == 3, "Clearing all three town districts must rescue all 3 civilians.");
-    check(mission.state().mission->phase == MissionPhase::Incoming,
-          "Rescuing civilians must enter the eerie Incoming calm before the warhorn counter-attack.");
-    check(outsideEstate(mission.state().mission->waypoint),
-          "The town Extraction LZ must lie outside Briar House in the surrounding valley.");
-    check(mission.canRetryCheckpoint() && mission.state().mission->checkpointStage == 3,
-          "Reaching the Incoming beat must save an extraction checkpoint.");
-    // Far from the patio, the counter-attack waits for the player instead of starting on a timer.
-    for (int t = 0; t < 300; ++t) mission.step({});
-    check(mission.state().mission->phase == MissionPhase::Incoming && mission.state().mission->hasWaypoint,
-          "Incoming must point the player to the patio and wait for them to fall back.");
-
-    // Reload the extraction checkpoint (the third reload this run): rescues, kills and time carry over.
-    const int killsAtCheckpoint = mission.state().mission->aliensKilled;
-    mission.startMission(44, 3, true);
-    mission.step({});
-    {
-        const auto& cp = *mission.state().mission;
-        check(cp.phase == MissionPhase::Incoming && cp.civiliansSaved == 3 && cp.retries == 3 &&
-                  cp.aliensKilled == killsAtCheckpoint && cp.missionSeconds > 20.f,
-              "The extraction checkpoint must resume at the patio with rescues, kills and time carried over.");
-        int sheltering = 0;
-        for (int c = 1; c <= 3; ++c) sheltering += cp.actors[c].active && cp.actors[c].rescued;
-        check(sheltering == 3, "Rescued civilians must be back inside the rear doors after a checkpoint reload.");
-    }
-    for (int t = 0; t < 400 && mission.state().mission->phase == MissionPhase::Incoming; ++t) mission.step({});
-    check(mission.state().mission->phase == MissionPhase::Extraction && mission.state().apacheReady &&
-              mission.state().mission->evacSeconds > 50.f,
-          "Reaching the patio must sound the warhorn and start the timed hold with Apache support.");
-
-    // Deploy US Apache support and hold until the evac birds arrive.
-    mission.step(Input{0, 0, 0, 0, Streak, Streak});
-    for (int t = 0; t < 60 && !mission.state().apacheActive; ++t) mission.step({});
-    check(mission.state().apacheActive, "Pressing Streak during Extraction must deploy the US Apache gunship.");
-    const int killsBeforeHold = mission.state().mission->aliensKilled;
-    // The hold lasts about a minute at this difficulty; allow two.
-    bool sawExfil = false, allBoarded = false;
-    for (int t = 0; t < 120 * 60 && mission.state().match == Match::Playing; ++t) {
-        if (mission.state().mission->aliensRemaining > 0) clearActiveAliens(60);
-        else mission.step({});
-        const auto& m = *mission.state().mission;
-        if (m.cinematic && m.evacVisible) {
-            sawExfil = true;
-            allBoarded = allBoarded || (!m.actors[0].active && !m.actors[1].active && !m.actors[2].active && !m.actors[3].active);
-        }
-    }
-    check(sawExfil && allBoarded, "Clearing the LZ must play the exfil with every survivor and Delta-1 boarding the bird.");
-    check(mission.state().match == Match::Results && mission.state().mission->phase == MissionPhase::Victory,
-          "Holding the patio until evac with the LZ clear must complete Mission 1 with Victory.");
-    check(mission.state().mission->evacSeconds == 0.f,
-          "Victory must wait for the evac countdown to finish.");
-    check(mission.state().mission->aliensKilled - killsBeforeHold > 4,
-          "Reinforcements must keep landing during the timed hold.");
-    // Verify returning to Main Menu clears stale mission state cleanly.
-    mission.quit();
-    check(mission.state().match == Match::Start && !mission.state().mission,
-          "Returning to Main Menu from mission results must clear stale mission state.");
+    playBriarHouse(assets, world, nav, true);
+    playBriarHouse(assets, world, nav, false);
 }
+
 // Rules checked directly on the mission controller, without the full game around it.
 void checkMissionRules(const Assets& assets) {
     using namespace game_detail;
     struct QuietHost final : mission_detail::MissionHost {
-        void playSound(Sound, float, bool, Vec3) override {}
-        void damagePlayer(float, Vec3) override {}
+        int shocks = 0, playerHits = 0;
+        void playSound(Sound sound, float, bool, Vec3) override { shocks += sound == Sound::PlasmaShock; }
+        void damagePlayer(float, Vec3) override { ++playerHits; }
         void hitWorld(const ShotHit&, Vec3) override {}
         void updateActorFrame(Actor&) override {}
         void refillPlayer(bool) override {}
@@ -1312,10 +1368,139 @@ void checkMissionRules(const Assets& assets) {
         for (int t = 0; t < 60; ++t) controller.step(snap, {}, tickSeconds, false, host);
         controller.step(snap, Input{0, 0, 0, 0, Jump, Jump}, tickSeconds, false, host);
     };
+    const auto clearAliens = [&](mission_detail::MissionController& controller, Snapshot& snap) {
+        controller.publish(view);
+        for (int i = 4; i < int(view->actors.size()); ++i) {
+            const auto& a = view->actors[i];
+            if (!a.active || a.dead) continue;
+            const Vec3 aim = a.actor.position + Vec3{0, a.role == MissionRole::AlienDrone ? 0.f : 1.25f, 0};
+            Vec3 hit{};
+            check(controller.apacheShotAlien(i, aim + Vec3{0, 0, 2}, {0, 0, -1}, 3.f, 1000.f, snap, host, hit),
+                  "The mission rules fixture must be able to clear visible hostiles.");
+        }
+    };
+
+    // The West Timberline route can stay quiet, or resume after the player is spotted.
+    for (bool detected : {false, true}) {
+        mission_detail::MissionController controller(assets, world, nav);
+        Snapshot snap{};
+        snap.difficulty = 3;
+        Vec3 start{};
+        float yaw = 0;
+        controller.start(42, 3, false, snap, start, yaw, host);
+        snap.player.position = start;
+        skipIntro(controller, snap);
+        controller.step(snap, {}, tickSeconds, true, host);
+        for (int t = 0; t < 360; ++t) {
+            clearAliens(controller, snap);
+            controller.step(snap, {}, tickSeconds, false, host);
+        }
+        controller.publish(view);
+        check(view->phase == MissionPhase::Rescue, "The Walt fixture must reach the rescue sweep.");
+        check(view->waypointIsRoute && !world.walkBlocked(snap.player.position, view->waypoint),
+              "From Briar House, the waypoint must lead to a visible street approach.");
+        using namespace mission_detail;
+        const auto movePlayer = [&](Vec3 pos) {
+            snap.player.position = pos;
+            snap.camera.position = atHeight(pos, .95f);
+        };
+        snap.crouch = true;
+        snap.eyeHeight = .95f;
+        const Vec3 pickup = waltPickupApproach;
+        check(world.canStand(pickup, snap.eyeHeight) && world.canStand(waltCoverRoute[std::size(waltCoverRoute) - 1], 1.7f),
+              "Both ends of the Timberline escort must be usable.");
+        Vec3 from = view->actors[3].actor.position;
+        for (const Vec3 cover : waltCoverRoute) {
+            check(!world.walkBlocked(from, cover), "The Timberline escort must have a clear route between cover points.");
+            from = cover;
+        }
+        movePlayer(pickup);
+        controller.step(snap, {}, tickSeconds, false, host);
+        controller.publish(view);
+        check(view->actors[3].civilian == CivilianOutcome::Escorting && view->civiliansSaved == 0,
+              "Walt can start the low approach while the patrol is unalerted.");
+        const Vec3 cover = view->actors[3].actor.position;
+        movePlayer(mapPoint(-159, -82));
+        for (int t = 0; t < 20; ++t) controller.step(snap, {}, tickSeconds, false, host);
+        controller.publish(view);
+        check(planar(view->actors[3].actor.position - cover) < .05f &&
+                  std::string_view(view->subObjective).find("ESCORT WALT") != std::string_view::npos,
+              "Walt must wait for the player while guidance stays on the engaged district.");
+        movePlayer(pickup);
+        if (detected) {
+            controller.step(snap, {}, tickSeconds, true, host);
+            controller.publish(view);
+            check(std::string_view(view->subObjective).find("CLEAR THE PATROL") != std::string_view::npos,
+                  "Alerting the patrol during the escort must switch the objective to combat.");
+            clearAliens(controller, snap);
+        }
+        for (int t = 0; t < 300; ++t) {
+            controller.publish(view);
+            if (civilianRescued(view->actors[3].civilian)) break;
+            movePlayer(view->actors[3].actor.position + Vec3{2.6f, 0, .7f});
+            controller.step(snap, {}, tickSeconds, false, host);
+        }
+        controller.publish(view);
+        check(civilianRescued(view->actors[3].civilian) && view->civiliansSaved == 1 &&
+                  view->aliensRemaining == (detected ? 0 : 2),
+              "Walt must reach the second shelter both quietly and after a fight.");
+    }
+
+    // Exercise a survivor lost after rescue and a boarding approach the actors cannot cross.
+    {
+        using namespace mission_detail;
+        Assets blocked = assets;
+        blocked.obstacles.push_back({exfilHover.x, exfilHover.z - 1.5f, 3.f, .75f, 0.f, 4.f, 0.f, 1.f, 0.f});
+        const World blockedWorld(blocked);
+        Navigation blockedNav(blocked);
+        MissionController controller(blocked, blockedWorld, blockedNav);
+        Snapshot snap{};
+        snap.difficulty = 3;
+        snap.match = Match::Playing;
+        Vec3 start{};
+        float yaw = 0;
+        controller.seedExtractionReplay();
+        controller.start(45, 3, true, snap, start, yaw, host);
+        snap.player.position = start;
+        snap.camera.position = atHeight(start, 1.7f);
+        const Vec3 noraPos = mapPoint(evacSpots[nora][0], evacSpots[nora][1]);
+        for (int round = 0; round < 3; ++round) {
+            const Vec3 eye = atHeight(noraPos, 1.f) + Vec3{0, 0, -1.2f};
+            Vec3 hit{};
+            check(controller.resolvePlayerShot(eye, {0, 0, 1}, 40.f, 2.f, snap, host, hit),
+                  "The loss fixture must hit Nora at the shelter.");
+            for (int t = 0; t < 60; ++t) controller.step(snap, {}, tickSeconds, false, host);
+        }
+        controller.publish(view);
+        check(view->actors[nora + 1].civilian == CivilianOutcome::Lost &&
+                  view->civiliansLost == 1 && view->civiliansSaved == 2,
+              "A loss after rescue must immediately reduce the number saved.");
+        for (int t = 0; t < 60 * 52 && !view->cinematic; ++t) {
+            clearAliens(controller, snap);
+            controller.step(snap, {}, tickSeconds, false, host);
+        }
+        controller.publish(view);
+        check(view->cinematic, "A loss in the family must still allow evacuation of the other survivors.");
+        for (int t = 0; t < 9 * 60; ++t) controller.step(snap, {}, tickSeconds, false, host);
+        controller.publish(view);
+        check(view->cinematic && view->civiliansBoarded == 0,
+              "The obstruction must keep civilians out of the doorway until the lift deadline.");
+        for (int t = 0; t < 5 * 60; ++t) controller.step(snap, {}, tickSeconds, false, host);
+        controller.publish(view);
+        check(snap.match == Match::Results && view->civiliansBoarded == 2 && view->civiliansLost == 1 &&
+                  view->actors[nora + 1].civilian == CivilianOutcome::Lost &&
+                  std::string_view(view->epilogue).find("DR. MARSH AND HER DATA DID NOT") != std::string_view::npos,
+              "A blocked boarding path must resolve before lift, and the epilogue must reflect who boarded.");
+        controller.start(45, 3, true, snap, start, yaw, host);
+        controller.publish(view);
+        check(view->phase == MissionPhase::Incoming && view->civiliansSaved == 3 &&
+                  view->civiliansLost == 0 && view->civiliansBoarded == 0,
+              "Retrying must restore the civilian outcomes saved before the hold.");
+    }
 
     // A stray MP44 burst through a civilian wounds them but cannot kill; sustained fire still does.
     {
-        mission_detail::MissionController controller(world, nav);
+        mission_detail::MissionController controller(assets, world, nav);
         Snapshot snap{};
         Vec3 start{};
         float yaw = 0;
@@ -1341,7 +1526,7 @@ void checkMissionRules(const Assets& assets) {
 
     // Once the shooting starts, the road patrol runs to the front wall and vaults into the grounds.
     {
-        mission_detail::MissionController controller(world, nav);
+        mission_detail::MissionController controller(assets, world, nav);
         Snapshot snap{};
         snap.difficulty = 5;
         Vec3 start{};
@@ -1392,7 +1577,7 @@ void checkMissionRules(const Assets& assets) {
     // stay hidden at least a second longer. Difficulty 10 gives it the health to survive Delta-1.
     {
         const auto hiddenStreak = [&](bool wound) {
-            mission_detail::MissionController controller(world, nav);
+            mission_detail::MissionController controller(assets, world, nav);
             Snapshot snap{};
             snap.difficulty = 10;
             Vec3 start{};
@@ -1437,7 +1622,7 @@ void checkMissionRules(const Assets& assets) {
 
     // Delta-1 steps out of the player's firing lane and stays out while his post is in it.
     {
-        mission_detail::MissionController controller(world, nav);
+        mission_detail::MissionController controller(assets, world, nav);
         Snapshot snap{};
         snap.difficulty = 5;
         Vec3 start{};
@@ -1516,10 +1701,9 @@ void checkMissionRules(const Assets& assets) {
               "An objective behind and to the left must pin the marker to the left edge.");
     }
 
-    // Sophisticated campaign mechanics: Ambush Precision, Ray Gun charge & animated bolts,
-    // Drone Shield Link & EMP Disruption, Enforcer Phase Shield & descending dusk mist.
+    // The chest weak point, visible plasma shots and drone shield links share this encounter.
     {
-        mission_detail::MissionController controller(world, nav);
+        mission_detail::MissionController controller(assets, world, nav);
         Snapshot snap{};
         snap.difficulty = 5;
         Vec3 start{};
@@ -1531,18 +1715,19 @@ void checkMissionRules(const Assets& assets) {
         skipIntro(controller, snap);
         controller.publish(view);
         const float overwatchMist = view->mistDensity;
-        // Clean sniper headshot on an unalerted road Trooper must count as an Ambush Kill.
-        const Vec3 eye = snap.camera.position;
-        const Vec3 head = atHeight(view->actors[4].actor.position, 1.90f);
+        const auto& trooper = view->actors[4].actor;
+        const Vec3 front = forward(trooper.yaw, 0);
+        const Vec3 chest = atHeight(trooper.position, alienWeakPoint.y);
         Vec3 hit{};
-        const bool struck = controller.resolvePlayerShot(eye, normalized(head - eye), 70.f, 100.f, snap, host, hit);
+        const bool emptyAbove = controller.resolvePlayerShot(chest + front * 2.f + Vec3{0, .48f, 0},
+                                                             front * -1.f, 70.f, 100.f, snap, host, hit);
+        check(!emptyAbove, "Empty space above a trooper's shoulders must not register as a head hit.");
+        const bool struck = controller.resolvePlayerShot(chest + front * 2.f, front * -1.f, 70.f, 100.f, snap, host, hit);
         controller.publish(view);
-        check(struck && view->actors[4].dead && view->ambushKills == 1,
-              "An unalerted sniper headshot in Overwatch must award an Ambush Kill.");
+        check(struck && view->actors[4].dead && view->ambushKills == 1 && view->criticalKills == 1,
+              "An unalerted chest weak-point hit in Overwatch must award an Ambush Kill.");
 
-        // After the breach starts, surviving aliens charge their ray guns, fire animated RayBolts,
-        // and the Scout Drone projects a Shield Link to its surviving ground ally.
-        bool sawCharge = false, sawRayBolt = false, sawDroneLink = false;
+        bool sawCharge = false, sawPlasma = false, sawDroneLink = false, sawAlignedMuzzle = false;
         int linkedDrone = -1, linkedTrooper = -1;
         for (int t = 0; t < 12 * 60; ++t) {
             controller.step(snap, {}, tickSeconds, false, host);
@@ -1557,14 +1742,24 @@ void checkMissionRules(const Assets& assets) {
                 }
                 if (a.role == MissionRole::AlienDrone) linkedDrone = i;
             }
-            for (const auto& tr : view->tracers) {
-                if (tr.time > 0 && (tr.style == TracerStyle::RayBolt || tr.style == TracerStyle::HeavyRay)) {
-                    sawRayBolt = true;
+            for (const auto& cloud : view->plasma) {
+                if (cloud.radius <= 0.f) continue;
+                sawPlasma = true;
+                for (size_t i = 4; i < view->actors.size(); ++i) {
+                    const auto& ma = view->actors[i];
+                    if (!ma.active || ma.dead || ma.role != MissionRole::AlienTrooper || ma.gunRecoil < .99f) continue;
+                    const auto p = alienGunSocket(assets, ma.actor) * alienScale(ma.variant);
+                    const Vec3 fwd = forward(ma.actor.yaw, 0), right{fwd.z, 0, -fwd.x};
+                    const auto gun = alienGunFrame(ma.actor.position + right * p.x + Vec3{0, p.y, 0} + fwd * p.z,
+                                                   ma.gunYaw, ma.gunPitch, ma.variant);
+                    if (length(cloud.position - gun.muzzle(ma.variant)) < .002f &&
+                        dot(normalized(gun.axis), cloud.direction) > .9999f) sawAlignedMuzzle = true;
                 }
             }
-            if (sawCharge && sawRayBolt && sawDroneLink) break;
+            if (sawCharge && sawPlasma && sawDroneLink && sawAlignedMuzzle) break;
         }
-        check(sawCharge && sawRayBolt, "Alerted aliens must visibly charge their ray guns and fire animated ray bolts.");
+        check(sawCharge && sawPlasma && sawAlignedMuzzle,
+              "A charging alien must launch a visible cloud straight through the rendered muzzle.");
         check(sawDroneLink && linkedDrone >= 4 && linkedTrooper >= 4,
               "An alerted Scout Drone must project a Shield Link to a nearby ground alien.");
         check(view->mistDensity > overwatchMist, "Dusk mist must thicken as the mission progresses past Overwatch.");
@@ -1576,6 +1771,26 @@ void checkMissionRules(const Assets& assets) {
         check(view->actors[linkedDrone].dead && view->actors[linkedTrooper].shield == 0.f &&
                   view->actors[linkedTrooper].stagger > 0.5f,
               "Destroying a linking Scout Drone must EMP-disrupt its linked ally's shield and stagger it.");
+
+        // Put the player in the path of a cloud in flight and verify the hit and shock.
+        bool intercepted = false;
+        for (int t = 0; t < 480 && !intercepted; ++t) {
+            controller.step(snap, {}, tickSeconds, false, host);
+            controller.publish(view);
+            for (const auto& cloud : view->plasma) {
+                if (cloud.radius <= 0.f || world.shot(cloud.position, cloud.direction, snap.brokenGlass).distance < .8f) continue;
+                snap.player.position = cloud.position + cloud.direction * .82f - Vec3{0, .85f, 0};
+                snap.camera.position = atHeight(snap.player.position, snap.eyeHeight);
+                const int hitsBefore = host.playerHits;
+                const int shocksBefore = host.shocks;
+                controller.step(snap, {}, tickSeconds, false, host);
+                controller.publish(view);
+                intercepted = host.playerHits > hitsBefore && view->plasmaShock > .6f;
+                if (intercepted && shocksBefore == 0) check(host.shocks == 1, "A first plasma hit must sound like an electrical discharge.");
+                break;
+            }
+        }
+        check(intercepted, "A flying plasma cloud must damage and electrically shock the player on contact.");
     }
 }
 } // namespace
@@ -1612,8 +1827,21 @@ int main(int argc, char** argv) {
     checkSpeech();
     checkSpeechVariety();
     checkAudioControlsWithFullQueue();
+    const auto stockSky = assets.sky;
+    const auto stockAudio = assets.audio.size();
     checkBriarHouse(assets);
+    const auto standardMaterials = assets.materials.size(), standardTextures = assets.textures.size();
     checkBriarHouseMission(assets);
     checkMissionRules(assets);
+    const auto invasionMaterials = assets.materials.size(), invasionTextures = assets.textures.size();
+    check(assets.sky == stockSky, "Building the invasion must leave the source sky available for daylight rendering.");
+    buildBriarHouse(assets, BriarHouseMode::Standard);
+    check(assets.materials.size() == standardMaterials && assets.textures.size() == standardTextures &&
+              assets.audio.size() == stockAudio && assets.alienTrooper.triangles.empty(),
+          "Returning to the standard arena must release invasion assets and retain the pack's audio.");
+    buildBriarHouse(assets, BriarHouseMode::Invasion);
+    check(assets.materials.size() == invasionMaterials && assets.textures.size() == invasionTextures &&
+              assets.residentBytes < 12u * 1024u * 1024u && assets.sky == stockSky,
+          "Rebuilding the campaign must reuse the pack's original palette and stay within its memory budget.");
     std::puts("Viewport mapping, menus, radar, trigger latches, translucency, PCM mixing, ADPCM speech and Mission 1 passed.");
 }

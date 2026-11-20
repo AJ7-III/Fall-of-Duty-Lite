@@ -23,10 +23,11 @@ enum RadioPriority : uint8_t { RadioChatter = 0, RadioOrder = 1, RadioUrgent = 2
 
 class MissionController {
 public:
-    MissionController(const game_detail::World& world, game_detail::Navigation& nav);
+    MissionController(const Assets& assets, const game_detail::World& world, game_detail::Navigation& nav);
 
     void start(uint32_t seed, int difficulty, bool fromCheckpoint, Snapshot& snap,
                Vec3& playerPosOut, float& playerYawOut, MissionHost& host);
+    void seedExtractionReplay();
     void step(Snapshot& snap, const Input& input, double dt, bool playerFired, MissionHost& host);
 
     // Resolve a player weapon shot against mission actors. Returns true if it struck a mission actor.
@@ -40,7 +41,7 @@ public:
     void explodeAliens(Vec3 center, float radius, Snapshot& snap, MissionHost& host);
 
     bool active() const { return state_.active; }
-    bool canRetryCheckpoint() const { return checkpointStage_ > 0; }
+    bool canRetryCheckpoint() const { return checkpoint_.stage != MissionCheckpoint::None; }
     void publish(std::shared_ptr<const MissionSnapshot>& target);
 
 private:
@@ -70,6 +71,7 @@ private:
         double leapAt = -1;    // Seconds into a vault over the front wall, or -1
         Vec3 leapFrom{}, leapTo{};
         // Ray gun animation, charge-up, phase shield & suppression state
+        float gunYaw = 0;
         float gunPitch = 0;
         float gunCharge = 0;
         float gunRecoil = 0;
@@ -94,21 +96,22 @@ private:
         float hoverBase = 2.0f;
         float hoverPhase = 0;
         bool dead = false;
-        bool rescued = false;
+        CivilianOutcome civilian = CivilianOutcome::Pinned;
         bool alerted = false;
         bool seesPlayer = false;
         bool token = false;     // Holds one of the limited aimed-fire slots against the player
         bool following = false; // Commander is closing distance to the player
         bool boarded = false;   // Climbed aboard the evac bird
         uint8_t deathVariant = 0;
+
+        bool isDead() const { return role == MissionRole::Civilian ? civilian == CivilianOutcome::Lost : dead; }
     };
 
     struct SectorState {
         bool spawned = false;
-        bool triggered = false;
         bool resolved = false;
         bool warned = false; // Delta-1 has called out fire on this sector's civilian
-        double clearTimer = 0;
+        uint8_t coverLeg = 0;
         int civSlot = 1;
         Vec3 center{};
     };
@@ -124,14 +127,23 @@ private:
 
     // Progress carried across a checkpoint reload so results reflect the whole run.
     struct CheckpointStats {
-        int saved = 0, lost = 0, kills = 0, headshots = 0;
+        struct Civilian {
+            CivilianOutcome outcome = CivilianOutcome::Pinned;
+            Vec3 position{};
+            float health = 0;
+        };
+        MissionCheckpoint stage = MissionCheckpoint::None;
+        int kills = 0, criticalKills = 0;
         int interrupts = 0, shieldsBroken = 0, ambushKills = 0;
         float seconds = 0;
-        std::array<uint8_t, 3> civilians{}; // 0 pinned, 1 rescued, 2 lost
+        std::array<Civilian, 3> civilians{};
     };
 
-    static Vec3 mapPoint(float x, float y, float height = 0.f);
-    static Vec3 rayGunMuzzle(const Agent& a);
+    Vec3 gunGrip(const Agent& a) const;
+    Vec3 rayGunMuzzle(const Agent& a) const;
+    void launchPlasma(Vec3 origin, Vec3 dir, bool charged, float damage, int ally, float range,
+                      const Snapshot& snap, float barrel = 0.f);
+    void updatePlasma(Snapshot& snap, float dt, MissionHost& host);
     void resetAll();
     void setRadio(const char* speaker, const char* line, float duration, MissionHost& host, bool chirp = true,
                   uint8_t priority = RadioOrder, int sector = -1);
@@ -148,17 +160,20 @@ private:
     int spawnAlien(MissionRole role, int sector, Vec3 pos, float yaw, uint8_t variant, int difficulty);
     int dropAlien(MissionRole role, Vec3 pos, uint8_t variant, const Snapshot& snap, MissionHost& host);
     void spawnOverwatchWave(int difficulty);
-    void spawnSectorWave(int sector, int difficulty);
+    void spawnSectorWave(int sector);
     void spawnExtractionWave(const Snapshot& snap, MissionHost& host);
     bool spawnReinforcement(const Snapshot& snap, MissionHost& host);
-    void saveCheckpoint(int stage);
+    void saveCheckpoint(MissionCheckpoint stage);
     void enterOverwatch(Snapshot& snap, MissionHost& host, bool urgent);
+    void enterUplink(MissionHost& host);
     void enterIncoming(MissionHost& host);
     bool vaultWall(Agent& a, double dt, MissionHost& host);
     void roar(Vec3 at, MissionHost& host);
     void tacticalMove(Agent& a, int slot, const Snapshot& snap, double dt);
     int pickPosition(const Agent& a, int slot, const Snapshot& snap, bool hide) const;
     void beginExfil(MissionHost& host);
+    void finishBoarding();
+    void refreshCivilianTotals();
     void writeEpilogue();
     bool survivorAlive(int sector) const;
     void updateExfil(Snapshot& snap, const Input& input, double dt, MissionHost& host);
@@ -175,15 +190,26 @@ private:
     void hurtPlayer(float amount, Vec3 from, const Snapshot& snap, MissionHost& host);
     void emitScannerBeam(const Agent& a);
     void steerAlongPath(Agent& agent, Vec3 target, float speed, double dt, bool flying);
-    void damageAgent(int slot, float amount, bool headshot, bool fromPlayer, Snapshot& snap, MissionHost& host);
+    void damageAgent(int slot, float amount, bool critical, bool fromPlayer, Snapshot& snap, MissionHost& host);
     int livingAliens(int sectorFilter = -2) const;
+    bool districtAlerted(int sector) const;
+    int nextSector(Vec3 position) const;
+    void updateRescue(Snapshot& snap, MissionHost& host);
     void checkPhaseTransitions(Snapshot& snap, double dt, MissionHost& host);
     void updateWaypoint(const Snapshot& snap);
 
+    struct PlasmaFlight {
+        game_detail::ShotHit obstruction{};
+        float remaining = 0, damage = 0;
+        int ally = -1;
+    };
+
+    const Assets& assets_;
     const game_detail::World& world_;
     game_detail::Navigation& nav_;
     game_detail::Random rng_;
     MissionSnapshot state_{};
+    std::array<PlasmaFlight, MissionSnapshot::maxPlasma> plasmaFlights_{};
     std::shared_ptr<MissionSnapshot> published_;
     std::array<Agent, MissionSnapshot::maxActors> agents_{};
     std::array<SectorState, 3> sectors_{};
@@ -193,7 +219,6 @@ private:
     uint8_t radioPriority_ = RadioChatter;
     int difficulty_ = defaultDifficulty;
     // Checkpoint progress survives start() so a reload can resume; a fresh start clears it.
-    int checkpointStage_ = 0;
     int retries_ = 0;
     CheckpointStats checkpoint_{};
     int introCue_ = 0;
@@ -201,10 +226,7 @@ private:
     bool wakeSounds_ = false;
     bool overwatchHintSent_ = false;
     bool overwatchNudgeSent_ = false;
-    bool shedSniperHintSent_ = false;
     bool regroupBriefSent_ = false;
-    bool victoryAnnounced_ = false;
-    bool incomingArrived_ = false;
     bool lzCallSent_ = false;
     int pendingFlankers_ = 0;
     bool flankersCalled_ = false;
@@ -223,13 +245,18 @@ private:
     int evacBeat_ = 0;
     int reinforcements_ = 0;
     int streetPatrols_ = 0;
+    int rescueObjective_ = -1;
+    int activeSector_ = -1;
+    double routeReadyAt_ = 0;
+    Vec3 routeFrom_{}, routeGoal_{}, routeWaypoint_{};
+    std::vector<int> route_;
     double nextPatrolAt_ = 0;
     double introTime_ = 0;
     double phaseTime_ = 0;
     double elapsed_ = 0;
     double heartbeatAt_ = 0;
     double failDelay_ = 0;
-    double incomingArrivedAt_ = 0;
+    size_t uplinkGuards_ = 0;
     double evacTimer_ = 0;
     double evacDuration_ = 1;
     double nextReinforceAt_ = 0;

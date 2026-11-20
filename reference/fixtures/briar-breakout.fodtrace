@@ -1,0 +1,10 @@
+FODTRACE 3
+S 42 5 breakout
+# Skip the title and wake-up, then open fire on the South Boulevard patrol.
+W 66
+T 0 0 0 0 8 8
+W 66
+T 0 0 0 0 8 8
+W 32
+T 0 0 0 0 1 1
+W 570

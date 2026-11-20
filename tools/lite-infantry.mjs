@@ -48,7 +48,8 @@ export function registerInfantryMaterials(palette, to565, base64) {
     let texture = -1;
     const colorAt = (grade) => to565(...channels.map((c) => clamp(c * grade / 255, 0, 1)));
     if (textile) {
-      const size = name.includes("gloves") || name.includes("jacket") ? 64 : 32;
+      const gloves = name.endsWith("_gloves"), walnut = name.endsWith("_walnut");
+      const size = gloves || name.endsWith("_jacket") ? 64 : 32;
       const pixels = new Uint16Array(size * size);
       for (let y = 0; y < size; y++) {
         for (let x = 0; x < size; x++) {
@@ -58,8 +59,11 @@ export function registerInfantryMaterials(palette, to565, base64) {
           const ripstop = x % 8 === 0 ? 0.026 : y % 8 === 0 ? 0.015 : 0;
           const u = x * tau / size, v = y * tau / size;
           const flecks = Math.cos(2 * u + v) + Math.sin(3 * v - u) + .50 * Math.sin(4 * u + 3 * v);
-          const dye = camouflage ? clamp(flecks * .48, -.29, .06) : 0;
-          pixels[y * size + x] = colorAt(1 + twill + warp + folds + ripstop + dye);
+          const dye = camouflage ? clamp(flecks * .48, -.26, .10) : 0;
+          const pores = gloves ? ((x * 17 + y * 13 + x * y * 7) % 11 - 5) * .019 : 0;
+          const woodGrain = .12 * Math.cos(9 * u + .72 * Math.sin(v)) + .07 * Math.cos(15 * u - 2 * v);
+          const grain = walnut ? woodGrain : twill + warp + folds + ripstop + pores + dye;
+          pixels[y * size + x] = colorAt(1 + grain);
         }
       }
       texture = palette.textures.length;

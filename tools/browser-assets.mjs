@@ -17,7 +17,7 @@ import { Killstreaks } from "../reference/browser/src/killstreaks/Killstreaks.ts
 import { AudioSynth } from "../reference/browser/src/rendering/AudioSynth.ts";
 import { buildFieldInfantry, buildViewArms, registerInfantryFaces, registerInfantryMaterials } from "./lite-infantry.mjs";
 import { buildLiteSniper, sampleBoltClearance } from "./lite-sniper-stock.mjs";
-import { finishTexture, textureLift } from "./texture-treatment.mjs";
+import { finishTexture, textureFinish } from "./texture-treatment.mjs";
 import duelHitboxes from "./rival-hitboxes.json";
 
 const audioHz = 24000;
@@ -109,8 +109,8 @@ class Palette {
     const pixels = new Uint16Array(targetW * targetH);
     const range = raw instanceof Float32Array ? 1 : 255;
     const tone = liteTextureTone(tex.name);
-    const lift = textureLift(tex.name);
-    const colors = lift ? new Float32Array(pixels.length * 3) : null;
+    const treatment = textureFinish(tex.name);
+    const colors = treatment ? new Float32Array(pixels.length * 3) : null;
     for (let y = 0; y < targetH; y++) {
       const fromY = Math.floor((y * height) / targetH);
       const toY = Math.floor(((y + 1) * height) / targetH);
@@ -149,7 +149,7 @@ class Palette {
       }
     }
     if (colors) {
-      finishTexture(colors, targetW, targetH, lift, !/^(graffitiWallAtlas|billboardMural)/.test(tex.name));
+      finishTexture(colors, targetW, targetH, treatment);
       for (let i = 0; i < pixels.length; i++) pixels[i] = to565(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]);
     }
     variant.texture = this.textures.length;

@@ -1,5 +1,7 @@
 #include "trace.hpp"
 
+#include "mission.hpp"
+
 #include <algorithm>
 #include <cstring>
 #include <memory>
@@ -16,42 +18,46 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
     }
     line[std::strcspn(line, "\r\n")] = '\0';
     const bool freeForAll = std::strcmp(line, "FODTRACE 2") == 0;
-    if (!freeForAll && std::strcmp(line, "FODTRACE 1") != 0) {
+    const bool campaign = std::strcmp(line, "FODTRACE 3") == 0;
+    if (!campaign && !freeForAll && std::strcmp(line, "FODTRACE 1") != 0) {
         error = "TRACE SCHEMA";
         return false;
     }
     ReplayTrace next;
     unsigned seed = 0, flags = 0, weapon = 0, deathTick = 0;
-    if (!std::fgets(line, sizeof(line), file.get()) ||
-        std::sscanf(line, "S %u %d %u %f %f %f %f %f %f %f %f %f %u %d %d %d %d %u",
-                    &seed, &next.difficulty_, &flags,
-                    &next.fixture_.player.x, &next.fixture_.player.y, &next.fixture_.player.z, &next.fixture_.yaw,
-                    &next.fixture_.pitch, &next.fixture_.rival.x, &next.fixture_.rival.y, &next.fixture_.rival.z,
-                    &next.fixture_.rivalYaw, &weapon, &next.fixture_.clip, &next.fixture_.playerScore,
-                    &next.fixture_.rivalScore, &next.fixture_.streak, &deathTick) < 17 ||
-        next.difficulty_ < 1 || next.difficulty_ > 10 || weapon > 2 || flags > (freeForAll ? 7u : 15u)) {
-        error = "TRACE INITIAL STATE";
-        return false;
-    }
     const auto inYard = [extent](Vec3 p) {
         return std::abs(p.x) <= extent.x + .4f && std::abs(p.z) <= extent.z + .4f && p.y >= 0 && p.y <= 20;
     };
-    if (!inYard(next.fixture_.player) || !inYard(next.fixture_.rival) ||
-        !std::isfinite(next.fixture_.yaw) || !std::isfinite(next.fixture_.pitch) ||
-        !std::isfinite(next.fixture_.rivalYaw) || next.fixture_.clip < -1 || next.fixture_.clip > 30 ||
-        next.fixture_.playerScore < 0 || next.fixture_.playerScore > 9 ||
-        next.fixture_.rivalScore < 0 || next.fixture_.rivalScore > 9 ||
-        next.fixture_.streak < 0 || next.fixture_.streak > 9) {
+    const auto badStart = [&] {
         error = "TRACE INITIAL STATE";
         return false;
+    };
+    if (!std::fgets(line, sizeof(line), file.get())) return badStart();
+    if (campaign) {
+        char start[24]{}, extra;
+        if (std::sscanf(line, "S %u %d %23s %c", &seed, &next.difficulty_, start, &extra) != 3) return badStart();
+        if (std::strcmp(start, "breakout") == 0) next.campaignStart_ = CampaignStart::Breakout;
+        else if (std::strcmp(start, "landing-zone") == 0) next.campaignStart_ = CampaignStart::LandingZone;
+        else return badStart();
+    } else {
+        auto& f = next.fixture_;
+        if (std::sscanf(line, "S %u %d %u %f %f %f %f %f %f %f %f %f %u %d %d %d %d %u",
+                        &seed, &next.difficulty_, &flags, &f.player.x, &f.player.y, &f.player.z, &f.yaw,
+                        &f.pitch, &f.rival.x, &f.rival.y, &f.rival.z, &f.rivalYaw,
+                        &weapon, &f.clip, &f.playerScore, &f.rivalScore, &f.streak, &deathTick) < 17 ||
+            weapon > 2 || flags > (freeForAll ? 7u : 15u) || !inYard(f.player) || !inYard(f.rival) ||
+            !std::isfinite(f.yaw) || !std::isfinite(f.pitch) || !std::isfinite(f.rivalYaw) ||
+            f.clip < -1 || f.clip > 30 || f.playerScore < 0 || f.playerScore > 9 ||
+            f.rivalScore < 0 || f.rivalScore > 9 || f.streak < 0 || f.streak > 9) return badStart();
+        f.killPlayerAtTick = deathTick;
+        f.weapon = static_cast<Weapon>(weapon);
+        f.freezeRival = flags & 1;
+        f.airstrikeReady = flags & 2;
+        f.apacheReady = flags & 4;
+        next.opponent_ = freeForAll ? Opponent::FreeForAll : flags & 8 ? Opponent::Hanz : Opponent::IPwndUrMom;
     }
+    if (next.difficulty_ < 1 || next.difficulty_ > 10) return badStart();
     next.seed_ = seed;
-    next.fixture_.killPlayerAtTick = deathTick;
-    next.fixture_.weapon = static_cast<Weapon>(weapon);
-    next.fixture_.freezeRival = flags & 1;
-    next.fixture_.airstrikeReady = flags & 2;
-    next.fixture_.apacheReady = flags & 4;
-    next.opponent_ = freeForAll ? Opponent::FreeForAll : flags & 8 ? Opponent::Hanz : Opponent::IPwndUrMom;
 
     size_t row = 2;
     if (freeForAll) {
@@ -86,14 +92,14 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
             input.held = held;
             input.pressed = pressed;
             next.inputs_.push_back(input);
-        } else if (freeForAll && line[0] == 'W') {
+        } else if ((campaign || freeForAll) && line[0] == 'W') {
             unsigned count;
             char extra;
             if (std::sscanf(line, "W %u %c", &count, &extra) != 1 || !count || count > 12000 - next.inputs_.size()) {
                 return invalid();
             }
             next.inputs_.insert(next.inputs_.end(), count, Input{});
-        } else if (!freeForAll && line[0] == 'R') {
+        } else if (!campaign && !freeForAll && line[0] == 'R') {
             Draw draw;
             unsigned tick = 0;
             if (next.draws_.size() >= 30000 ||
@@ -131,8 +137,12 @@ void ReplayTrace::begin(App& app) {
     at_ = firstDraw_ = missingDraws_ = 0;
     for (auto& draw : draws_) draw.used = false;
     app.game.setRandomHook(draws_.empty() ? nullptr : &supply, this);
-    app.game.start(seed_, difficulty_, opponent_);
-    app.game.setupFixture(fixture_);
+    if (campaignStart_ == CampaignStart::Breakout) app.game.startMission(seed_, difficulty_);
+    else if (campaignStart_ == CampaignStart::LandingZone) app.game.startExtractionReplay(seed_, difficulty_);
+    else {
+        app.game.start(seed_, difficulty_, opponent_);
+        app.game.setupFixture(fixture_);
+    }
     app.audio.setVolume(app.settings().volume);
     app.audio.stopSpeech();
     app.audio.pauseSpeech(false);
@@ -166,6 +176,15 @@ void writeTraceTick(FILE* out, const App& app) {
         const auto& second = s.secondRival;
         std::fprintf(out, "\"secondRival\":[%.6f,%.6f,%.6f],\"secondRivalHp\":%.5f,\"secondRivalScore\":%d,",
                      second.position.x, second.position.y, second.position.z, second.health, s.secondRivalScore);
+    }
+    if (s.mission && s.mission->active) {
+        const auto& m = *s.mission;
+        const auto plasma = std::count_if(m.plasma.begin(), m.plasma.end(), [](const PlasmaCloud& p) { return p.radius > 0; });
+        std::fprintf(out, "\"mission\":{\"phase\":%d,\"checkpoint\":%d,\"civilians\":[%d,%d,%d],"
+                     "\"boarded\":%d,\"aliens\":%d,\"plasma\":%d,\"shock\":%.6f,\"hold\":%.6f,\"perimeter\":%.2f},",
+                     int(m.phase), int(m.checkpointStage), int(m.actors[1].civilian), int(m.actors[2].civilian),
+                     int(m.actors[3].civilian), m.civiliansBoarded, m.aliensRemaining, int(plasma),
+                     m.plasmaShock, m.evacSeconds, m.holdRadius);
     }
     std::fputs("\"events\":[", out);
     bool comma = false;

@@ -1,0 +1,8 @@
+FODTRACE 3
+S 45 5 landing-zone
+# Resume from incoming, face the first wave, then call Apache during the hold.
+W 220
+T 0 0 -.55 0 0 0
+W 170
+T 0 0 0 0 128 128
+W 450

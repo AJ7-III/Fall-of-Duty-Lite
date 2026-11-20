@@ -262,12 +262,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (out.arena == Arena::BriarHouse) buildBriarHouse(assets, out.briarMode);
-    if (out.inspect) describeAssets(assets);
     fod::ReplayTrace trace;
     if (out.trace && !trace.load(out.trace, error, assets.extent)) {
         std::fprintf(stderr, "%s: %s\n", out.trace, error.c_str());
         return 1;
     }
+    if (trace.campaign()) buildBriarHouse(assets, BriarHouseMode::Invasion);
+    if (out.inspect) describeAssets(assets);
     if (out.trace || out.image) {
         const auto run = headless(assets, out.trace ? &trace : nullptr, out, out.width ? out.width : 400);
         return run || !out.both ? run : headless(assets, &trace, out, 320);
@@ -287,27 +288,21 @@ int main(int argc, char** argv) {
     for (;;) {
         const auto action = runDesktop(assets, carry.desktopRenderWidth, out.look, out.stickSensitivity, autoStart, &carry);
         if (action == fod::LaunchAction::None) return 0;
-        const auto reloadPack = [&]() -> bool {
+        const bool campaign = action == fod::LaunchAction::Campaign;
+        const auto arena = campaign ? fod::Arena::BriarHouse : carry.selectedArena;
+        if (arena == fod::Arena::BriarHouse) {
+            buildBriarHouse(assets, campaign ? fod::BriarHouseMode::Invasion : fod::BriarHouseMode::Standard);
+        } else if (assets.arena != arena) {
             assets = fod::Assets{};
             if (!assets.load(out.pack, error)) {
                 std::fprintf(stderr, "%s: %s\n", out.pack, error.c_str());
-                return false;
+                return 1;
             }
-            return true;
-        };
-        if (action == fod::LaunchAction::Campaign) {
-            if (assets.arena != fod::Arena::ShipBox && !reloadPack()) return 1;
-            buildBriarHouse(assets, fod::BriarHouseMode::Invasion);
-            autoStart = true;
-        } else if (action == fod::LaunchAction::BotMatch) {
-            if (assets.arena != fod::Arena::ShipBox && !reloadPack()) return 1;
-            if (carry.selectedArena == fod::Arena::BriarHouse) buildBriarHouse(assets, fod::BriarHouseMode::Standard);
-            autoStart = true;
-        } else if (action == fod::LaunchAction::LocalDuel) {
-            if (assets.arena != fod::Arena::ShipBox && !reloadPack()) return 1;
-            if (carry.selectedArena == fod::Arena::BriarHouse) buildBriarHouse(assets, fod::BriarHouseMode::Standard);
+        }
+        if (action == fod::LaunchAction::LocalDuel) {
             return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);
         }
+        autoStart = true;
     }
 #else
     std::fputs("Build with FOD_DESKTOP=ON for the interactive SDL2 host.\n", stderr);

@@ -463,7 +463,9 @@ struct Game::Impl {
         const float desired = s.prone ? proneEye : s.crouch ? crouchEye : standEye;
         s.eyeHeight += (desired - s.eyeHeight) * float(1 - std::exp(-15 * dt));
         s.sprint = input.down(Sprint) && input.moveY > 0 && !s.crouch && !s.prone && progress < .1;
-        const float speed = s.prone ? .9f : s.crouch ? 2.f : s.sprint ? 6.2f : 4.f;
+        const float gait = s.prone ? .9f : s.crouch ? 2.f : s.sprint ? 6.2f : 4.f;
+        const float shock = s.mission ? s.mission->plasmaShock / plasmaShockDuration : 0.f;
+        const float speed = gait * (1.f - .27f * shock);
         const float sy = std::sin(s.playerYaw), cy = std::cos(s.playerYaw);
         const Vec3 desiredVel{sy * input.moveY + cy * input.moveX, 0, cy * input.moveY - sy * input.moveX};
         const float magnitude = planar(desiredVel);
@@ -715,13 +717,14 @@ struct Game::Impl {
         void refillPlayer(bool newMatch) override { g.refill(g.player, newMatch); }
     };
 
-    void startMission(uint32_t seed, int level, bool fromCheckpoint) {
+    void startMission(uint32_t seed, int level, bool fromCheckpoint, bool extractionReplay = false) {
 #ifdef FOD_LOCAL_DUEL
         guest.reset();
         player.slot = playerSlot;
 #endif
         second.reset();
-        if (!mission) mission = std::make_unique<mission_detail::MissionController>(world, navigation);
+        if (!mission) mission = std::make_unique<mission_detail::MissionController>(assets, world, navigation);
+        if (extractionReplay) mission->seedExtractionReplay();
         snapshot = {};
         snapshot.match = Match::Playing;
         setDifficulty(level);
@@ -1846,6 +1849,9 @@ void Game::start(uint32_t seed, int difficulty, bool alternateRival) {
 void Game::start(uint32_t seed, int difficulty, Opponent opponent) { impl_->start(seed, difficulty, opponent); }
 void Game::startMission(uint32_t seed, int difficulty, bool fromCheckpoint) {
     impl_->startMission(seed, difficulty, fromCheckpoint);
+}
+void Game::startExtractionReplay(uint32_t seed, int difficulty) {
+    impl_->startMission(seed, difficulty, true, true);
 }
 bool Game::isMission() const { return impl_->mission && impl_->mission->active(); }
 bool Game::canRetryCheckpoint() const { return impl_->mission && impl_->mission->canRetryCheckpoint(); }

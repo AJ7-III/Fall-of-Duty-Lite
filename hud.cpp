@@ -89,6 +89,8 @@ struct Painter {
     }
 
     void line(int x, int y, int endX, int endY, uint16_t color) const {
+        if (std::max(x, endX) < left || std::min(x, endX) >= right ||
+            std::max(y, endY) < top || std::min(y, endY) >= bottom) return;
         const int dx = std::abs(endX - x), dy = -std::abs(endY - y);
         const int stepX = endX > x ? 1 : -1, stepY = endY > y ? 1 : -1;
         int error = dx + dy;
@@ -146,9 +148,13 @@ void map(const Painter& p, const Assets& assets, const Snapshot& snap, int x, in
         }
     };
     outline(0, 0, arena.x, arena.z, 1, 0, muted);
+    // Allow a pixel of rounding at the rim when turning the radar square into world bounds.
+    const float radarHalf = (size * .5f + 1.f) * (std::abs(cs) + std::abs(sn)) / scale;
     for (const auto& box : assets.obstacles) {
         // The mansion's lintels and ceilings sit above the floor-plan routes.
         if (assets.arena == Arena::BriarHouse && box.minY > .25f) continue;
+        const float reach = radarHalf + (box.hw + box.hd) * 1.001f;
+        if (std::abs(box.cx - origin.x) > reach || std::abs(box.cz - origin.z) > reach) continue;
         outline(box.cx, box.cz, box.hw, box.hd, box.cos, box.sin, lineColor);
     }
     if (scanning) {
@@ -171,12 +177,27 @@ void map(const Painter& p, const Assets& assets, const Snapshot& snap, int x, in
     };
     if (snap.mission && snap.mission->active) {
         constexpr uint16_t alienCyan = rgb(72, 248, 255);
+        const auto& m = *snap.mission;
+        if (m.holdRadius > 0 && game_detail::planarSquared(m.holdCenter - origin) <=
+                (radarHalf + m.holdRadius) * (radarHalf + m.holdRadius)) {
+            constexpr float c = .92388f, s = .38268f, d = .70711f;
+            constexpr float ring[][2]{{1, 0}, {c, s}, {d, d}, {s, c}, {0, 1}, {-s, c}, {-d, d}, {-c, s},
+                                      {-1, 0}, {-c, -s}, {-d, -d}, {-s, -c}, {0, -1}, {s, -c}, {d, -d}, {c, -s}};
+            const uint16_t edge = game_detail::planarSquared(m.holdCenter - origin) < m.holdRadius * m.holdRadius
+                ? playerColor : alert;
+            auto from = project(m.holdCenter.x + m.holdRadius * c, m.holdCenter.z - m.holdRadius * s);
+            for (const auto& offset : ring) {
+                const auto to = project(m.holdCenter.x + m.holdRadius * offset[0], m.holdCenter.z + m.holdRadius * offset[1]);
+                clipped.line(from.x, from.y, to.x, to.y, edge);
+                from = to;
+            }
+        }
         for (const auto& ma : snap.mission->actors) {
             if (!ma.active || ma.dead) continue;
             if (ma.role == MissionRole::Commander) {
                 drawContact(ma.actor, playerColor);
             } else if (ma.role == MissionRole::Civilian) {
-                if (!ma.rescued) drawContact(ma.actor, gold);
+                if (!civilianRescued(ma.civilian)) drawContact(ma.actor, gold);
             } else if (ma.radar > 0 || ma.alerted || scanning) {
                 drawContact(ma.actor, ma.variant > 0 ? alert : alienCyan);
             }
@@ -339,71 +360,40 @@ void drawKillNotice(const Painter& p, const KillNotice& notice, const MenuState&
 void startScreen(const Painter& p, const MenuState& menu, Arena arena) {
     p.shadeTitle();
 
-    // Header badge + iconic stacked title block.
-    p.rect(startX, 34, 3, 12, gold);
-    p.text(startX + 10, 36, menu.campaign ? "BRIAR HOUSE / DELTA SQUAD" : "OFFLINE TACTICAL SHOOTER", gold, 1);
-    p.text(startX, 54, "FALL OF DUTY", paper, 4);
-    p.text(startX - 1, 90, "LITE", paper, 7);
-    p.rect(startX, 144, 56, 3, gold);
+    constexpr uint16_t selectedPanel = rgb(34, 43, 42);
+    constexpr uint16_t cardAccents[]{gold, playerColor, rgb(156, 193, 226), muted};
+    const uint16_t focus = cardAccents[menu.selection < int(startCards.size()) && menu.selection >= 0
+                                       ? menu.selection : int(StartItem::BotMatch)];
+    p.text(startX, 53, "FALL OF DUTY", paper, 4);
+    p.text(startX - 1, 89, "LITE", paper, 7);
+    p.rect(startX, 146, 56, 3, focus);
 
-    // Dynamic tactical briefing line for whichever mode is highlighted.
-    char brief[64];
-    switch (StartItem(menu.selection)) {
-    case StartItem::Campaign:
-        std::snprintf(brief, sizeof(brief), "MISSION 1: BRIAR HOUSE - OPERATION BRIAR");
-        break;
-    case StartItem::BotMatch:
-        std::snprintf(brief, sizeof(brief), "%s / %s / %s %d", arenaLabel(menu.selectedArena),
-                      opponentName(menu.opponent), difficultyName(menu.difficulty), menu.difficulty);
-        break;
-    case StartItem::MultiplayerLan:
-        std::snprintf(brief, sizeof(brief), "LOCAL 2P SPLIT-SCREEN & LAN LOBBY");
-        break;
-    default:
-        std::snprintf(brief, sizeof(brief), "DIFFICULTY, RIVAL, AUDIO & DISPLAY");
-        break;
-    }
-    p.text(startX, 158, brief, muted, 1);
-
-    // Four sleek stacked mode cards.
     char botSub[48], lanSub[48];
-    std::snprintf(botSub, sizeof(botSub), "%s  /  %s  /  LVL %d",
+    std::snprintf(botSub, sizeof(botSub), "%s / %s / LEVEL %d",
                   arenaLabel(menu.selectedArena), opponentName(menu.opponent), menu.difficulty);
-    std::snprintf(lanSub, sizeof(lanSub), "2P LOCAL DUEL  /  %s", arenaLabel(menu.selectedArena));
-
-    struct Card {
-        StartItem id;
-        int y, h;
-        const char* title;
-        const char* sub;
-        const char* badge;
-    };
-    const Card cards[]{
-        {StartItem::Campaign, campaignY, campaignHeight, "CAMPAIGN", "MISSION 1: BRIAR HOUSE", "M1"},
-        {StartItem::BotMatch, startY, startHeight, "BOT MATCH", botSub, "AI"},
-        {StartItem::MultiplayerLan, lanY, lanHeight, "MULTIPLAYER LAN", lanSub, "2P"},
-        {StartItem::MatchSetup, setupY, setupHeight, "MATCH SETUP", "DIFFICULTY, RIVAL, VOICE & DISPLAY", ""},
-    };
-    for (const auto& c : cards) {
-        const bool active = menu.selection == int(c.id);
-        p.rect(startX, c.y, startWidth, c.h, active ? gold : panel);
-        if (active) {
-            p.rect(startX - 7, c.y, 3, c.h, paper);
-        } else {
-            p.rect(startX, c.y + c.h - 1, startWidth, 1, lineColor);
-        }
-        p.text(startX + 16, c.y + (c.h >= 50 ? 10 : 8), c.title, active ? ink : paper, 2);
-        p.text(startX + 16, c.y + (c.h >= 50 ? 31 : 27), c.sub, active ? rgb(46, 38, 22) : muted, 1);
-        if (c.badge[0]) {
-            const int bx = startX + startWidth - 46;
-            const int by = c.y + (c.h - 16) / 2;
-            p.rect(bx, by, 22, 16, active ? ink : lineColor);
-            p.text(bx + 5, by + 5, c.badge, active ? gold : paper, 1);
-        }
-        p.text(startX + startWidth - 18, c.y + (c.h - 14) / 2, ">", active ? ink : muted, 2);
+#ifdef FOD_LOCAL_DUEL
+    std::snprintf(lanSub, sizeof(lanSub), "LOCAL SPLIT-SCREEN / %s", arenaLabel(menu.selectedArena));
+#else
+    std::snprintf(lanSub, sizeof(lanSub), "LOCAL SPLIT-SCREEN ON DESKTOP");
+#endif
+    const char* descriptions[]{"MISSION 1 / BRIAR HOUSE", botSub, lanSub, "DIFFICULTY, RIVAL, AUDIO & DISPLAY"};
+    for (size_t i = 0; i < startCards.size(); ++i) {
+        const auto& card = startCards[i];
+        const bool selected = menu.selection == int(i);
+        const uint16_t tint = cardAccents[i];
+        p.rect(startX, card.y, startWidth, card.height, selected ? selectedPanel : panel);
+        p.rect(startX, card.y, 3, card.height, selected ? tint : lineColor);
+        p.rect(startX + 3, card.y + card.height - 1, startWidth - 3, 1, lineColor);
+        p.text(startX + 15, card.y + 10, card.label, selected ? tint : paper, 2);
+        p.text(startX + 15, card.y + 31, descriptions[i], selected ? paper : muted, 1);
+        if (selected) p.text(startX + startWidth - 20, card.y + 17, ">", tint, 2);
     }
 
-    // Compact footer status (kept above y = 445 so the bottom gradient stays clean).
+    const std::string_view background(arenaLabel(arena));
+    const int backdropLabel = int(background.size()) * 6;
+    p.rect(774 - backdropLabel - 12, 431, backdropLabel + 24, 18, panel);
+    p.text(774 - backdropLabel, 437, background, paper, 1);
+
     char status[48];
     std::snprintf(status, sizeof(status), "%s  /  %s %d", menu.callsign.data(),
                   difficultyName(menu.difficulty), menu.difficulty);
@@ -423,14 +413,12 @@ void startScreen(const Painter& p, const MenuState& menu, Arena arena) {
 #else
     p.text(startX, 434, "TAP OR PRESS X TO SELECT", paper, 1);
 #endif
-    (void)arena;
 }
 
 void lanScreen(const Painter& p, const MenuState& menu) {
     p.rect(menuX - 8, 46, menuWidth + 16, 387, ink);
     p.rect(menuX - 8, 46, menuWidth + 16, 4, gold);
     p.text(menuX + 10, 66, "MULTIPLAYER LAN", paper, 4);
-    p.text(menuX + 12, 114, "LOCAL 2-PLAYER SPLIT-SCREEN & LAN LOBBY", muted, 1);
 
     const char* labels[LanRows]{
 #ifdef FOD_LOCAL_DUEL
@@ -440,7 +428,7 @@ void lanScreen(const Painter& p, const MenuState& menu) {
 #endif
         "ARENA", "NETWORK LAN", "BACK TO MAIN MENU"
     };
-    const char* values[LanRows]{"", arenaLabel(menu.selectedArena), "LOCAL 2P READY", ""};
+    const char* values[LanRows]{"", arenaLabel(menu.selectedArena), "UNAVAILABLE", ""};
     for (int row = 0; row < LanRows; ++row) {
         const int py = menuY + row * menuRowHeight;
         const bool active = row == menu.selection;
@@ -450,11 +438,9 @@ void lanScreen(const Painter& p, const MenuState& menu) {
         const std::string_view val(values[row]);
         p.text(menuX + menuWidth - 12 - int(val.size()) * 6, py + 12, val, active ? paper : muted, 1);
     }
-    p.rect(menuX, menuY + LanRows * menuRowHeight + 18, menuWidth, 72, panel);
-    p.rect(menuX, menuY + LanRows * menuRowHeight + 18, 3, 72, playerColor);
-    p.text(menuX + 12, menuY + LanRows * menuRowHeight + 28, "PAIR TWO GAMEPADS FOR INSTANT 2P DUEL.", paper, 1);
-    p.text(menuX + 12, menuY + LanRows * menuRowHeight + 44, "PRESS LEFT/RIGHT ON ARENA TO SWITCH MAPS.", muted, 1);
-    p.text(menuX + 12, menuY + LanRows * menuRowHeight + 60, "MULTI-DEVICE LAN SOCKET PLAY COMING NEXT.", muted, 1);
+#ifdef FOD_LOCAL_DUEL
+    p.text(menuX + 12, 313, "CONNECT TWO GAMEPADS TO PLAY ON THIS SCREEN.", muted, 1);
+#endif
 #ifdef FOD_LOCAL_DUEL
     if (const auto lbl = menuLabels(menu.controls); lbl.confirm) {
         char hint[58];
@@ -498,16 +484,16 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
         char summary[112];
         const int mins = int(m.missionSeconds) / 60, secs = int(m.missionSeconds) % 60;
         if (m.phase == MissionPhase::Failed) {
-            std::snprintf(summary, sizeof(summary), "%s  /  SAVED %d/%d  /  KILLS %d",
+            std::snprintf(summary, sizeof(summary), "%s  /  RESCUED %d/%d  /  KILLS %d",
                           m.failReason[0] ? m.failReason : "MISSION FAILED", m.civiliansSaved, m.civiliansTotal, m.aliensKilled);
         } else {
-            std::snprintf(summary, sizeof(summary), "SAVED %d/%d  /  ALIENS %d  /  %02d:%02d  /  RANK %c",
-                          m.civiliansSaved, m.civiliansTotal, m.aliensKilled, mins, secs, missionGrade(m));
+            std::snprintf(summary, sizeof(summary), "EVACUATED %d/%d  /  ALIENS %d  /  %02d:%02d  /  RANK %c",
+                          m.civiliansBoarded, m.civiliansTotal, m.aliensKilled, mins, secs, missionGrade(m));
         }
         p.text(menuX + 12, 104, summary, m.phase == MissionPhase::Victory ? gold : alert, 1);
         char detail[112];
-        std::snprintf(detail, sizeof(detail), "HEADSHOTS %d  /  INTERRUPTS %d  /  SHIELDS %d  /  RETRIES %d  /  %s %d",
-                      m.headshots, m.chargeInterrupts, m.shieldsBroken, m.retries,
+        std::snprintf(detail, sizeof(detail), "CRITICALS %d  /  INTERRUPTS %d  /  SHIELDS %d  /  RETRIES %d  /  %s %d",
+                      m.criticalKills, m.chargeInterrupts, m.shieldsBroken, m.retries,
                       difficultyName(menu.difficulty), menu.difficulty);
         p.text(menuX + 12, 117, detail, muted, 1);
         if (m.epilogue[0]) p.text(menuX + 12, 131, m.epilogue, paper, 1);
@@ -554,7 +540,7 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
     const int count = s.match == Match::Start ? MenuRows - 1 : MenuRows;
     const char* primary = s.match == Match::Start ? "BACK TO START"
         : s.match == Match::Paused ? "RESUME"
-        : isCampaign ? (s.mission && s.mission->phase == MissionPhase::Failed && s.mission->checkpointReached
+        : isCampaign ? (s.mission && s.mission->phase == MissionPhase::Failed && s.mission->checkpointStage != MissionCheckpoint::None
                         ? "RETRY CHECKPOINT" : "PLAY AGAIN")
         : "REMATCH";
     const char* labels[MenuRows]{primary, "DIFFICULTY", isCampaign ? "MISSION" : "RIVAL",
@@ -676,7 +662,7 @@ void objectiveMarker(const Painter& p, const Snapshot& s, const MissionSnapshot&
     if (!m.hasWaypoint || s.scope > 0.3f || s.ads > 0.7f || s.dead) return;
     const Vec3 target = game_detail::atHeight(m.waypoint, 1.7f);
     const float range = game_detail::planar(m.waypoint - s.player.position);
-    if (range < 2.5f) return;
+    if (range < (m.waypointIsRoute ? .8f : 2.5f)) return;
     float x = 0, y = 0;
     const bool ahead = projectToHud(s, target, x, y);
     constexpr float left = 40, right = 760, top = 74, bottom = 326;
@@ -712,8 +698,8 @@ void objectiveMarker(const Painter& p, const Snapshot& s, const MissionSnapshot&
         p.line(tipX, tipY, cx + int(ux * 8 - uy * 4), cy + int(uy * 8 + ux * 4), color);
         p.line(tipX, tipY, cx + int(ux * 8 + uy * 4), cy + int(uy * 8 - ux * 4), color);
     }
-    char label[12];
-    std::snprintf(label, sizeof(label), "%dM", int(range + 0.5f));
+    char label[20];
+    std::snprintf(label, sizeof(label), m.waypointIsRoute ? "ROUTE %dM" : "%dM", int(range + 0.5f));
     const int width = int(std::strlen(label)) * 6;
     p.text(std::clamp(cx - width / 2, 4, 796 - width), cy + 11, label, color, 1);
 }
@@ -757,8 +743,31 @@ void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
     }
     if (s.damage > 0.12f) {
         const int thickness = 2 + int(std::clamp(s.damage, 0.0f, 1.0f) * 5);
-        p.rect(0, 15, thickness, 450, rgb(117, 21, 16));
-        p.rect(800 - thickness, 15, thickness, 450, rgb(117, 21, 16));
+        const auto tint = m.plasmaShock > 0.f ? rgb(35, 79, 169) : rgb(117, 21, 16);
+        p.rect(0, 15, thickness, 450, tint);
+        p.rect(800 - thickness, 15, thickness, 450, tint);
+    }
+    if (m.plasmaShock > .02f && !s.dead && !cutscene) {
+        const float strength = m.plasmaShock / plasmaShockDuration;
+        uint32_t noise = uint32_t(s.realTime * 26.0) + 11;
+        const auto jitter = [&](unsigned max) {
+            noise = noise * 1664525u + 1013904223u;
+            return int((noise >> 16) % max);
+        };
+        const uint16_t shell = rgb(50, unsigned(85 + 88 * strength), unsigned(136 + 112 * strength));
+        const uint16_t core = rgb(unsigned(66 + 143 * strength), unsigned(125 + 113 * strength), 255);
+        for (int side : {1, -1}) {
+            const int edge = side > 0 ? 0 : 799;
+            for (int fork = 0; fork < 3; ++fork) {
+                const int y = 58 + fork * 124 + jitter(66);
+                const int reach = 19 + int(63 * strength) + jitter(18);
+                const int elbowX = edge + side * reach / 2, elbowY = y - 34 + jitter(55);
+                const int tipX = edge + side * reach;
+                p.line(edge, y, elbowX, elbowY, core);
+                p.line(elbowX, elbowY, tipX, elbowY - 18 + jitter(35), core);
+                p.line(elbowX, elbowY, elbowX + side * (6 + jitter(22)), elbowY + 22, shell);
+            }
+        }
     }
     const bool showTactical = !inIntro || m.introProgress > 0.72f;
     if (showTactical && !cutscene) map(p, assets, s, 15, 28, 107, false);
@@ -778,7 +787,7 @@ void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
             p.rect(185, 51, int(430 * done), 3, done >= 1.f ? gold : playerColor);
         }
     }
-    if (m.phase == MissionPhase::Rescue || m.phase == MissionPhase::Regroup || m.phase == MissionPhase::Incoming) {
+    if (!cutscene) {
         objectiveMarker(p, s, m);
     }
 
@@ -827,7 +836,7 @@ void drawMissionHud(const Painter& p, const Assets& assets, const Snapshot& s) {
         const uint16_t warnColor = flash ? rgb(255, 112, 58) : alert;
         p.rect(224, 58, 352, 20, ink);
         p.rect(224, 58, 352, 2, warnColor);
-        p.text(242, 64, "HEAVY RAY LOCK - HIT HEAD OR TAKE COVER", warnColor, 1);
+        p.text(242, 64, "PLASMA CHARGE - HIT CHEST OR TAKE COVER", warnColor, 1);
     }
     if (m.tacticalCalloutTimer > 0.f && m.tacticalCallout[0] && !cutscene && !s.dead) {
         const std::string_view badge(m.tacticalCallout);

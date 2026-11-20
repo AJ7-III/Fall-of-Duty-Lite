@@ -85,11 +85,15 @@ struct MenuFrameKey {
 enum MenuRow { PlayRow, DifficultyRow, RivalRow, VoiceRow, VolumeRow, RenderRow, CallsignRow, ExitRow, MenuRows };
 enum LanRow { LanStartRow, LanArenaRow, LanStatusRow, LanBackRow, LanRows };
 constexpr int startX = 42, startWidth = 326;
-constexpr int campaignY = 186, campaignHeight = 50;
-constexpr int startY = 244, startHeight = 50;
-constexpr int lanY = 302, lanHeight = 50;
-constexpr int setupY = 360, setupHeight = 44;
-constexpr int startSetupSelection = int(StartItem::MatchSetup);
+struct StartCard {
+    int y, height;
+    const char* label;
+};
+constexpr std::array<StartCard, size_t(StartItem::Count)> startCards{{
+    {183, 50, "CAMPAIGN"}, {241, 50, "BOT MATCH"},
+    {299, 50, "MULTIPLAYER LAN"}, {357, 50, "MATCH SETUP"},
+}};
+constexpr const StartCard& startCard(StartItem item) { return startCards[size_t(item)]; }
 constexpr int menuX = 177, menuY = 148, menuWidth = 446, menuRowHeight = 33;
 constexpr int keyboardX = menuX + 12, keyboardY = 235, keyWidth = 42, keyHeight = 32, keyboardColumns = 10;
 constexpr char callsignKeys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-<";
@@ -108,10 +112,15 @@ public:
 
 private:
     void menuInput(const Input& input);
+    void startMenuInput(const Input& input);
+    void lanMenuInput(const Input& input);
+    void callsignInput(const Input& input);
+    void beginMatch(bool retryCheckpoint);
     void startOrResume(const Input& input);
-    void select(int step);
+    void returnToStartMenu();
+    void pauseMatch();
     void change(int direction);
-    void stopRotor();
+    void stopAmbientLoops();
     Arena loadedArena_ = Arena::ShipBox;
     BriarHouseMode loadedBriarMode_ = BriarHouseMode::Standard;
     MenuState menu_{};
