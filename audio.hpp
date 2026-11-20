@@ -71,6 +71,7 @@ private:
     uint32_t activeSpeechGeneration_ = 0;
     uint32_t activeCampaignRequest_ = 0;
     int campaignDuckFrames_ = 0;
+    int campaignLastSample_ = 0, campaignFadeFrom_ = 0, campaignFadeFrames_ = 0;
     // Stops invalidate older commands even if the effects queue is full.
     std::atomic<uint32_t> speechGeneration_{0};
     // The most recent displayed cue wins, independent of the effects queue.

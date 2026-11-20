@@ -2,6 +2,7 @@
 #include "assets.hpp"
 #include "briar_house.hpp"
 #include "briar_mission_data.hpp"
+#include "campaign_voice_timing.hpp"
 #include "mission.hpp"
 #include "mission_internal.hpp"
 #include "game_bot.hpp"
@@ -852,10 +853,12 @@ void checkCampaignSpeech() {
     assets.audio.resize(size_t(Sound::Count));
     assets.audio[size_t(Sound::RadioChirp)].samples = {400, 600};
     auto bank = std::make_shared<CampaignVoiceBank>();
-    bank->codes.reset(static_cast<uint8_t*>(std::malloc(1)));
-    check(bool(bank->codes), "The campaign audio fixture needs one byte of ADPCM.");
+    constexpr size_t blockFrames = audioHz / 200;
+    bank->codes.reset(static_cast<uint8_t*>(std::calloc(blockFrames + 1, 1)));
+    check(bool(bank->codes), "The campaign audio fixture needs ADPCM storage.");
     bank->codes.get()[0] = 7;
     bank->clips[size_t(CampaignLine::DeltaWakeUp) - 1] = {1, 0, 1500, 0, 1};
+    bank->clips[size_t(CampaignLine::DeltaWarhorseDown) - 1] = {2 * blockFrames, 1, 2000, 0, 1};
     bank->clips[size_t(CampaignLine::DeltaFirstShot) - 1] = {2, 0, 1000, 0, 2};
     assets.campaignVoices = bank;
     Mixer mixer(assets);
@@ -880,6 +883,19 @@ void checkCampaignSpeech() {
     mixer.stopSpeech();
     mixer.mix(pcm.data(), 1);
     check(pcm[0] == 0, "Muting must invalidate a pending campaign chirp and line together.");
+
+    mixer.playCampaignVoice({CampaignLine::DeltaFirstShot, false});
+    mixer.mix(pcm.data(), 1);
+    const int16_t interrupted = pcm[0];
+    std::array<int16_t, 2 * blockFrames> block{};
+    mixer.playCampaignVoice({CampaignLine::DeltaWarhorseDown, false});
+    mixer.mix(block.data(), blockFrames);
+    check(block.front() == interrupted && interrupted != 0 && block.back() == 1796,
+          "Replacing a playing campaign cue must blend into the new line within one DMA block.");
+    mixer.stopSpeech();
+    mixer.mix(block.data(), blockFrames);
+    check(block.front() == 1796 && block.back() == 0,
+          "Stopping a playing campaign cue must smoothly fall silent within one DMA block.");
 
     Assets subtitlesOnly;
     subtitlesOnly.audio = assets.audio;
@@ -1085,7 +1101,8 @@ struct CampaignDriver {
     }
 };
 
-void playTimberlineThroughMenu(App& app, const game_detail::World& world, game_detail::Navigation& nav, float& previousTime) {
+void playTimberlineThroughMenu(App& app, const Assets& assets, const game_detail::World& world,
+                              game_detail::Navigation& nav, float& previousTime) {
     using namespace game_detail;
     CampaignDriver d{app, world, nav};
     app.settings().difficulty = defaultDifficulty;
@@ -1102,8 +1119,11 @@ void playTimberlineThroughMenu(App& app, const game_detail::World& world, game_d
     const Vec3 kit = mission_detail::mapPoint(-245, 214);
     bool sawUnaware = false, sawShipMove = false, sawPainting = false, sawSecondDrone = false;
     int lastCalls = -1;
+    uint32_t turningCueTick = 0;
     Vec3 spot{};
     for (int t = 0; t < 10 * 60 * 60 && d.s().match == Match::Playing; ++t) {
+        if (const auto* cue = app.game.campaignVoiceCue(); cue && cue->line == CampaignLine::DeltaMothershipTurning)
+            turningCueTick = d.s().tick;
         const auto& m = d.m();
         const auto& op = m.operation;
         sawShipMove |= length(m.fleetShift[2]) > 3.f;
@@ -1153,6 +1173,10 @@ void playTimberlineThroughMenu(App& app, const game_detail::World& world, game_d
     check(d.s().match == Match::Results && done.phase == MissionPhase::Victory && done.operation.calls == 4 &&
               std::string_view(done.epilogue).find("NORA HAS HER CALIBRATION") == 0,
           "Four answered calls must complete Timberline.");
+    const size_t turningFrames = campaignVoiceFrames[size_t(CampaignLine::DeltaMothershipTurning)] +
+                                 assets.audio[size_t(Sound::RadioChirp)].samples.size();
+    check(turningCueTick && (d.s().tick - turningCueTick) * tickSeconds * audioHz >= turningFrames,
+          "Timberline must let the final radio line finish before showing results.");
     check(sawPainting && sawShipMove && sawUnaware && sawSecondDrone,
           "Holding Signal must mark open ground, move the saucer there, and land drops that have not seen the player.");
     previousTime = done.earlierMissionSeconds + done.missionSeconds;
@@ -1489,7 +1513,7 @@ void playBriarHouse(const Assets& assets, const game_detail::World& world, game_
           "Reinforcements must keep landing during the timed hold.");
     if (!retries) {
         float previousTime = result.missionSeconds;
-        playTimberlineThroughMenu(app, world, nav, previousTime);
+        playTimberlineThroughMenu(app, assets, world, nav, previousTime);
         playArrayThroughMenu(app, world, nav, previousTime);
         check(!mission.state().mission->nextMissionReady() && mission.state().mission->chapter == MissionChapter::Array,
               "The campaign must finish after The Array.");
@@ -2059,15 +2083,22 @@ void checkArrayWithoutNora(const Assets& assets, mission_detail::MissionHost& ho
     controller.publish(view);
     check(std::string_view(view->signalHint) == "SIGNAL DELTA-1", "Without Nora, the last signal must be for Delta-1.");
     controller.step(snap, Input{0, 0, 0, 0, Signal, Signal}, tickSeconds, false, host);
-    bool line = false;
+    bool line = false, warningDuringFade = false;
     for (int t = 0; t < 15 * 60 && snap.match == Match::Playing; ++t) {
         controller.step(snap, {}, tickSeconds, false, host);
         controller.publish(view);
         line |= std::string_view(view->radioLine) == "SHE PULLED IT OFF... EVEN AFTER WE LOST HER. LET'S GO HOME.";
+        if (!warningDuringFade && view->fade > .1f) {
+            const auto chest = atHeight(view->actors[0].actor.position, 1.1f);
+            Vec3 hit{};
+            controller.resolvePlayerShot(chest + Vec3{0, 0, .7f}, {0, 0, -1}, 20.f, 2.f, snap, host, hit);
+            controller.publish(view);
+            warningDuringFade = std::string_view(view->radioLine) == campaignDialogue[size_t(CampaignLine::DeltaCheckFire)].text;
+        }
     }
-    check(snap.match == Match::Results && view->phase == MissionPhase::Victory && line &&
+    check(snap.match == Match::Results && view->phase == MissionPhase::Victory && line && warningDuringFade &&
               std::string_view(view->epilogue) == "THE FLEET SET DOWN BEYOND THE RIDGE. DUSTOFF BROUGHT US HOME.",
-          "Without Nora, The Array must still end, on Delta-1's line about her.");
+          "The Array must end after Delta-1's line about Nora, even if a warning replaces it during the fade.");
 }
 
 void checkBenAndDish(const Assets& assets, mission_detail::MissionHost& host, const game_detail::World& world,

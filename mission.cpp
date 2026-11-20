@@ -201,12 +201,14 @@ void MissionController::setRadio(Line line, float duration,
     const bool idle = state_.radioTimer <= 0;
     const bool read = elapsed_ - radioShownAt_ >= radioReadSeconds_;
     // Walt breaks off his own escort instructions when a scanner sweeps across him.
-    const bool scannerInterrupt = line == Line::WaltScanner && radioLine_ == Line::WaltLeadWay;
+    const bool scanner = line == Line::WaltScanner;
+    const bool scannerInterrupt = scanner && radioLine_ == Line::WaltLeadWay;
     const bool interrupt = priority == RadioUrgent && (radioPriority_ < RadioUrgent || scannerInterrupt);
-    if (idle || interrupt || (read && radioQueued_ == 0)) {
+    if (idle || interrupt || (read && (radioQueued_ == 0 || scanner))) {
         showRadio(next, host);
         return;
     }
+    if (scanner) return; // The warning expires when the sweep passes.
     // Keep the queue ordered by priority, oldest first within a priority.
     int at = radioQueued_;
     while (at > 0 && radioQueue_[at - 1].priority < priority) --at;

@@ -22,7 +22,7 @@ struct MissionHost {
 using Line = CampaignLine;
 
 // Radio lines interrupt by priority. Urgent lines react to the moment; orders and story wait
-// their turn. Chatter goes stale quickly and orders more slowly; story lines are never dropped.
+// their turn. Chatter goes stale quickly and orders more slowly.
 enum RadioPriority : uint8_t { RadioChatter = 0, RadioOrder = 1, RadioStory = 2, RadioUrgent = 3 };
 enum class MissionStart : uint8_t { SingleMission, Campaign, NextChapter, Retry, ExtractionReplay };
 
@@ -173,7 +173,6 @@ private:
         double nextDropAt = 0;
         double nextJammerAt = 0;
         double lineAt = 0;
-        Line closingLine = Line::None;
         int drops = 0;             // Reinforcements dropped this stage
         int cue = 0;               // Story beats delivered this stage
         bool jammerSent = false;   // Timberline: the hijack drone for the third call

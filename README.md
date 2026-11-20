@@ -30,7 +30,7 @@ The v1.1.0 Guition archive is about **4.47 MB**. [GitHub release](https://github
 
 The archive bundles the bootloader, partition table, application binary, schema 7 SD pack, reference replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`. Keep the firmware and SD pack from the same archive together because schema 7 packs require firmware with schema 7 support.
 
-The [voiced Operation Briar preview](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/campaign-voices-preview-1) includes matching handheld firmware and SD files. For desktop, download the preview's source archive and follow [Play on desktop](#play-on-desktop). The source includes the base game pack and the compressed campaign voices.
+The [voiced Operation Briar preview](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/campaign-voices-preview-2) includes matching handheld firmware and SD files. For desktop, download the preview's source archive and follow [Play on desktop](#play-on-desktop). The source includes the base game pack and the compressed campaign voices.
 
 | Component | Target profile |
 | --- | --- |

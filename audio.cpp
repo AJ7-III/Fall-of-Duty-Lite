@@ -11,6 +11,7 @@ constexpr size_t maxSpeechGap = audioHz * 3 / 2;
 constexpr uint32_t campaignChirpBit = 0x100u;
 constexpr uint32_t campaignRequestStep = 0x200u;
 constexpr int duckRampFrames = audioHz / 50;
+constexpr int campaignFadeFrames = audioHz / 250;
 }
 
 Mixer::Mixer(const Assets& assets, uint32_t voiceSeed) : assets_(assets), voiceSeed_(voiceSeed ? voiceSeed : 0x29ea2831u) {
@@ -178,13 +179,19 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
         speechGapFrames_ = 0;
         activeSpeechGeneration_ = speechGeneration;
     }
+    const bool speechPaused = speechPaused_.load(std::memory_order_acquire);
     const auto campaignRequest = campaignRequest_.load(std::memory_order_acquire);
     if (campaignRequest != activeCampaignRequest_) {
         activeCampaignRequest_ = campaignRequest;
+        const bool interrupting = speech_.campaign && speech_.cursor < speech_.count;
+        if (!speechPaused && campaignLastSample_ && (interrupting || campaignFadeFrames_)) {
+            // Blend from the last output sample while the replacement starts.
+            campaignFadeFrom_ = campaignLastSample_;
+            campaignFadeFrames_ = campaignFadeFrames;
+        }
         startCampaignSpeech({CampaignLine(campaignRequest & (campaignChirpBit - 1u)),
                              (campaignRequest & campaignChirpBit) != 0u});
     }
-    const bool speechPaused = speechPaused_.load(std::memory_order_acquire);
     const bool canSpeak = !speechPaused && speech_.cursor == speech_.count && !speechGapFrames_;
     Command speechCandidate;
     unsigned candidates = 0;
@@ -230,6 +237,11 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
     const int speechGain = int(speech_.gain * volume * 2.56f);
     const int chirpGain = int(.52f * volume * 2.56f);
     const size_t speechFrames = speechPaused ? 0 : std::min(frames, speech_.count - speech_.cursor);
+    const size_t chirpFrames = speech_.cursor < speech_.chirpFrames
+        ? std::min(speechFrames, speech_.chirpFrames - speech_.cursor) : 0;
+    const size_t campaignVoiceStart = speech_.campaign && speechGain ? chirpFrames : speechFrames;
+    if (speechPaused || !volume) campaignFadeFrames_ = 0;
+    int voiced = 0;
     for (size_t frame = 0; frame < frames; ++frame) {
         int sumLeft = 0, sumRight = 0;
         for (size_t i = 0; i < activeCount;) {
@@ -248,22 +260,27 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
             }
             ++i;
         }
-        const bool chirping = frame < speechFrames && speech_.cursor < speech_.chirpFrames;
-        const bool campaignSpeech = speech_.campaign && speechGain && frame < speechFrames && !chirping;
-        if (campaignSpeech || campaignDuckFrames_) {
-            campaignDuckFrames_ = std::clamp(campaignDuckFrames_ + (campaignSpeech ? 1 : -1), 0, duckRampFrames);
+        if (frame >= campaignVoiceStart && frame < speechFrames) {
+            if (campaignDuckFrames_ < duckRampFrames) ++campaignDuckFrames_;
+        } else if (campaignDuckFrames_) {
+            --campaignDuckFrames_;
+        }
+        if (campaignDuckFrames_ && (sumLeft || sumRight)) {
             const int duck = 256 - campaignDuckFrames_ * 75 / duckRampFrames;
             sumLeft = (sumLeft / 256) * duck;
             sumRight = (sumRight / 256) * duck;
         }
-        if (frame < speechFrames) {
-            const int voiced = speechSample() * (chirping ? chirpGain : speechGain);
-            sumLeft += voiced;
-            sumRight += voiced;
+        voiced = frame < speechFrames ? speechSample() * (frame < chirpFrames ? chirpGain : speechGain) : 0;
+        if (campaignFadeFrames_) {
+            voiced += (campaignFadeFrom_ - voiced) * campaignFadeFrames_ / campaignFadeFrames;
+            --campaignFadeFrames_;
         }
+        sumLeft += voiced;
+        sumRight += voiced;
         stereo[frame * 2] = int16_t(std::clamp(sumLeft / 256, -32768, 32767));
         stereo[frame * 2 + 1] = int16_t(std::clamp(sumRight / 256, -32768, 32767));
     }
+    if (frames) campaignLastSample_ = speech_.campaign || campaignFadeFrames_ ? voiced : 0;
     if (!speechPaused) {
         if (!speech_.campaign && speechFrames && speech_.cursor == speech_.count) {
             speechGapFrames_ = minSpeechGap + voiceDraw() % (maxSpeechGap - minSpeechGap + 1);

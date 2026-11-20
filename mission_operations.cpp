@@ -179,9 +179,10 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         commanderHolds_ = true;
         commanderPost_ = timberDelta;
         setObjective("CALIBRATION COMPLETE", "THE MOTHERSHIP IS TURNING");
+        dismissRadio(host);
         setRadio(noraHere ? Line::NoraFullCalibration : Line::DeltaCalibrationComplete,
-                 4.0f, host, !noraHere, RadioStory);
-        setRadio(Line::DeltaMothershipTurning, 3.4f, host, true, RadioStory);
+                 4.0f, host, !noraHere, RadioUrgent);
+        setRadio(Line::DeltaMothershipTurning, 3.4f, host, true, RadioUrgent);
         break;
     case OperationStage::Garden:
         for (const auto& p : gardenSquad) {
@@ -239,7 +240,7 @@ void MissionController::enterStage(OperationStage stage, MissionHost& host) {
         state_.dishLink = false;
         op.painting = false;
         setObjective("THE FLEET IS SETTING DOWN", "BEYOND THE RIDGE");
-        clearRadioQueue();
+        dismissRadio(host);
         setRadio(noraHere ? Line::NoraFleetLocked : Line::DeltaFleetCommitted,
                  3.6f, host, !noraHere, RadioUrgent);
         break;
@@ -594,7 +595,11 @@ void MissionController::stepTimberline(Snapshot& snap, double dt, MissionHost& h
     case OperationStage::Calibrated:
         moveShip(ground(scoutShipPosition), 3.f, dt);
         climb(shipCruise);
-        if (operation_.stageTime >= 8.5) {
+        if (operation_.cue == 0 && radioLine_ == Line::DeltaMothershipTurning) {
+            operation_.cue = 1;
+            operation_.lineAt = radioShownAt_ + radioReadSeconds_;
+        }
+        if (operation_.stageTime >= 8.5 && operation_.cue == 1 && elapsed_ >= operation_.lineAt) {
             state_.phase = MissionPhase::Victory;
             setSignalHint(nullptr);
             writeEpilogue();
@@ -776,28 +781,27 @@ void MissionController::updateReunite(Snapshot& snap, double, MissionHost& host)
         return;
     }
     if (noraHere) noraA.goal = snap.player.position;
-    // Delta-1 answers over comms. Nora delivers her line once she reaches the player.
-    const bool ready = !noraHere || planar(noraA.actor.position - snap.player.position) < 2.6f ||
-                       elapsed_ - operation_.lineAt > 9.0;
-    if (operation_.cue == 0 && ready) {
+    if (operation_.cue == 0) {
+        // Give Dustoff time to finish, and let Nora reach the player when she is here.
+        const bool approaching = noraHere && planar(noraA.actor.position - snap.player.position) >= 2.6f;
+        const bool talking = state_.radioTimer > 0 && elapsed_ - radioShownAt_ < radioReadSeconds_;
+        if ((approaching || talking) && elapsed_ - operation_.lineAt < 9.0) return;
         operation_.cue = 1;
-        clearRadioQueue();
-        operation_.closingLine = !noraHere ? Line::DeltaRememberNora
-                               : state_.civiliansBoarded >= 2 ? Line::NoraReuniteBoth
-                               : state_.civiliansBoarded == 1 ? Line::NoraReuniteOne
-                                                            : Line::NoraReuniteAlone;
-        setRadio(operation_.closingLine, 3.2f, host, !noraHere, RadioStory);
+        dismissRadio(host);
+        const auto line = !noraHere ? Line::DeltaRememberNora
+                        : state_.civiliansBoarded >= 2 ? Line::NoraReuniteBoth
+                        : state_.civiliansBoarded == 1 ? Line::NoraReuniteOne
+                                                     : Line::NoraReuniteAlone;
+        setRadio(line, 3.2f, host, !noraHere, RadioUrgent);
+        operation_.lineAt = radioShownAt_ + std::max(1.8, radioReadSeconds_);
     }
-    if (operation_.closingLine != Line::None && radioLine_ == operation_.closingLine) {
-        const double hold = std::max(1.8, radioReadSeconds_);
-        const float fade = float(std::clamp((elapsed_ - radioShownAt_ - hold) / 1.6, 0.0, 1.0));
-        state_.fade = fade;
-        state_.letterbox = .8f * fade;
-        if (fade >= 1.f) {
-            state_.phase = MissionPhase::Victory;
-            writeEpilogue();
-            snap.match = Match::Results;
-        }
+    const float fade = float(std::clamp((elapsed_ - operation_.lineAt) / 1.6, 0.0, 1.0));
+    state_.fade = fade;
+    state_.letterbox = .8f * fade;
+    if (fade >= 1.f) {
+        state_.phase = MissionPhase::Victory;
+        writeEpilogue();
+        snap.match = Match::Results;
     }
 }
 
