@@ -1,7 +1,7 @@
 {
   "format": "FODPACK",
-  "sourceRevision": "c4650cb50d98313d0572d209b7acd2c7b512fa88",
-  "sourceDirty": true,
+  "sourceRevision": "9c76761e9d7075790725dca37766e95a4ac4222f",
+  "sourceDirty": false,
   "inputLockSha256": "8625be2922221e3150f09ce4150ba33fb64aebc3d500331dfde73306e9f109b7",
   "babylon": "9.36.0",
   "playwright": "1.65.0",
@@ -193,7 +193,7 @@
       64
     ],
     [
-      "liteFieldSlate_jacket",
+      "liteFieldOlive_jacket",
       64,
       64
     ],
@@ -208,7 +208,7 @@
       32
     ],
     [
-      "liteFieldSlate_pants",
+      "liteFieldOlive_pants",
       32,
       32
     ],
@@ -223,7 +223,7 @@
       32
     ],
     [
-      "liteFieldSlate_helmet",
+      "liteFieldOlive_helmet",
       32,
       32
     ],
@@ -238,7 +238,7 @@
       32
     ],
     [
-      "liteFieldSlate_vest",
+      "liteFieldOlive_vest",
       32,
       32
     ],
@@ -253,7 +253,7 @@
       32
     ],
     [
-      "liteFieldSlate_pocket",
+      "liteFieldOlive_pocket",
       32,
       32
     ],
@@ -268,7 +268,7 @@
       32
     ],
     [
-      "liteFieldSlate_webbing",
+      "liteFieldOlive_webbing",
       32,
       32
     ],
@@ -283,7 +283,7 @@
       64
     ],
     [
-      "liteFieldSlate_gloves",
+      "liteFieldOlive_gloves",
       64,
       64
     ],
@@ -313,9 +313,19 @@
       128
     ],
     [
-      "liteGraphiteStock",
+      "litePaintedStock",
       128,
       128
+    ],
+    [
+      "liteScopeGlass",
+      32,
+      32
+    ],
+    [
+      "liteScopeGlass",
+      32,
+      32
     ],
     [
       "uspStippleTex",
@@ -326,6 +336,21 @@
       "uspPolymerTex",
       128,
       128
+    ],
+    [
+      "liteFace_rival",
+      64,
+      64
+    ],
+    [
+      "liteFace_hanz",
+      64,
+      64
+    ],
+    [
+      "liteFace_player",
+      64,
+      64
     ]
   ],
   "meshCounts": [
@@ -335,18 +360,18 @@
       "chunks": 175
     },
     {
-      "vertices": 4828,
-      "triangles": 5472,
+      "vertices": 4462,
+      "triangles": 4952,
       "chunks": 1
     },
     {
-      "vertices": 4207,
-      "triangles": 5646,
+      "vertices": 3823,
+      "triangles": 5094,
       "chunks": 1
     },
     {
-      "vertices": 2887,
-      "triangles": 3344,
+      "vertices": 2503,
+      "triangles": 2792,
       "chunks": 1
     },
     {
@@ -355,83 +380,83 @@
       "chunks": 1
     },
     {
-      "vertices": 4828,
-      "triangles": 5472,
+      "vertices": 4462,
+      "triangles": 4952,
       "chunks": 1
     },
     {
-      "vertices": 4207,
-      "triangles": 5646,
+      "vertices": 3823,
+      "triangles": 5094,
       "chunks": 1
     },
     {
-      "vertices": 2887,
-      "triangles": 3344,
+      "vertices": 2503,
+      "triangles": 2792,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     },
     {
-      "vertices": 2868,
-      "triangles": 4896,
+      "vertices": 2424,
+      "triangles": 4248,
       "chunks": 1
     }
   ],
@@ -449,18 +474,34 @@
     ],
     [
       0,
-      0.15,
-      0.3,
+      0.0697,
+      0.1435,
+      0.2132,
+      0.287,
+      0.3485,
       0.41,
-      0.53,
-      0.65,
+      0.48219999999999996,
+      0.5544,
+      0.619,
+      0.6836,
+      0.714,
+      0.7444,
       0.79,
-      0.91,
-      1.04,
+      0.8622000000000001,
+      0.9344,
+      0.9990000000000001,
+      1.0636,
+      1.094,
+      1.1244,
       1.17,
-      1.33,
-      1.47,
-      1.62
+      1.2329999999999999,
+      1.296,
+      1.35675,
+      1.4175,
+      1.47375,
+      1.53,
+      1.575,
+      1.6199999999999999
     ],
     [
       0,
@@ -474,11 +515,19 @@
     ],
     [
       0,
-      0.216,
-      0.45599999999999996,
-      0.672,
-      0.888,
-      1.08,
+      0.3,
+      0.354,
+      0.408,
+      0.46799999999999997,
+      0.528,
+      0.582,
+      0.636,
+      0.69,
+      0.744,
+      0.8220000000000001,
+      0.8999999999999999,
+      1,
+      1.0999999999999999,
       1.2
     ],
     [
@@ -506,11 +555,11 @@
     ]
   ],
   "boltClearance": {
-    "samples": 178,
-    "crossSectionMarginMm": 3.272569876643854
+    "samples": 188,
+    "crossSectionMarginMm": 3.272568962560203
   },
-  "hanzPoseTriangles": 4820,
-  "playerTriangles": 5024,
+  "hanzPoseTriangles": 4164,
+  "playerTriangles": 4376,
   "jetTriangles": 164,
   "shotSurfaces": [
     "floor",
@@ -866,28 +915,28 @@
     true
   ],
   "uniqueShotVertices": 20293,
-  "storedBytes": 3723292,
+  "storedBytes": 3917627,
   "sections": [
     {
       "name": "materials",
-      "storedBytes": 409,
-      "unpackedBytes": 694,
-      "decodedPayloadBytes": 690,
-      "crc32": "b57b795f"
+      "storedBytes": 425,
+      "unpackedBytes": 712,
+      "decodedPayloadBytes": 708,
+      "crc32": "79502c2a"
     },
     {
       "name": "textures",
-      "storedBytes": 463886,
-      "unpackedBytes": 2375932,
-      "decodedPayloadBytes": 2375680,
-      "crc32": "788aeb97"
+      "storedBytes": 473592,
+      "unpackedBytes": 2404624,
+      "decodedPayloadBytes": 2404352,
+      "crc32": "b91d3de2"
     },
     {
       "name": "mesh geometry",
-      "storedBytes": 779376,
-      "unpackedBytes": 2035936,
-      "decodedPayloadBytes": 3029592,
-      "crc32": "cd070917"
+      "storedBytes": 733234,
+      "unpackedBytes": 1938720,
+      "decodedPayloadBytes": 2832440,
+      "crc32": "6c4e7d1e"
     },
     {
       "name": "player shot surfaces",
@@ -933,10 +982,10 @@
     },
     {
       "name": "weapon motion tracks",
-      "storedBytes": 812756,
-      "unpackedBytes": 1361604,
-      "decodedPayloadBytes": 1364488,
-      "crc32": "b532a7c5"
+      "storedBytes": 1075497,
+      "unpackedBytes": 1785348,
+      "decodedPayloadBytes": 1789480,
+      "crc32": "20dcd207"
     },
     {
       "name": "strike jet",
@@ -961,11 +1010,11 @@
     },
     {
       "name": "Hanz and player meshes",
-      "storedBytes": 257405,
-      "unpackedBytes": 442070,
-      "decodedPayloadBytes": 950348,
-      "crc32": "a98e44cf"
+      "storedBytes": 225419,
+      "unpackedBytes": 376376,
+      "decodedPayloadBytes": 803864,
+      "crc32": "82663211"
     }
   ],
-  "sha256": "3babb712766074ebfc2f9915aa09e9efcf8f199c319c74aa7d439381c00951af"
+  "sha256": "a49bf56434c8157be23b1d21bf93d08303b680636bbb0307d381d650e4be6348"
 }

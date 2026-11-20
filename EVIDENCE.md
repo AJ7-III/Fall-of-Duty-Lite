@@ -16,7 +16,9 @@ The earlier renderer pass reuses 128 vertex projections across adjacent triangle
 
 The original schema 7 pack occupied 3,653,826 bytes. Lossless section compression reduced the 8,394,137-byte schema 6 file by 56.5%. All 14 payloads matched byte for byte in that comparison. The P4 decoder adds about 19 KiB of temporary storage during asset loading. Median desktop load time rose from 23.0 to 37.9 ms in the original storage comparison. [Section-by-section results](reference/measurements/storage-comparison.json)
 
-The current pack occupies 3,723,292 bytes, including greener turf and 300 grass tufts. The loader reports 9,621,947 resident asset bytes and 9,703,867 estimated peak asset-loading bytes. The shot geometry, movement obstacles, and navigation map match the original pack byte for byte. [Current pack manifest](assets/fall-of-duty.fodp.json)
+The current pack occupies 3,917,627 bytes. The M40A3 uses 15 sampled poses for its bolt cycle and 29 for the two-round reload, with a matching pose at both ends of the repeated feed. The MP44, M40A3 and USP45 each use fitted firing-hand joints in their existing mesh and animation tracks. The loader reports 9,826,953 resident asset bytes and 9,908,873 estimated peak asset-loading bytes. The world meshes, shot geometry, movement obstacles, navigation map, hitboxes, and audio match the previous pack byte for byte. All eight replay journals matched at both render sizes. [Current pack manifest](assets/fall-of-duty.fodp.json)
+
+Across three paired desktop weapon-cycle trials for the M40A3 animation update, median frame work changed from 1.029 to 1.009 ms at 400×225 and from 0.740 to 0.734 ms at 320×180. The corresponding p95 times changed from 1.246 to 1.255 ms and from 0.920 to 0.936 ms. The Guition firmware cross-build passed.
 
 ## Texture sampling and edge smoothing
 
@@ -24,7 +26,7 @@ The renderer uses a 640- or 800-byte row buffer for diagonal edge smoothing. In 
 
 ## Baked daylight
 
-The daylight bake reads the existing pack, which keeps its 3,723,292 bytes and SHA-256. Renderer working memory rose from 1,074,242 to 1,281,456 bytes at 400×225. The increase holds the ground light map and four bytes of light for each world triangle. Constructing the renderer takes 35.7 ms on the desktop, up from 1.2 ms.
+The daylight comparison used the same 3,723,292-byte pack in both runs. Renderer working memory rose from 1,074,242 to 1,281,456 bytes at 400×225. The increase holds the ground light map and four bytes of light for each world triangle. Constructing the renderer takes 35.7 ms on the desktop, up from 1.2 ms.
 
 Across five paired desktop trials per scene and resolution, median frame work rose 8.6–10.5% and p95 frame work rose 1.8–9.7% on the Apache and long-lane traces. Median geometry setup rose 6.6–12.3% and median raster time rose 8.9–12.6%. These timings exclude live scanout. The handheld cost of the bake and of the added frame work is unmeasured.
 

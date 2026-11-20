@@ -1,10 +1,10 @@
 # Fall of Duty Lite
 
-**3.72 MB of game data in this checkout.** The published v1.0.0 handheld download is **4.17 MB** with Guition firmware.
+**3.92 MB of game data in this checkout.** The published v1.0.0 handheld download is **4.17 MB** with Guition firmware.
 
 Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten duel in Ship Box, a rain-soaked container yard. Pick one of two rivals and a difficulty from 1 to 10. Difficulty defaults to level 5. The game renders at 400×225 or 320×180 and presents at 800×480.
 
-The microSD game pack is **11% smaller than the Doom v1.9 shareware WAD**. [Current pack manifest](assets/fall-of-duty.fodp.json) · [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
+The microSD game pack is **7% smaller than the Doom v1.9 shareware WAD**. [Current pack manifest](assets/fall-of-duty.fodp.json) · [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
 
 [Download v1.0.0 handheld package](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0) · [Handheld setup](INSTALL.md) · [Play on desktop](#play-on-desktop) · [Board build and qualification](BOARD.md) · [Evidence and benchmarks](EVIDENCE.md)
 
@@ -12,10 +12,11 @@ The microSD game pack is **11% smaller than the Doom v1.9 shareware WAD**. [Curr
 
 ## Inside Ship Box
 
-- **Three weapons with first-person arms** — MP44 rifle, M40A3 bolt-action rifle with scope, and USP .45 sidearm with weapon motion tracks from the browser edition.
+- **Three weapons with first-person arms** — Fuller olive sleeves and padded gloves sit close to the camera. The MP44 and USP .45 use subdued steel, and the M40A3 has a painted stock with a tinted scope lens.
+- **Distinct faces and field kits** — IPwndUrMom wears sand, Hanz has stubble and wears muted rust and charcoal, and the player wears olive camouflage and raised goggles.
 - **Killstreaks and rival voice comms** — Three consecutive kills activate UAV radar. Five unlock a targeted airstrike and seven unlock Apache support. The shared 27-line voice bank decodes mono 24 kHz IMA ADPCM on demand.
 - **Ship Box yard** — Green turf and 300 low-poly grass tufts fill the yard between the stone paths. Mild texture sharpening keeps lettering and surface edges legible at both render sizes.
-- **Baked daylight** — While the pack loads, the renderer works out soft sun shadows and ambient shade from the yard's own geometry. Containers darken toward the ground, the rival casts a contact shadow, and distant buildings fade into rain haze. The pack stays byte for byte the same.
+- **Baked daylight** — While the pack loads, the renderer works out soft sun shadows and ambient shade from the yard's own geometry. Containers darken toward the ground, the rival casts a contact shadow, and distant buildings fade into rain haze.
 - **Enhanced software renderer** — Perspective-aware mip blending, diagonal edge smoothing, 16-bit reciprocal depth, and a dithered sky cubemap. Desktop `--look classic` runs the earlier renderer for comparisons. [Rendering notes](QUALITY.md)
 - **Lossless asset compression** — The schema 7 pack stores independently compressed blocks and decodes them as it loads.
 
@@ -27,7 +28,7 @@ Grab the prebuilt v1.0.0 handheld package from the [GitHub release page](https:/
 - [Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256)
 - [Latest releases](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/latest)
 
-For the renderer and gameplay updates shown here, [build the handheld package from this checkout](#build-and-package-handheld-firmware). The verified archive is **4.26 MB**.
+For the renderer and visual updates shown here, [build the handheld package from this checkout](#build-and-package-handheld-firmware). The verified local archive is **4.46 MB**.
 
 The archive bundles the bootloader, partition table, application binary, schema 7 SD pack, reference replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`. Keep the firmware and SD pack from the same archive together because schema 7 packs require firmware with schema 7 support.
 
@@ -95,10 +96,10 @@ Host verification and cross-build checks are recorded in [EVIDENCE.md](EVIDENCE.
 | --- | --- | --- |
 | Native test suite | Verified on desktop | `native_tests` and `platform_tests` pass in Release and sanitizer builds and finish first-to-ten duels against both rivals |
 | Replay parity | Verified on desktop | Eight [reference fixtures](reference/fixtures) cover 3,076 steps. The current renderer and pack produce the same gameplay journals as the original at both render sizes. |
-| Asset memory | Verified on desktop | The loader reports 9,621,947 resident asset bytes and an estimated 9,703,867-byte loading peak (12 MiB limit). |
+| Asset memory | Verified on desktop | The loader reports 9,826,953 resident asset bytes and an estimated 9,908,873-byte loading peak (12 MiB limit). |
 | Desktop frame timings | Measured on desktop | Projection reuse reduced geometry setup p95 by 29–33% and whole-frame p95 by 1.6–14.6%, while the later runtime geometry pass lowered resident memory with an inconclusive frame-time spread between 2.3% faster and 0.1% slower |
 | Baked daylight | Measured on desktop | The bake adds 36 ms to renderer start and 207,214 bytes of working memory. Median frame work rose 8.6–10.5% on the benchmark replays. Handheld timings are pending. |
-| Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 878,912-byte application image. The local package passed flash layout and checksum checks. |
+| Firmware | Cross-build validated | ESP-IDF v5.5.3 produced an 878,800-byte application image. The local package passed flash layout and checksum checks. |
 | Guition hardware | Qualification pending | See the [on-device test procedure](BOARD.md#replay-and-measurement) for scanout, input, audio, latency, and full hardware duels. |
 
 The Apache comparison has a known browser-to-native difference at tick 564 in the dead rival’s vertical root position. [See the replay evidence.](EVIDENCE.md#replay-fixtures)
