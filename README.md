@@ -1,14 +1,14 @@
 # Fall of Duty Lite
 
-**3.92 MB of game data in this checkout.** The published v1.0.0 handheld download is **4.17 MB** with Guition firmware.
+**3.92 MB (3,917,627 bytes)** for the current microSD game pack. [Pack manifest](assets/fall-of-duty.fodp.json)
 
 Fall of Duty Lite is an offline first-person shooter for the Guition JC4880P443C_I_W ESP32-P4 and SDL2 desktops. Fight a first-to-ten duel in Ship Box, a rain-soaked container yard. Pick one of two rivals and a difficulty from 1 to 10. Difficulty defaults to level 5. The game renders at 400×225 or 320×180 and presents at 800×480.
 
-The microSD game pack is **7% smaller than the Doom v1.9 shareware WAD**. [Current pack manifest](assets/fall-of-duty.fodp.json) · [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
+The pack is **6.6% smaller than the Doom v1.9 shareware WAD**. [Doom WAD size](https://github.com/viti95/FastDoom/blob/master/README.txt)
 
 [Download v1.0.0 handheld package](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0) · [Handheld setup](INSTALL.md) · [Play on desktop](#play-on-desktop) · [Board build and qualification](BOARD.md) · [Evidence and benchmarks](EVIDENCE.md)
 
-![Ship Box duel rendered at 400×225 and scaled to 800×480 with the MP44, rival soldier, UAV radar, and Hanz voice indicator](docs/images/gameplay.png)
+![A Ship Box duel with the MP44, Hanz across the yard, and an active UAV on the minimap](docs/images/gameplay.png)
 
 ## Inside Ship Box
 
@@ -22,13 +22,13 @@ The microSD game pack is **7% smaller than the Doom v1.9 shareware WAD**. [Curre
 
 ## Handheld download and hardware
 
-Grab the prebuilt v1.0.0 handheld package from the [GitHub release page](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0) or download the archive directly.
+The published v1.0.0 Guition archive is **4.17 MB (4,173,709 bytes)**. [GitHub release](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.0.0)
 
 - [Fall-of-Duty-Lite-Guition-ESP32-P4.zip](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip)
 - [Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.0.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256)
 - [Latest releases](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/latest)
 
-For the renderer and visual updates shown here, [build the handheld package from this checkout](#build-and-package-handheld-firmware). The verified local archive is **4.46 MB**.
+The Guition firmware and SD archive built from this checkout is **4.46 MB (4,460,477 bytes)**. [Build and packaging instructions](#build-and-package-handheld-firmware)
 
 The archive bundles the bootloader, partition table, application binary, schema 7 SD pack, reference replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`. Keep the firmware and SD pack from the same archive together because schema 7 packs require firmware with schema 7 support.
 
@@ -80,13 +80,17 @@ SDL gamepads use the same layout as the handheld DualShock 4. On the Guition, to
 
 ## Screenshots
 
-| Start menu and duel setup | MP44 iron sights down long lane |
+| MP44 iron sights | M40A3 bolt cycle |
 | --- | --- |
-| ![Fall of Duty Lite start menu over Ship Box](docs/images/title.png) | ![Aiming down MP44 iron sights through the center container lane](docs/images/iron-sights.png) |
+| ![Aiming down MP44 iron sights through the center container lane](docs/images/iron-sights.png) | ![The right glove works the M40A3 bolt as the left hand supports the stock](docs/images/sniper.png) |
 
-| M40A3 bolt-action rifle | Airstrike targeting laptop |
+| USP .45 grip | IPwndUrMom and Hanz |
 | --- | --- |
-| ![M40A3 bolt-action rifle in Ship Box](docs/images/sniper.png) | ![Airstrike laptop tactical targeting map](docs/images/airstrike.png) |
+| ![Both gloves wrap around the USP .45 grip in first person](docs/images/usp45.png) | ![Close-ups of IPwndUrMom in sand and Hanz in rust and charcoal](docs/images/rivals.png) |
+
+| Start menu | Airstrike targeting laptop |
+| --- | --- |
+| ![Fall of Duty Lite start menu over Ship Box](docs/images/title.png) | ![Airstrike laptop tactical targeting map](docs/images/airstrike.png) |
 
 ## Verification status
 
