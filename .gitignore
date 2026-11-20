@@ -1,5 +1,6 @@
 /build/
 /out/
+/.voice-sources/
 /firmware/build/
 /firmware/sdkconfig
 /firmware/sdkconfig.old

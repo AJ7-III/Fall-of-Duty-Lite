@@ -1,4 +1,5 @@
 #include "assets.hpp"
+#include "campaign_voice_timing.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <utility>
 
 #ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
 #include "miniz.h"
 #else
 #include <zlib.h>
@@ -639,6 +641,69 @@ bool Assets::load(const char* path, std::string& error) {
     next.peakBytes = budget.peak;
     *this = std::move(next);
     return true;
+}
+
+bool Assets::loadCampaignVoices(const char* path, std::string& error) {
+    constexpr uint32_t voiceHeaderBytes = 32;
+    constexpr uint32_t clipTableBytes = campaignVoiceClipCount * 12;
+    constexpr uint32_t maxVoiceBytes = 8 * 1024 * 1024;
+    error.clear();
+    const auto failed = [&](const char* reason) {
+        error = reason;
+        return false;
+    };
+    const std::unique_ptr<std::FILE, decltype(&std::fclose)> file(std::fopen(path, "rb"), &std::fclose);
+    if (!file) return failed("Voice bank could not be opened.");
+    if (std::fseek(file.get(), 0, SEEK_END)) return failed("Cannot determine the voice bank size.");
+    const long fileBytes = std::ftell(file.get());
+    if (fileBytes <= long(voiceHeaderBytes + clipTableBytes) || fileBytes > maxVoiceBytes ||
+        std::fseek(file.get(), 0, SEEK_SET))
+        return failed("Voice bank size is invalid.");
+
+    try {
+        Reader in(file.get());
+        in.reset(voiceHeaderBytes);
+        std::array<char, 8> magic{};
+        in.bytes(magic.data(), magic.size());
+        if (std::memcmp(magic.data(), "FODV\0\0\0\0", magic.size()) || in.u32() != 1 ||
+            in.u32() != campaignVoiceClipCount || in.u32() != uint32_t(fileBytes))
+            return failed("Voice bank header is incompatible.");
+        const uint32_t crc = in.u32();
+        const uint64_t low = in.u32(), high = in.u32();
+        if (!in.done() || (low | high << 32) != campaignVoiceFingerprint)
+            return failed("Voice bank does not match this build.");
+
+        in.reset(uint32_t(fileBytes) - voiceHeaderBytes);
+        auto bank = std::make_shared<CampaignVoiceBank>();
+        bank->codeBytes = in.remaining() - clipTableBytes;
+        uint32_t next = 0;
+        for (size_t i = 0; i < bank->clips.size(); ++i) {
+            auto& clip = bank->clips[i];
+            clip.frames = in.u32();
+            clip.offset = in.u32();
+            clip.predictor = in.i16();
+            clip.index = in.u8();
+            clip.rateDivisor = in.u8();
+            if (!in.okay() || !clip.frames || clip.frames > audioHz * 30 || clip.offset != next || clip.index > 88 ||
+                (clip.rateDivisor != 1 && clip.rateDivisor != 2) || clip.frames / 2 > bank->codeBytes - next ||
+                clip.frames * clip.rateDivisor != campaignVoiceFrames[i + 1])
+                return failed("Voice bank clip table is invalid.");
+            next += clip.frames / 2;
+        }
+        if (next != bank->codeBytes) return failed("Voice bank payload size is invalid.");
+#ifdef ESP_PLATFORM
+        bank->codes.reset(static_cast<uint8_t*>(heap_caps_malloc(bank->codeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)));
+#else
+        bank->codes.reset(static_cast<uint8_t*>(std::malloc(bank->codeBytes)));
+#endif
+        if (!bank->codes) return failed("Voice bank memory exhausted.");
+        if (!in.bytes(bank->codes.get(), bank->codeBytes) || !in.done() || in.crc() != crc)
+            return failed("Voice bank checksum is invalid.");
+        campaignVoices = std::move(bank);
+        return true;
+    } catch (const std::bad_alloc&) {
+        return failed("Voice bank memory exhausted.");
+    }
 }
 
 } // namespace fod

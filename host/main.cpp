@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <optional>
 
 namespace {
@@ -26,6 +27,18 @@ struct Options {
     RenderLook look = RenderLook::Enhanced;
     bool benchmark = false, inspect = false, both = false, localDuel = false;
 };
+
+void prepareCampaignVoices(Assets& assets, const char* pack) {
+    if (assets.arena != Arena::BriarHouse || assets.briarHouseMode != BriarHouseMode::Invasion) {
+        assets.campaignVoices.reset();
+        return;
+    }
+    if (assets.campaignVoices) return;
+    const auto path = std::filesystem::path(pack).replace_filename(campaignVoiceFilename).string();
+    std::string error;
+    if (!assets.loadCampaignVoices(path.c_str(), error))
+        std::fprintf(stderr, "%s: %s Using campaign subtitles.\n", path.c_str(), error.c_str());
+}
 
 void help() {
     std::puts("fod_host [--pack PATH] [--map ship-box|briar-house] [--mission briar-house] [--mode 400|320|both] [--look enhanced|classic]\n"
@@ -277,6 +290,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (trace.campaign()) buildBriarHouse(assets, BriarHouseMode::Invasion);
+    prepareCampaignVoices(assets, out.pack);
     if (out.inspect) describeAssets(assets);
     if (out.trace || out.image) {
         if (out.benchmark || out.image) fod::optimizeShipBoxWorld(assets);
@@ -315,6 +329,7 @@ int main(int argc, char** argv) {
         } else {
             fod::optimizeShipBoxWorld(assets);
         }
+        prepareCampaignVoices(assets, out.pack);
         if (action == fod::LaunchAction::LocalDuel) {
             return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);
         }

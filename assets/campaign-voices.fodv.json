@@ -1,0 +1,944 @@
+{
+  "schema": 1,
+  "fingerprint": "57fa28ed1d8c97fd",
+  "sha256": "031ce25d150a2c424401eb09876d30938a7764cd7536279fd906d377ec9f939e",
+  "storedBytes": 3379439,
+  "clips": [
+    {
+      "id": "DeltaWakeUp",
+      "speaker": "DELTA-1",
+      "text": "HEY, BREATHE. EYES ON ME.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 52280,
+      "sourceSha256": "385f76856f42fc49d69d5d865002265a5875cf6c1dfd11e39fcb4f164af1d084"
+    },
+    {
+      "id": "DeltaWarhorseDown",
+      "speaker": "DELTA-1",
+      "text": "WARHORSE WENT DOWN OUT FRONT. I PULLED YOU IN.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 65347,
+      "sourceSha256": "9cf6cc7a5de852f3e00aa12287e6500c9a36bf1e3cd99308d666eaf43cacac85"
+    },
+    {
+      "id": "DeltaWreckSearch",
+      "speaker": "DELTA-1",
+      "text": "NOBODY ELSE MADE IT. HOSTILES ARE PICKING THROUGH THE WRECK.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 86880,
+      "sourceSha256": "b64f9999aa8557ac752347548d6e1ac2ef5b4772668a9e23544cf37e7181ed9f"
+    },
+    {
+      "id": "DeltaFirstShot",
+      "speaker": "DELTA-1",
+      "text": "THEY'RE CLOSING ON THE FRONT GATE. TAKE YOUR SHOT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 30600,
+      "sourceSha256": "6f7f62bd9aeacbad36e4dceed2f02302b57e98792132847ccb7a826a8834daf6"
+    },
+    {
+      "id": "DeltaCleanBreach",
+      "speaker": "DELTA-1",
+      "text": "NICE SHOT. MOVE OUT!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 20880,
+      "sourceSha256": "5f2854e43708fb2bc2924ba4ee61cd99162dcfc84abb345b60092a34e1d378d1"
+    },
+    {
+      "id": "DeltaDetectedBreach",
+      "speaker": "DELTA-1",
+      "text": "THEY MADE US! PUSH OUT!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 27600,
+      "sourceSha256": "60782db07a9cd9f6764a665c19a94e87e6a62cdb90af0bff0581c0a74a6b2e2d"
+    },
+    {
+      "id": "DeltaAdvanceBreach",
+      "speaker": "DELTA-1",
+      "text": "WE'RE UP! PUSH OUT!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 18960,
+      "sourceSha256": "76b3f36833c84e43ac44160eed2cea54d0c0f1377eb4f44a5eb5402feb9eef96"
+    },
+    {
+      "id": "DeltaGardenFlank",
+      "speaker": "DELTA-1",
+      "text": "FLANKERS COMING OVER THE GARDEN WALL!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 25080,
+      "sourceSha256": "026afff6b5ad6fa9d80001fe0ccceee4c8a96f931b4bd6c08618132550f7aa35"
+    },
+    {
+      "id": "DeltaBoulevardDrops",
+      "speaker": "DELTA-1",
+      "text": "DROP BEAMS ON THE BOULEVARD - MORE INBOUND!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 35760,
+      "sourceSha256": "3d7ef45bb7ed92935b89ced276282694b9ecefcdd88e4f03a9698fbc3ac603c3"
+    },
+    {
+      "id": "DeltaRoadClear",
+      "speaker": "DELTA-1",
+      "text": "ROAD'S CLEAR. TOP OFF MAGS.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 25440,
+      "sourceSha256": "8c8ef14e451f7eab35901f3606306d531d0083170499b7221ec2b7a0ee750772"
+    },
+    {
+      "id": "DeltaFindMarsh",
+      "speaker": "DELTA-1",
+      "text": "MISSION STILL STANDS - WE GET DR. MARSH OUT. SAW HER SON HEAD EAST, HER DAD WEST.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 84360,
+      "sourceSha256": "947e53ea9894c3422f38117fc9ddbeda7d32755a181c3bdf85b420480633ee9d"
+    },
+    {
+      "id": "DeltaFreshMags",
+      "speaker": "DELTA-1",
+      "text": "HERE - FRESH MAGS.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 19200,
+      "sourceSha256": "cfc3a78bf015c6705ebdf62b02ff6a6beaed27b5bdda6b12c9957435ea8fa594"
+    },
+    {
+      "id": "DeltaShieldDrone",
+      "speaker": "DELTA-1",
+      "text": "THAT DRONE'S FEEDING ITS SHIELD - DROP THE DRONE FIRST.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 44520,
+      "sourceSha256": "38719d174957689766eafe797d16e5784def828dd29e527790d582b0c4709efb"
+    },
+    {
+      "id": "DeltaHeavyCharge",
+      "speaker": "DELTA-1",
+      "text": "HEAVY'S CHARGING UP - HIT ITS CHEST OR GET DOWN!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 39600,
+      "sourceSha256": "adb5966a75c7a7015fe36b6a5ce1994389db283529b7cddf606a94df3ba43542"
+    },
+    {
+      "id": "DeltaReflectedCharge",
+      "speaker": "DELTA-1",
+      "text": "GOOD HIT - BLEW ITS CHARGE RIGHT BACK AT IT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 38520,
+      "sourceSha256": "bc81965f346a3b071161fc6e1719f6a0cc1119019292db6e30261599f1846d79"
+    },
+    {
+      "id": "DeltaCheckFire",
+      "speaker": "DELTA-1",
+      "text": "CHECK FIRE! THAT'S ME, WATCH YOUR LINE!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 33360,
+      "sourceSha256": "6a3a76268ab243723235bd803b8990acb75497d4252df77c099e00a1e9e63fad"
+    },
+    {
+      "id": "DeltaCivilianFire",
+      "speaker": "DELTA-1",
+      "text": "CEASE FIRE! THAT'S A CIVILIAN!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 27120,
+      "sourceSha256": "e63797b2ecec83ad89158b40130afdafa9b2091dfeb25ffaefce6bdc101e0da1"
+    },
+    {
+      "id": "DeltaStreetPatrol",
+      "speaker": "DELTA-1",
+      "text": "EYES UP - PATROL DROPPING IN AHEAD.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 29400,
+      "sourceSha256": "84b47aeef0b3b9306f93816556511debbab2e845c87bd9a9aa6e9b68be780505"
+    },
+    {
+      "id": "DeltaFindBen",
+      "speaker": "DELTA-1",
+      "text": "HER SON'S PINNED BEHIND THAT PICKUP.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 28200,
+      "sourceSha256": "8ea5a440a18d3623a7f97777c7ae4e00c8c25e1de954aa01a0d367ab9a663241"
+    },
+    {
+      "id": "DeltaBenUnderFire",
+      "speaker": "DELTA-1",
+      "text": "THEY'RE OPENING UP ON BEN! PULL THEIR FIRE!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 33480,
+      "sourceSha256": "496e440cf76f89229017527920ff91cff7aacc1a54be7b4ae1026581f4ba429b"
+    },
+    {
+      "id": "DeltaBenLost",
+      "speaker": "DELTA-1",
+      "text": "DAMN IT - WE LOST BEN.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 26280,
+      "sourceSha256": "d66fc15c637fc0ae8fe7ac499ef365556c41a195f339af96c7b4149becd80c69"
+    },
+    {
+      "id": "DeltaFindNora",
+      "speaker": "DELTA-1",
+      "text": "EYES ON DR. MARSH. A HEAVY HAS HER PINNED.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 42840,
+      "sourceSha256": "529c3bf84b051df24fd48a37b8f4a9ad03a39d402084bc2cca506c5dd9260ba8"
+    },
+    {
+      "id": "DeltaNoraUnderFire",
+      "speaker": "DELTA-1",
+      "text": "THEY'RE CLOSING ON DR. MARSH! KEEP 'EM OFF HER!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 33600,
+      "sourceSha256": "2ddeea14ca0d4c6600902791855d0f3ab8216839100f003e44e0f65a24369cb5"
+    },
+    {
+      "id": "DeltaSendNoraNorth",
+      "speaker": "DELTA-1",
+      "text": "GET BEHIND THE NORTH WALL - WE'LL TALK AT THE LZ, DOC.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 41640,
+      "sourceSha256": "90514777e6c0b26f4cc5d8c294d7424834a160a6717f140556ddf518844fd050"
+    },
+    {
+      "id": "DeltaNoraLost",
+      "speaker": "DELTA-1",
+      "text": "DR. MARSH IS DOWN... WE LOST HER.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 36480,
+      "sourceSha256": "e3be4be8363053a0ae89a600806aa97c7a568e634ecc141f17ebb411e0719793"
+    },
+    {
+      "id": "DeltaFindWalt",
+      "speaker": "DELTA-1",
+      "text": "HER DAD'S BY THE CABIN. KEEP LOW OR CLEAR 'EM.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 40320,
+      "sourceSha256": "b89f506b21e020d2c925acedb7fcb2eea3cca3ad5936b5056712b708eafb3c03"
+    },
+    {
+      "id": "DeltaWaltUnderFire",
+      "speaker": "DELTA-1",
+      "text": "THEY SPOTTED WALT BY THE CABIN! LIGHT 'EM UP!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 33120,
+      "sourceSha256": "7e6f23520643fd832337a91739dc44f633c1c6002d51f6b484da84f9a086cc78"
+    },
+    {
+      "id": "DeltaWaltLost",
+      "speaker": "DELTA-1",
+      "text": "DAMN IT - WALT DIDN'T MAKE IT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 30360,
+      "sourceSha256": "ef47d20b95b3a1ef0a29fa500c51ccec0c2b1710822927e1fdfc982e7cd56457"
+    },
+    {
+      "id": "DeltaDestroyRelay",
+      "speaker": "DELTA-1",
+      "text": "THAT RELAY'S TRACKING HER DISH. BLOW IT SO DUSTOFF CAN GET IN.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 49800,
+      "sourceSha256": "9d7ea294c961eabb48654db1ba5ffc19ec80b368cf4ba85eab69155ba57bfde1"
+    },
+    {
+      "id": "DeltaRelayDead",
+      "speaker": "DELTA-1",
+      "text": "RELAY'S DEAD - NOW THEY'RE DROPPING TROOPS TO SEARCH THE VALLEY. HOLD HERE!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 56280,
+      "sourceSha256": "d12cc3584548dadfc2247118a405c0a59c1ef461ae70d8a4aea95fad4401b425"
+    },
+    {
+      "id": "DeltaHearRotors",
+      "speaker": "DELTA-1",
+      "text": "HEAR THOSE ROTORS? DUSTOFF'S ALMOST ON US - HOLD THE LINE!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 48480,
+      "sourceSha256": "359d821a2caaa52fcaef330387e586250f499bf279068920aaeea1907f4fb8b8"
+    },
+    {
+      "id": "DeltaTwentySeconds",
+      "speaker": "DELTA-1",
+      "text": "TWENTY SECONDS OUT - DON'T LET 'EM OVERRUN THE WALL!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 38160,
+      "sourceSha256": "e9cdd7dd5f997cc9d06c09021d1394b84171666a2f6c48c4cc850712540bc7e8"
+    },
+    {
+      "id": "DeltaHeavyInbound",
+      "speaker": "DELTA-1",
+      "text": "HEAVY COMING DOWN THE BEAM - WATCH THE FRONT!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 31560,
+      "sourceSha256": "3d5c6cb472c7c109c4ad95350aea71db1422bfb2b00fa9a7b71be48b1f0b779c"
+    },
+    {
+      "id": "DeltaLiftWithNora",
+      "speaker": "DELTA-1",
+      "text": "DUSTOFF, LIFT OFF! WE'RE NOT LEAVING NORA DOWN HERE ALONE.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 53760,
+      "sourceSha256": "f6bdd931d24ac1e9aecca9da6503e53359629d83acf351351097139a96836d8b"
+    },
+    {
+      "id": "DeltaLiftWithoutNora",
+      "speaker": "DELTA-1",
+      "text": "DUSTOFF, GET 'EM OUT! HER NOTES ARE STILL IN THE HOUSE - WE'LL FINISH THIS.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 57600,
+      "sourceSha256": "d5f36f34a398201f181a526ceaf39b203c74177784145ef5f3bff725ecd73788"
+    },
+    {
+      "id": "DeltaPlayerDown",
+      "speaker": "DELTA-1",
+      "text": "STAY WITH ME! HANG ON, I'VE GOT YOU...",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 31560,
+      "sourceSha256": "8e9615e8055d82230032521f8f34b1bcd482ecd9f8aebc14f3da06825db4663b"
+    },
+    {
+      "id": "DeltaTestSite",
+      "speaker": "DELTA-1",
+      "text": "WHERE DO WE TEST IT?",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 14880,
+      "sourceSha256": "a127c1cc1f6a5b27906a48900a4011180a3bcad4bc73857e2531c27ceb20a808"
+    },
+    {
+      "id": "DeltaUnawareLanding",
+      "speaker": "DELTA-1",
+      "text": "THEY HAVE NO IDEA WE'RE HERE. HIT 'EM BEFORE THEY HUNT THE KIT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 51720,
+      "sourceSha256": "4b0002dff9722e9e0d74a9ceb8dec70bf37643ca57ae5f623d9676a1abd8d382"
+    },
+    {
+      "id": "DeltaLockLost",
+      "speaker": "DELTA-1",
+      "text": "LOST THE LOCK - THEY'RE DROPPING RIGHT ON THE KIT!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 35640,
+      "sourceSha256": "40bd48f3f64a1e7138479660131f74fd857d0997faf1503cd864553328ab4fde"
+    },
+    {
+      "id": "DeltaMothershipTurning",
+      "speaker": "DELTA-1",
+      "text": "LOOK UP - THE MOTHERSHIP JUST TURNED STRAIGHT FOR BRIAR HOUSE.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 47040,
+      "sourceSha256": "68e08a83c31b36cae881db2e0aec54466d5695566562f3a50f6e77ab727acf79"
+    },
+    {
+      "id": "DeltaNoraShot",
+      "speaker": "DELTA-1",
+      "text": "NORA'S HIT! SHE'S DOWN!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 26160,
+      "sourceSha256": "5e03a89f3f97a05bc2885e9aaf44c0d80949cdf698246a5db5511c1cdba000d4"
+    },
+    {
+      "id": "DeltaBeaconLogs",
+      "speaker": "DELTA-1",
+      "text": "HER LOGS SHOW EVERY DROP SHIP HOMED ON A RADIO BEACON.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 43440,
+      "sourceSha256": "b7819e8a4c1134e4be80c5c7d7b8317e85bcf24a257b607a2d177f9d7d16d568"
+    },
+    {
+      "id": "DeltaEmitterFound",
+      "speaker": "DELTA-1",
+      "text": "SHE LEFT A RIGGED EMITTER ON THE BENCH. WE TEST IT UP AT HER DAD'S PLACE IN TIMBERLINE.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 59640,
+      "sourceSha256": "a234bf786f45cd0decb5d5651d9e0bbd00a0c429d536859c6c0192bf6196af0e"
+    },
+    {
+      "id": "DeltaEmitterReady",
+      "speaker": "DELTA-1",
+      "text": "EMITTER'S LIVE. HOLD SIGNAL ON CLEAR GROUND AND SEE IF THAT SCOUT TAKES THE BAIT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 61560,
+      "sourceSha256": "77ad8bed647e5ffc01dca93b8f3b03a6fb0458d552b3c0e4787ba227f308afa4"
+    },
+    {
+      "id": "DeltaFirstMark",
+      "speaker": "DELTA-1",
+      "text": "DROPPED RIGHT ON YOUR MARK. HER MATH HOLDS UP - DO IT AGAIN.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 47400,
+      "sourceSha256": "511cd2c340e6c77ff95505dbbadcb51891fd06d43d9bb00cc2d187937e6b4c57"
+    },
+    {
+      "id": "DeltaSecondMark",
+      "speaker": "DELTA-1",
+      "text": "HALFWAY THERE. MARK ANOTHER ONE SO WE CAN DIAL THIS IN.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 40800,
+      "sourceSha256": "1dc539ff8471575b3d6acf7a084653c2ac7bc4d9b698a84c597acea5f4587964"
+    },
+    {
+      "id": "DeltaLastMark",
+      "speaker": "DELTA-1",
+      "text": "LAST PASS IS FIGHTING THE LOCK. KEEP SIGNAL HELD OR IT'LL PULL RIGHT TO US.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 62760,
+      "sourceSha256": "260441179d23e621a0c976e54f203e143d55c53eb6811776d843a49d76dd5ba2"
+    },
+    {
+      "id": "DeltaCalibrationComplete",
+      "speaker": "DELTA-1",
+      "text": "ALL FOUR PASSES LOGGED. WE'VE GOT ENOUGH TO RUN HER SPOOF ON THE MAIN DISH.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 57360,
+      "sourceSha256": "464b610b06c82c8112968f092ecfba031f1966a3ea97da9737380800c8a2246c"
+    },
+    {
+      "id": "DeltaGardenBreach",
+      "speaker": "DELTA-1",
+      "text": "THEY HAVEN'T MADE US YET. CLEAR THE GARDEN AND BREACH THE FRONT DOOR.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 48600,
+      "sourceSha256": "fc2b75de262a913c02d9b3e1c2d0606fd3bc846a06dd4332ac9169f9a3cfabf2"
+    },
+    {
+      "id": "DeltaGrandHall",
+      "speaker": "DELTA-1",
+      "text": "SAME HALL I PULLED YOU INTO AN HOUR AGO. CLEAR IT OUT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 43200,
+      "sourceSha256": "e2920ff7e037e094f035a3ca985db1294195f41681296b7c2d07d9b4280233a0"
+    },
+    {
+      "id": "DeltaHoldDoor",
+      "speaker": "DELTA-1",
+      "text": "YOU STEER THE SHIP. I'LL HOLD THE DOOR.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 31440,
+      "sourceSha256": "b28fa5c7e4e66af8103ac43057971ec7e4f519064389c660230b116fe6a6a236"
+    },
+    {
+      "id": "DeltaBeamDrift",
+      "speaker": "DELTA-1",
+      "text": "THE BEAM'S DRIFTING BACK ONTO THE HOUSE - PULL IT WEST!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 42480,
+      "sourceSha256": "873bf581d7b9708351e2545646c3f8c01dd8432e45ab5c77875c7933935783a1"
+    },
+    {
+      "id": "DeltaReturnToBriar",
+      "speaker": "DELTA-1",
+      "text": "THEY BEAT US BACK TO BRIAR HOUSE. DISH IS STILL INTACT - WE HAVE ONE SHOT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 60720,
+      "sourceSha256": "26473843efabe0bddf4acb307f47867b13b1493deff15c827f502df9599ce958"
+    },
+    {
+      "id": "DeltaDishNotes",
+      "speaker": "DELTA-1",
+      "text": "CONSOLE'S RUNNING OFF HER NOTES. HOLD SIGNAL TO WALK THE BEAM TO THE SADDLE.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 55440,
+      "sourceSha256": "be3cfca70c765c6d1f4a69475720b3c9efc9d481b3bb77033cc2cedbaefc0c2f"
+    },
+    {
+      "id": "DeltaProtectClearing",
+      "speaker": "DELTA-1",
+      "text": "KEEP IT OFF THE CLEARING - IT'S THE ONLY LZ DUSTOFF HAS LEFT.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 52320,
+      "sourceSha256": "761a0a12f59688c268cb39fb12ba8cb25ba83f983780f26f86650c014c2ddd86"
+    },
+    {
+      "id": "DeltaSaddleHold",
+      "speaker": "DELTA-1",
+      "text": "YOU'VE GOT IT IN THE SADDLE - KEEP IT PINNED!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 33120,
+      "sourceSha256": "7b6bf0ac622c60eec1ee19111b185a3c50b6a1c81810455394e5ee388a537f2b"
+    },
+    {
+      "id": "DeltaFleetCommitted",
+      "speaker": "DELTA-1",
+      "text": "DROP SIGNAL - IT'S COMMITTED! THE MOTHERSHIP'S GOING DOWN BEYOND THE RIDGE.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 56760,
+      "sourceSha256": "da964e445e425b8189e2e9355afc1aa3fbb43a046ca3740b94b83a7ac4e092db"
+    },
+    {
+      "id": "DeltaRememberNora",
+      "speaker": "DELTA-1",
+      "text": "SHE PULLED IT OFF... EVEN AFTER WE LOST HER. LET'S GO HOME.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 54120,
+      "sourceSha256": "92732d525699f4d6681ebb9e099ee6bef0ba17ea237a34b53465e62183b150ac"
+    },
+    {
+      "id": "NoraDishPulse",
+      "speaker": "NORA MARSH",
+      "text": "MY DISH IS STILL CYCLING - EVERY PULSE PULLS THAT DRONE OFF HIM!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 117600,
+      "sourceSha256": "d488c409cbc3082cb2ed03fae00e6c08f9fcf3a55509ab4fd89cf2e694e1f2cc"
+    },
+    {
+      "id": "NoraRoofArray",
+      "speaker": "NORA MARSH",
+      "text": "THEY DROPPED STRAIGHT ONTO MY ROOF ARRAY. THAT WASN'T RANDOM - THEY HOMED ON IT.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 130320,
+      "sourceSha256": "a56d8e16bfa02476a726e4e31d847de1b2576dc62671a76292c82614a5c668ba"
+    },
+    {
+      "id": "NoraRelayLock",
+      "speaker": "NORA MARSH",
+      "text": "THAT RELAY'S LOCKED ONTO MY DISH. KNOCK IT OUT AND THEY GO BLIND.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 102000,
+      "sourceSha256": "dacf9b5e2d455ad8620dd0b3fa0ab92f05c2ca231634ab5bad396b58ba0788e8"
+    },
+    {
+      "id": "NoraSpoofIdea",
+      "speaker": "NORA MARSH",
+      "text": "WAIT - IF MY SIGNAL PULLED THEM HERE, I CAN SPOOF IT AND LEAD THEM OUT.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 129360,
+      "sourceSha256": "37136b44923afddb753cfd6fe9b9e33ff86343398e540b8bb9dc0da93e688291"
+    },
+    {
+      "id": "NoraStayBoth",
+      "speaker": "NORA MARSH",
+      "text": "GET MY DAD AND BEN OUT OF HERE. MY DISH BROUGHT THEM - I'M STAYING.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 120000,
+      "sourceSha256": "5bdc0bf9e4861797f62f616815960786da7c13f849e6a0d36f60f18eb82dde77"
+    },
+    {
+      "id": "NoraStayWalt",
+      "speaker": "NORA MARSH",
+      "text": "GET MY DAD ON THAT BIRD. MY DISH BROUGHT THEM - I'M STAYING.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 111840,
+      "sourceSha256": "467400ca52bf8a816feb4b5cba807cdfaadc1d5b8875a29f591a9be9640733fb"
+    },
+    {
+      "id": "NoraStayBen",
+      "speaker": "NORA MARSH",
+      "text": "GET BEN ON THAT BIRD. MY DISH BROUGHT THEM - I'M STAYING.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 106080,
+      "sourceSha256": "f709360bfabc70aa52710eb8658a23aa96ad8e43cf400262ab5d24052ff24c50"
+    },
+    {
+      "id": "NoraStayAlone",
+      "speaker": "NORA MARSH",
+      "text": "LEAVE WITHOUT ME. MY DISH BROUGHT THEM HERE - I'M NOT RUNNING.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 104160,
+      "sourceSha256": "b1558932a200d7fa835c6bbc90f73cb11f61449cba099966d24f559e1c32a394"
+    },
+    {
+      "id": "NoraReadLogs",
+      "speaker": "NORA MARSH",
+      "text": "LOOK AT THESE LOGS. EVERY DROP SHIP HOMED STRAIGHT ONTO A RADIO BEACON.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 118080,
+      "sourceSha256": "7ce971e3dc79066cb89e0f3d34ad62b5925fb475702c8bec9adbae58bdb36128"
+    },
+    {
+      "id": "NoraBuildEmitter",
+      "speaker": "NORA MARSH",
+      "text": "I RIGGED A PORTABLE EMITTER FROM SPARE RELAYS. IF IT WORKS, WE PICK WHERE THEY LAND.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 124080,
+      "sourceSha256": "1c5b3531c7a19c0e1d987438c25b5487a5bfbbf02dca678882234bf2f37ed9fe"
+    },
+    {
+      "id": "NoraChooseTimberline",
+      "speaker": "NORA MARSH",
+      "text": "MY DAD'S PLACE IN TIMBERLINE. OPEN GROUND, AND NOBODY LEFT TO GET CAUGHT IN IT.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 128640,
+      "sourceSha256": "054de1936a45e91f27dc79972ebb910d925665bc34c916e85fbc6d5a37c5072d"
+    },
+    {
+      "id": "NoraEmitterHot",
+      "speaker": "NORA MARSH",
+      "text": "EMITTER'S HOT. HOLD SIGNAL ON OPEN GROUND - LET'S SEE IF THAT SCOUT BITES.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 126720,
+      "sourceSha256": "0f9a54acdcb5bbb54271065ba1532cbfc98a346331fd26f39046e0f0b24dbc0c"
+    },
+    {
+      "id": "NoraGoodMark",
+      "speaker": "NORA MARSH",
+      "text": "IT WORKED - DROPPED RIGHT ON YOUR MARK! GIVE ME ANOTHER PASS.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 96480,
+      "sourceSha256": "201db51ae0b693373f71260a6f8c3ae62ef7e84bdd05b45ebb26bdfc1872a097"
+    },
+    {
+      "id": "NoraHalfway",
+      "speaker": "NORA MARSH",
+      "text": "TWO DOWN, TWO TO GO. MARK ANOTHER SPOT SO I CAN LOCK THE DRIFT.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 102960,
+      "sourceSha256": "e06724aa19c095653239b91213b77dd6199044a1073b8c785abbc2155149aa60"
+    },
+    {
+      "id": "NoraEmitterJammed",
+      "speaker": "NORA MARSH",
+      "text": "DRONE'S JAMMING THE EMITTER! SHOOT IT - IT'S PULLING THE DROP ONTO US!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 107280,
+      "sourceSha256": "48a6ecd4906cf824ab94158eacdec4bb5c8093d6a35ec72b2e1244739195f485"
+    },
+    {
+      "id": "NoraFinalPass",
+      "speaker": "NORA MARSH",
+      "text": "LAST PASS - IT'S FIGHTING THE SIGNAL. KEEP IT HELD OR IT'LL DRIFT ONTO US.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 125040,
+      "sourceSha256": "c1a9216f555961b2c95291b7e63e75c925ae09b6f174b6e98345582613809687"
+    },
+    {
+      "id": "NoraFullCalibration",
+      "speaker": "NORA MARSH",
+      "text": "GOT IT - FULL CALIBRATION. NOW WE CAN FEED THIS SPOOF TO THE ROOF DISH.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 121920,
+      "sourceSha256": "a42bbdfeda14dd7a73ae0541169652b11f45983e1ff08ec4a594c7fade2446da"
+    },
+    {
+      "id": "NoraReturnToHouse",
+      "speaker": "NORA MARSH",
+      "text": "THEY BEAT US BACK TO THE HOUSE. DISH IS STILL UP - GET ME TO THE CONSOLE.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 101280,
+      "sourceSha256": "36d134a6f24fa651f90ff12b25794fe354a45a2ddd3b828083c98bf785265dd8"
+    },
+    {
+      "id": "NoraGoToConsole",
+      "speaker": "NORA MARSH",
+      "text": "I'M HEADING TO THE CONSOLE. TAKE THE REAR DOOR SO YOU CAN SEE THE VALLEY.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 96480,
+      "sourceSha256": "d422f3d1583a4136820bb4d7e2d4f9d4cf98af95c32234b2170aa34ce180ae4d"
+    },
+    {
+      "id": "NoraDishLinked",
+      "speaker": "NORA MARSH",
+      "text": "DISH IS LINKED. HOLD SIGNAL TO WALK THAT BEAM OUT TO THE WEST SADDLE.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 116400,
+      "sourceSha256": "4188309e592f4b417c6815031b30a936c3042a572928356d4b97832070c9b163"
+    },
+    {
+      "id": "NoraClearLanding",
+      "speaker": "NORA MARSH",
+      "text": "KEEP IT OFF THE CLEARING - DUSTOFF NEEDS THAT GROUND TO PULL US OUT.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 105360,
+      "sourceSha256": "87de17fd3e211f6d2d9ca03e2a320ba227caa7f64a157de771ad24dfb3a969d4"
+    },
+    {
+      "id": "NoraEastJammer",
+      "speaker": "NORA MARSH",
+      "text": "JAMMER ON THE EAST ROOF - IT'S KILLING MY LINK!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 85440,
+      "sourceSha256": "308427c2c721650af22d28952271ae320c23d89bcc64f7fbe058d786cdd54eaf"
+    },
+    {
+      "id": "NoraFarJammer",
+      "speaker": "NORA MARSH",
+      "text": "ANOTHER JAMMER OUT PAST THE LAWN - SCOPE IT THROUGH THE DOOR!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 83760,
+      "sourceSha256": "0c59cd7740f58cf8184005d1dfd66ed0848e7dd135b09c37bebbef220aa05dba"
+    },
+    {
+      "id": "NoraKeepInSaddle",
+      "speaker": "NORA MARSH",
+      "text": "RIGHT IN THE SADDLE! HOLD IT THERE UNTIL IT LOCKS!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 79200,
+      "sourceSha256": "128afddd9bd008939d8c71da68fdb2d4a96b1ba3b0f45b05560b5d01d3220404"
+    },
+    {
+      "id": "NoraFleetLocked",
+      "speaker": "NORA MARSH",
+      "text": "DROP SIGNAL - IT'S LOCKED IN! THE WHOLE FLEET'S COMING DOWN PAST THE RIDGE.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 114240,
+      "sourceSha256": "ab3b313e1c587462cb9fd56da221534c02fa0555f28dfdfdd639cfcbca8bae6c"
+    },
+    {
+      "id": "NoraReuniteBoth",
+      "speaker": "NORA MARSH",
+      "text": "IT WORKED. COME ON - DAD AND BEN ARE WAITING FOR US.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 90240,
+      "sourceSha256": "7f76898500194e1f883e51e3b40dbebab19ee0b4d9ab1cb52b09adfef9bb4d05"
+    },
+    {
+      "id": "NoraReuniteOne",
+      "speaker": "NORA MARSH",
+      "text": "IT WORKED. LET'S GO - WE STILL HAVE FAMILY WAITING.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 80880,
+      "sourceSha256": "28f6c664a0a8a868ba6c3c167b8591621a32698448db2cfff634ff862c271f19"
+    },
+    {
+      "id": "NoraReuniteAlone",
+      "speaker": "NORA MARSH",
+      "text": "IT WORKED. THEY'RE GONE... LET'S GET OUT OF HERE.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 78240,
+      "sourceSha256": "d3d081bf659b28fe07ba1ee2fa138cb1be1440085e8ee63fbac96da1caa36411"
+    },
+    {
+      "id": "DustoffInbound",
+      "speaker": "DUSTOFF",
+      "text": "DUSTOFF-1 INBOUND. RALLY ON THE NORTH FLARES AND SECURE THE PAD.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 49080,
+      "sourceSha256": "4ef82752f2f5aed7a54f5e2cfbc778608948131ac49f81d07e3a4a48706c22ec"
+    },
+    {
+      "id": "DustoffShortFinal",
+      "speaker": "DUSTOFF",
+      "text": "DUSTOFF-1 ON SHORT FINAL! KEEP THEIR HEADS DOWN, DELTA!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 42720,
+      "sourceSha256": "80ffb402b6f0f84b50c85c9214f06c069d20d3a10a218eb2071d747ecf726312"
+    },
+    {
+      "id": "DustoffSkidsDown",
+      "speaker": "DUSTOFF",
+      "text": "SKIDS DOWN! SIGNAL THE CIVILIANS ACROSS AS SOON AS THE LANE'S CLEAR.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 50160,
+      "sourceSha256": "34c4a2457a905383311e536ec9feb4da1be2baa6ee7e304af33129e9f3ac14b1"
+    },
+    {
+      "id": "DustoffHotLZ",
+      "speaker": "DUSTOFF",
+      "text": "BURNING FUEL ON A HOT LZ, DELTA - GET 'EM ON BOARD!",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 45600,
+      "sourceSha256": "25e5241e961be701bab6b85be5284a8b5ee4b0032bba97a6c8d1128e59141f99"
+    },
+    {
+      "id": "DustoffClearingBurned",
+      "speaker": "DUSTOFF",
+      "text": "THE CLEARING JUST WENT UP IN FLAMES, DELTA! HOLD TIGHT - WE'LL FIND ANOTHER PAD.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 54720,
+      "sourceSha256": "23a6cd2b09dce83cbe3a957024aa09eacbdf77798aeccf1ccc155a6fe744ed9c"
+    },
+    {
+      "id": "DustoffLandClearing",
+      "speaker": "DUSTOFF",
+      "text": "FLEET'S DOWN PAST THE RIDGE, DELTA. DUSTOFF-1 IS SWINGING BACK TO THE CLEARING.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 50760,
+      "sourceSha256": "b8d989469d9fad929ed7d9b7262ec03e7e54e058fb54ba9ef101ba8d9ec9614f"
+    },
+    {
+      "id": "DustoffLandSouthRoad",
+      "speaker": "DUSTOFF",
+      "text": "SKIES ARE CLEAR, DELTA. CLEARING'S TORCHED, SO WE'RE SETTING DOWN ON SOUTH ROAD.",
+      "profile": "Radio",
+      "sampleRate": 12000,
+      "frames": 56572,
+      "sourceSha256": "331472bf681d2178888853c207b3a77c41b2dedfd75a96764c66342a18c2f698"
+    },
+    {
+      "id": "WaltLeadWay",
+      "speaker": "WALT MARSH",
+      "text": "STAY LOW AND STICK ON MY HEELS. I KNOW EVERY FENCE IN THIS YARD.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 124080,
+      "sourceSha256": "429893257544599f462cd902be8862168a23e4e1d2c2977f0f220461675a2b53"
+    },
+    {
+      "id": "WaltScanner",
+      "speaker": "WALT MARSH",
+      "text": "HOLD UP - SCANNER.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 38640,
+      "sourceSha256": "727ebdf46d3f58a8849d482bd505076935daf9120003bff4e83247615a36865c"
+    },
+    {
+      "id": "WaltAskAboutNora",
+      "speaker": "WALT MARSH",
+      "text": "MUCH OBLIGED. YOU SEEN MY DAUGHTER UP BY BRIAR HOUSE?",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 92880,
+      "sourceSha256": "897b47a10104aa26e1d3376b15e84a95042e6e3d462bde238d39a6ffe1aa5cc8"
+    },
+    {
+      "id": "WaltNoraIsSafe",
+      "speaker": "WALT MARSH",
+      "text": "YOU ALREADY GOT NORA OUT? GOOD. I'LL MEET HER AT THE WALL.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 95520,
+      "sourceSha256": "dbe268afaae79dd8a74f9ddbf54d4c9c1ca25c2b3983b6e1136a994316191289"
+    },
+    {
+      "id": "WaltWhereIsNora",
+      "speaker": "WALT MARSH",
+      "text": "WHERE'S NORA? ...TELL ME SHE MADE IT.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 62400,
+      "sourceSha256": "7c50a0f466a9fc8b16261a5cd61f5889d4a367f89f44cd62478519f5e40aecde"
+    },
+    {
+      "id": "WaltWallWatched",
+      "speaker": "WALT MARSH",
+      "text": "THEY'VE GOT EYES ON THE WALL - WE'LL GET CUT DOWN!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 79200,
+      "sourceSha256": "39b8f416cde7c6633726b532005bbf9b556cdd227467ec3ed79c82ae2233a819"
+    },
+    {
+      "id": "BenTruckPinned",
+      "speaker": "BEN MARSH",
+      "text": "I CAN'T MOVE - THEY'VE GOT EYES RIGHT ON THIS TRUCK!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 83760,
+      "sourceSha256": "66047c83158a3015638740cf24fc39437469b5497afc416fcb58847c0ffaf78f"
+    },
+    {
+      "id": "BenAskAboutNora",
+      "speaker": "BEN MARSH",
+      "text": "THANK GOD - MY MOM RAN UP NORTH AVENUE TO HER DISH. IS SHE ALIVE?",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 115920,
+      "sourceSha256": "a92364e2582f543ac445fdb19be80cba77013a503bf5908df45b098427cd1490"
+    },
+    {
+      "id": "BenNoraIsSafe",
+      "speaker": "BEN MARSH",
+      "text": "YOU ALREADY GOT MY MOM OUT? THANK GOD... OKAY, I'M RUNNING.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 118560,
+      "sourceSha256": "4c78dff1dd836df4dea09b68c9a08b19fcc2cd3a7de5d3abef13d43dc07f3b81"
+    },
+    {
+      "id": "BenWhereIsNora",
+      "speaker": "BEN MARSH",
+      "text": "WAIT - WHERE'S MY MOM? TELL ME YOU FOUND HER.",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 74880,
+      "sourceSha256": "b8a7c2e51caa0597cc860e40bcb03559dc031aadba2f91cee65f7866efcb8a43"
+    },
+    {
+      "id": "BenWallWatched",
+      "speaker": "BEN MARSH",
+      "text": "THEY'VE GOT EYES ON THE WALL - WE'LL GET CUT DOWN!",
+      "profile": "Direct",
+      "sampleRate": 24000,
+      "frames": 71760,
+      "sourceSha256": "d4a629356cabb9d2f232321adf1c7898b1f7427905339ab0d61dc3e725033b3a"
+    }
+  ]
+}

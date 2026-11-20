@@ -41,6 +41,16 @@ The M40A3 tracks sample the browser rig at each bolt and reload phase boundary a
 
 The pack holds RGB565 textures, a luminance sky cubemap, original character meshes, three weapon viewmodels with motion tracks, and 27 rival voice lines encoded as mono 24 kHz IMA ADPCM. The mix keeps the voice bank compressed and decodes the active line during playback. [Storage measurements](reference/measurements/storage-comparison.json)
 
+## Campaign dialogue
+
+`campaign_dialogue.inc` defines the stable line IDs and subtitles in export order. The ignored `.voice-sources/raw/` folder holds the original takes, and `.voice-sources/ingest.json` maps each voiced ID to its original filename and SHA-256. After verifying any replacement take against the subtitle, update that entry and rebuild with Node and FFmpeg.
+
+```sh
+node tools/build-campaign-voices.mjs
+```
+
+The builder writes the mono IMA ADPCM bank, its manifest, and the 24 kHz frame counts used for deterministic subtitle timing. Radio takes are encoded at 12 kHz and direct speech at 24 kHz. The opener uses direct speech for Delta-1, who is in the room with the player. Build the application again after rebuilding the bank. Keep the sidecar beside the base pack on desktop and at the microSD root on handheld.
+
 ## Capture a new browser baseline
 
 The included [fixtures](reference/fixtures) support native replay without browser assets. To recapture an upstream visual baseline, place the original reference `soldier.glb.gz` in `reference/browser/public/models/` under its existing usage terms. This path is Git-ignored. The model is used only by the optional browser capture. Lite's asset export builds its own character meshes.

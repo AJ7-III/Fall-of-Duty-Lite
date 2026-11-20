@@ -165,6 +165,7 @@ struct Game::Impl {
 #endif
     std::array<Event, 96> eventBuffer{};
     size_t eventCount = 0;
+    std::optional<CampaignVoiceCue> campaignVoice;
 
     std::array<uint8_t, 64> paneHits{};
     Phase laptop = Phase::Away, transmitter = Phase::Away;
@@ -316,6 +317,7 @@ struct Game::Impl {
         if (!secondRandom.state) secondRandom.state = 1;
         random.tick = 0;
         eventCount = 0;
+        campaignVoice.reset();
         paneHits.fill(0);
         refill(player, true);
         resetPlayer(player, assets.spawns[0].position, assets.spawns[0].yaw);
@@ -733,6 +735,7 @@ struct Game::Impl {
         Impl& g;
         explicit HostAdapter(Impl& impl) : g(impl) {}
         void playSound(Sound id, float vol, bool pos, Vec3 at) override { g.sound(id, vol, pos, at); }
+        void setCampaignVoice(CampaignVoiceCue cue) override { g.campaignVoice = cue; }
         void damagePlayer(float dmg, Vec3 from) override {
             if (g.hurtPlayer(g.player, g.random, dmg, from) && g.snapshot.dead) {
                 if (g.laptop == Phase::Raising || g.laptop == Phase::Out) g.closeLaptop();
@@ -762,6 +765,7 @@ struct Game::Impl {
         random.state = seed ? seed : 1;
         random.tick = 0;
         eventCount = 0;
+        campaignVoice.reset();
         paneHits.fill(0);
         refill(player, true);
         laptop = transmitter = Phase::Away;
@@ -1769,6 +1773,7 @@ struct Game::Impl {
 
     void step(Input input, double wallDelta) {
         eventCount = 0;
+        campaignVoice.reset();
         if (input.disconnected) pause();
         auto& s = snapshot;
         if (s.match != Match::Playing || wallDelta <= 0 || !std::isfinite(wallDelta)) return;
@@ -1886,6 +1891,9 @@ Game::~Game() = default;
 const Snapshot& Game::state() const { return impl_->snapshot; }
 const Event* Game::events() const { return impl_->eventBuffer.data(); }
 size_t Game::eventCount() const { return impl_->eventCount; }
+const CampaignVoiceCue* Game::campaignVoiceCue() const {
+    return impl_->campaignVoice ? &*impl_->campaignVoice : nullptr;
+}
 void Game::start(uint32_t seed, int difficulty, bool alternateRival) {
     start(seed, difficulty, alternateRival ? Opponent::Hanz : Opponent::IPwndUrMom);
 }
@@ -1921,6 +1929,7 @@ void Game::resume(bool triggerHeld) {
     impl_->snapshot.match = Match::Playing;
 }
 void Game::quit() {
+    impl_->campaignVoice.reset();
     if (impl_->snapshot.match == Match::Paused || impl_->snapshot.match == Match::Playing) {
         impl_->eventCount = 0;
         impl_->finish();

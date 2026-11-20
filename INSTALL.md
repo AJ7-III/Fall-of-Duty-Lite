@@ -3,7 +3,7 @@
 Use the package with the Guition ESP32-P4 handheld and a wired Sony DualShock 4. This build uses the pre-v3 silicon configuration, 16 MB flash, an ST7701S panel, GT911 touch, ES8311 audio, and the board's SDMMC card slot.
 
 1. Extract the zip. Use the firmware and SD pack it contains together. The compact schema 7 pack requires firmware with schema 7 support. From the extracted directory, verify the firmware and SD files with `shasum -a 256 -c SHA256SUMS` on macOS or `sha256sum -c SHA256SUMS` on Linux.
-2. Copy the **contents** of `sd/` to the root of a FAT32 microSD card. The game finds `/sd/fall-of-duty.fodp` after mounting. Insert the card.
+2. Copy the **contents** of `sd/` to the root of a FAT32 microSD card. Keep `fall-of-duty.fodp` and `campaign-voices.fodv` together at the card root for voiced campaign play. Insert the card.
 3. Connect the board's ESP32-P4 programming USB port. Identify the new serial port by comparing the ports present with the board unplugged and plugged in. Set `FOD_PORT` to that exact device. Run the flash ID command before proceeding and confirm the expected chip, revision and capacity. Flashing replaces the bootloader, partition table and application on that board.
 4. Connect the controller to the board's host port and connect a speaker. Boot and select **Start Duel** with Cross or touch. For a three-way match, open **Match Setup**, set **Rival** to **Free-for-all**, then return and select **Start FFA**. First to ten kills wins.
 

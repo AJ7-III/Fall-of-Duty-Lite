@@ -69,6 +69,11 @@ void App::stopAmbientLoops() {
 
 void App::routeAudio() {
     const Snapshot& snapshot = state();
+    if (snapshot.match == Match::Results && snapshot.mission && snapshot.mission->active) {
+        audio.playCampaignVoice({});
+    } else if (menu_.voice && snapshot.match == Match::Playing) {
+        if (const auto* cue = game.campaignVoiceCue()) audio.playCampaignVoice(*cue);
+    }
     for (size_t i = 0; i < game.eventCount(); ++i) {
         const auto& event = game.events()[i];
         if (event.kind != EventKind::Sound) continue;

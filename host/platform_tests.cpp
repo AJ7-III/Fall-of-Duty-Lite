@@ -847,6 +847,50 @@ void checkAudioControlsWithFullQueue() {
     check(pcm[0] == 0 && mixer.speaking() == Speaker::None, "Muting must clear speech when the queue is full.");
 }
 
+void checkCampaignSpeech() {
+    Assets assets;
+    assets.audio.resize(size_t(Sound::Count));
+    assets.audio[size_t(Sound::RadioChirp)].samples = {400, 600};
+    auto bank = std::make_shared<CampaignVoiceBank>();
+    bank->codes.reset(static_cast<uint8_t*>(std::malloc(1)));
+    check(bool(bank->codes), "The campaign audio fixture needs one byte of ADPCM.");
+    bank->codes.get()[0] = 7;
+    bank->clips[size_t(CampaignLine::DeltaWakeUp) - 1] = {1, 0, 1500, 0, 1};
+    bank->clips[size_t(CampaignLine::DeltaFirstShot) - 1] = {2, 0, 1000, 0, 2};
+    assets.campaignVoices = bank;
+    Mixer mixer(assets);
+    mixer.setVolume(100);
+    std::array<int16_t, 12> pcm{};
+    for (int i = 0; i < 140; ++i) mixer.play(Sound::Rotor);
+    mixer.playCampaignVoice({CampaignLine::DeltaWakeUp, false});
+    mixer.playCampaignVoice({CampaignLine::DeltaFirstShot, true});
+    mixer.mix(pcm.data(), 1);
+    check(mixer.dropped() && pcm[0] == 207, "Even with a full effects queue, the latest campaign cue must start with its chirp.");
+    mixer.pauseSpeech(true);
+    mixer.mix(pcm.data(), 1);
+    check(pcm[0] == 0, "Pausing campaign audio must freeze the chirp and speech cursor.");
+    mixer.pauseSpeech(false);
+    mixer.mix(pcm.data(), 6);
+    const std::array<int16_t, 12> expected{311, 311, 898, 898, 902, 902, 908, 908, 908, 908, 0, 0};
+    check(pcm == expected, "Half-rate campaign speech must interpolate after the full chirp across audio blocks.");
+    mixer.playCampaignVoice({CampaignLine::DeltaWakeUp, false});
+    mixer.mix(pcm.data(), 1);
+    check(pcm[0] == 1347, "Direct campaign speech must start immediately after the previous line.");
+    mixer.playCampaignVoice({CampaignLine::DeltaFirstShot, true});
+    mixer.stopSpeech();
+    mixer.mix(pcm.data(), 1);
+    check(pcm[0] == 0, "Muting must invalidate a pending campaign chirp and line together.");
+
+    Assets subtitlesOnly;
+    subtitlesOnly.audio = assets.audio;
+    Mixer fallback(subtitlesOnly);
+    fallback.setVolume(100);
+    fallback.playCampaignVoice({CampaignLine::DeltaFirstShot, true});
+    fallback.mix(pcm.data(), 3);
+    check(pcm[0] == 207 && pcm[2] == 311 && pcm[4] == 0,
+          "Without the voice bank, campaign radio must retain its chirp.");
+}
+
 void checkBriarHouse(Assets& assets) {
     using namespace game_detail;
     buildBriarHouse(assets);
@@ -2139,6 +2183,7 @@ void checkMissionRules(const Assets& assets) {
     struct QuietHost final : mission_detail::MissionHost {
         int shocks = 0, playerHits = 0;
         void playSound(Sound sound, float, bool, Vec3) override { shocks += sound == Sound::PlasmaShock; }
+        void setCampaignVoice(CampaignVoiceCue) override {}
         void damagePlayer(float, Vec3) override { ++playerHits; }
         void hitWorld(const ShotHit&, Vec3) override {}
         void updateActorFrame(Actor&) override {}
@@ -2685,6 +2730,7 @@ int main(int argc, char** argv) {
     checkSpeech();
     checkSpeechVariety();
     checkAudioControlsWithFullQueue();
+    checkCampaignSpeech();
     const auto stockSky = assets.sky;
     const auto stockAudio = assets.audio.size();
     checkBriarHouse(assets);

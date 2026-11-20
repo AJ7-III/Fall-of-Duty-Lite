@@ -1,5 +1,6 @@
 #pragma once
 
+#include "campaign_dialogue.hpp"
 #include "game_bot.hpp"
 #include "mission.hpp"
 
@@ -11,11 +12,14 @@ namespace fod::mission_detail {
 struct MissionHost {
     virtual ~MissionHost() = default;
     virtual void playSound(Sound id, float volume, bool positional, Vec3 at) = 0;
+    virtual void setCampaignVoice(CampaignVoiceCue cue) = 0;
     virtual void damagePlayer(float amount, Vec3 from) = 0;
     virtual void hitWorld(const game_detail::ShotHit& hit, Vec3 point) = 0;
     virtual void updateActorFrame(Actor& actor) = 0;
     virtual void refillPlayer(bool newMatch) = 0;
 };
+
+using Line = CampaignLine;
 
 // Radio lines interrupt by priority. Urgent lines react to the moment; orders and story wait
 // their turn. Chatter goes stale quickly and orders more slowly; story lines are never dropped.
@@ -136,8 +140,7 @@ private:
     };
 
     struct RadioLine {
-        char speaker[20]{};
-        char text[96]{};
+        CampaignVoiceCue cue;
         float duration = 0;
         uint8_t priority = RadioOrder;
         int8_t sector = -1; // Sector-specific lines are dropped once that sector resolves
@@ -170,6 +173,7 @@ private:
         double nextDropAt = 0;
         double nextJammerAt = 0;
         double lineAt = 0;
+        Line closingLine = Line::None;
         int drops = 0;             // Reinforcements dropped this stage
         int cue = 0;               // Story beats delivered this stage
         bool jammerSent = false;   // Timberline: the hijack drone for the third call
@@ -190,11 +194,12 @@ private:
                       const Snapshot& snap, float barrel = 0.f);
     void updatePlasma(Snapshot& snap, float dt, MissionHost& host);
     void resetAll();
-    void setRadio(const char* speaker, const char* line, float duration, MissionHost& host, bool chirp = true,
+    void setRadio(Line line, float duration, MissionHost& host, bool chirp = true,
                   uint8_t priority = RadioOrder, int sector = -1);
     void setSignalHint(const char* hint);
     void clearRadioQueue() { radioQueued_ = 0; }
-    void showRadio(const RadioLine& line, MissionHost& host, bool chirp);
+    void dismissRadio(MissionHost& host);
+    void showRadio(const RadioLine& line, MissionHost& host);
     void pumpRadio(MissionHost& host);
     void setObjective(const char* mainText, const char* subText);
     void setTacticalCallout(const char* text, uint16_t color, float duration = 1.6f);
@@ -246,7 +251,7 @@ private:
     // Mission 1: the dish pulse on North Avenue and Dustoff in the clearing.
     void updateDishPulse(double dt, MissionHost& host);
     bool signalThreat(const Agent& civ, Vec3 destination, int& shooter) const;
-    const char* survivorLine(int sector) const;
+    Line survivorLine(int sector) const;
     void updateBenSignal(const Snapshot& snap, MissionHost& host);
     void beginDustoff(MissionHost& host);
     void updateBoarding(Snapshot& snap, double dt, MissionHost& host);
@@ -287,6 +292,8 @@ private:
     std::array<SectorState, 3> sectors_{};
     std::array<RadioLine, 4> radioQueue_{};
     int radioQueued_ = 0;
+    Line radioLine_ = Line::None;
+    double radioReadSeconds_ = 0;
     double radioShownAt_ = 0;
     uint8_t radioPriority_ = RadioChatter;
     int difficulty_ = defaultDifficulty;

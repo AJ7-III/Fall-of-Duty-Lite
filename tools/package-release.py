@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import struct
+import zlib
 from pathlib import Path, PurePosixPath
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
@@ -19,7 +21,7 @@ def safe_path(relative):
     return path
 
 
-def package(source, sdk, pack_directory, reference, output):
+def package(source, sdk, pack_directory, reference, output, subtitle_only=False):
     root = Path(__file__).resolve().parents[1]
     plan = json.loads((source / "flasher_args.json").read_text())
     if plan["extra_esptool_args"]["chip"] != "esp32p4":
@@ -49,6 +51,26 @@ def package(source, sdk, pack_directory, reference, output):
         raise ValueError("The SD pack and its manifest disagree.")
     files["sd/fall-of-duty.fodp"] = asset_bytes
     files["sd/fall-of-duty.fodp.json"] = manifest_file.read_bytes()
+    if not subtitle_only:
+        voice_filename = "campaign-voices.fodv"
+        voice_manifest_filename = voice_filename + ".json"
+        voice_data = (pack_directory / voice_filename).read_bytes()
+        voice_manifest_bytes = (pack_directory / voice_manifest_filename).read_bytes()
+        voice_manifest = json.loads(voice_manifest_bytes)
+        if len(voice_data) < 32:
+            raise ValueError("The campaign voice bank header is incomplete.")
+        magic, schema, count, size, crc, fingerprint = struct.unpack_from("<8sIIIIQ", voice_data)
+        fingerprint = f"{fingerprint:016x}"
+        if (magic != b"FODV\0\0\0\0" or schema != 1 or schema != voice_manifest["schema"]
+                or count != len(voice_manifest["clips"]) or size != len(voice_data)
+                or size != voice_manifest["storedBytes"] or fingerprint != voice_manifest["fingerprint"]
+                or crc != zlib.crc32(voice_data[32:]) or sha(voice_data) != voice_manifest["sha256"]):
+            raise ValueError("The campaign voice bank and its manifest disagree.")
+        app_path = safe_path(plan["flash_files"]["0x10000"])
+        if f"FODV:{fingerprint}\0".encode("ascii") not in files[f"firmware/{app_path}"]:
+            raise ValueError("The campaign voice bank does not match the firmware build.")
+        files[f"sd/{voice_filename}"] = voice_data
+        files[f"sd/{voice_manifest_filename}"] = voice_manifest_bytes
     for trace in sorted(reference.glob("*.fodtrace")):
         files[f"sd/{trace.name}"] = trace.read_bytes()
     if not all(f"sd/{name}.fodtrace" in files for name in ("long-lane", "apache")):
@@ -95,8 +117,9 @@ def main():
     parser.add_argument("--sd", required=True, type=Path, help="Pack and JSON manifest directory")
     parser.add_argument("--reference", required=True, type=Path, help="Captured browser replay inputs")
     parser.add_argument("--out", required=True, type=Path, help="Output release zip")
+    parser.add_argument("--subtitle-only", action="store_true", help="Package without campaign voice assets")
     args = parser.parse_args()
-    package(args.firmware, args.idf, args.sd, args.reference, args.out)
+    package(args.firmware, args.idf, args.sd, args.reference, args.out, args.subtitle_only)
 
 
 if __name__ == "__main__":

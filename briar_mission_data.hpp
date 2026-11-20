@@ -1,5 +1,6 @@
 #pragma once
 
+#include "campaign_dialogue.hpp"
 #include "mission.hpp"
 
 namespace fod::mission_detail {
@@ -20,36 +21,20 @@ constexpr float assemblyRadius = 8.f, holdRadius = 15.f, lzThreatRadius = 24.f;
 struct Survivor {
     float x, y, yaw;
     const char* objective;
-    const char* name;       // Subtitle speaker
-    const char* callout;    // Delta-1 as you reach the district
-    const char* underFire;  // Delta-1 when the aliens turn on them
-    const char* noraPinned; // Their words once safe, while Nora is still out there (Nora's own line for her)
-    const char* noraSafe;   // ...once Nora is safe
-    const char* noraLost;   // ...once Nora is gone
-    const char* lost;       // Delta-1 when they die
+    CampaignLine callout;    // Delta-1 as you reach the district
+    CampaignLine underFire;  // Delta-1 when the aliens turn on them
+    CampaignLine noraPinned; // Their words once safe, while Nora is still out there
+    CampaignLine noraSafe;   // ...once Nora is safe
+    CampaignLine noraLost;   // ...once Nora is gone
+    CampaignLine lost;       // Delta-1 when they die
 };
 constexpr Survivor family[3]{
-    {920, 445, -pi / 2, "BEN / EAST RIDGE", "BEN MARSH",
-     "HER SON'S PINNED BEHIND THAT PICKUP.",
-     "THEY'RE OPENING UP ON BEN! PULL THEIR FIRE!",
-     "THANK GOD - MY MOM RAN UP NORTH AVENUE TO HER DISH. IS SHE ALIVE?",
-     "YOU ALREADY GOT MY MOM OUT? THANK GOD... OKAY, I'M RUNNING.",
-     "WAIT - WHERE'S MY MOM? TELL ME YOU FOUND HER.",
-     "DAMN IT - WE LOST BEN."},
-    {535, -215, pi, "NORA / NORTH VALLEY", "NORA MARSH",
-     "EYES ON DR. MARSH. A HEAVY HAS HER PINNED.",
-     "THEY'RE CLOSING ON DR. MARSH! KEEP 'EM OFF HER!",
-     "THEY DROPPED STRAIGHT ONTO MY ROOF ARRAY. THAT WASN'T RANDOM - THEY HOMED ON IT.",
-     "THEY DROPPED STRAIGHT ONTO MY ROOF ARRAY. THAT WASN'T RANDOM - THEY HOMED ON IT.",
-     "THEY DROPPED STRAIGHT ONTO MY ROOF ARRAY. THAT WASN'T RANDOM - THEY HOMED ON IT.",
-     "DR. MARSH IS DOWN... WE LOST HER."},
-    {-298, 252, pi / 2, "WALT / WEST TIMBERLINE", "WALT MARSH",
-     "HER DAD'S BY THE CABIN. KEEP LOW OR CLEAR 'EM.",
-     "THEY SPOTTED WALT BY THE CABIN! LIGHT 'EM UP!",
-     "MUCH OBLIGED. YOU SEEN MY DAUGHTER UP BY BRIAR HOUSE?",
-     "YOU ALREADY GOT NORA OUT? GOOD. I'LL MEET HER AT THE WALL.",
-     "WHERE'S NORA? ...TELL ME SHE MADE IT.",
-     "DAMN IT - WALT DIDN'T MAKE IT."},
+    {920, 445, -pi / 2, "BEN / EAST RIDGE", CampaignLine::DeltaFindBen, CampaignLine::DeltaBenUnderFire,
+     CampaignLine::BenAskAboutNora, CampaignLine::BenNoraIsSafe, CampaignLine::BenWhereIsNora, CampaignLine::DeltaBenLost},
+    {535, -215, pi, "NORA / NORTH VALLEY", CampaignLine::DeltaFindNora, CampaignLine::DeltaNoraUnderFire,
+     CampaignLine::NoraRoofArray, CampaignLine::NoraRoofArray, CampaignLine::NoraRoofArray, CampaignLine::DeltaNoraLost},
+    {-298, 252, pi / 2, "WALT / WEST TIMBERLINE", CampaignLine::DeltaFindWalt, CampaignLine::DeltaWaltUnderFire,
+     CampaignLine::WaltAskAboutNora, CampaignLine::WaltNoraIsSafe, CampaignLine::WaltWhereIsNora, CampaignLine::DeltaWaltLost},
 };
 constexpr int ben = 0;
 constexpr int nora = 1;

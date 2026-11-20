@@ -30,6 +30,8 @@ The v1.1.0 Guition archive is about **4.47 MB**. [GitHub release](https://github
 
 The archive bundles the bootloader, partition table, application binary, schema 7 SD pack, reference replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`. Keep the firmware and SD pack from the same archive together because schema 7 packs require firmware with schema 7 support.
 
+The [voiced Operation Briar preview](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/campaign-voices-preview-1) includes matching handheld firmware and SD files. For desktop, download the preview's source archive and follow [Play on desktop](#play-on-desktop). The source includes the base game pack and the compressed campaign voices.
+
 | Component | Target profile |
 | --- | --- |
 | Board and SoC | Guition JC4880P443C_I_W with pre-v3 ESP32-P4 silicon (v0.0–v1.99 image range, 360 MHz CPU, 16 MB flash, 200 MHz PSRAM) |
@@ -62,6 +64,8 @@ Solo targets 60 fps and renders at **1280×720** by default on macOS. Use **Rend
 ### Operation Briar campaign
 
 Choose **Campaign** on the title screen, or run `build/host/fod_host --mission briar-house` on desktop. **Operation Briar** is a three-mission campaign across the Colorado valley. Choose **Next Mission** on the results screen to continue.
+
+Keep `campaign-voices.fodv` beside `fall-of-duty.fodp` when moving the asset packs. Campaign subtitles work when the voice bank is unavailable.
 
 The fleet came down on Briar House because Nora Marsh's radio dish was transmitting. The campaign follows what she does with that.
 

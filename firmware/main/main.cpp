@@ -1,4 +1,5 @@
 #include "board.hpp"
+#include "campaign_voice_timing.hpp"
 
 #include <algorithm>
 #include <array>
@@ -608,6 +609,17 @@ void gameplay() {
         ESP_LOGI(tag, "arena=%s build_us=%" PRId64 " resident_payload=%llu", launchTitle(launch), board::timeUs() - begin,
                  static_cast<unsigned long long>(assets.residentBytes));
         board::logMemory("arena-built");
+        if (launch == LaunchCampaign) {
+            std::string error;
+            const auto voiceStart = board::timeUs();
+            if (assets.loadCampaignVoices("/sd/campaign-voices.fodv", error)) {
+                ESP_LOGI(tag, "%s campaign_voices_bytes=%" PRIu32 " load_us=%" PRId64,
+                         fod::campaignVoiceBuildMarker, assets.campaignVoices->codeBytes, board::timeUs() - voiceStart);
+                board::logMemory("campaign-voices-loaded");
+            } else {
+                ESP_LOGW(tag, "campaign voices unavailable (%s); using subtitles", error.c_str());
+            }
+        }
     } else {
         try {
             fod::optimizeShipBoxWorld(assets);

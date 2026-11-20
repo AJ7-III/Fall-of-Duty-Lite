@@ -1,10 +1,13 @@
 #pragma once
 
+#include "campaign_dialogue.hpp"
 #include "types.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -68,6 +71,20 @@ struct EncodedVoice {
     int16_t predictor;
     uint8_t index;
 };
+
+struct CampaignVoiceBank {
+    struct Clip {
+        uint32_t frames;
+        uint32_t offset;
+        int16_t predictor;
+        uint8_t index;
+        uint8_t rateDivisor;
+    };
+    std::array<Clip, campaignVoiceClipCount> clips{};
+    std::unique_ptr<uint8_t, void (*)(void*)> codes{nullptr, &std::free};
+    uint32_t codeBytes = 0;
+};
+inline constexpr char campaignVoiceFilename[] = "campaign-voices.fodv";
 
 struct ShotSurface {
     uint32_t surface;
@@ -226,6 +243,7 @@ struct Assets {
     std::vector<BakedLight> lamps;
     std::vector<Clip> audio;
     std::array<std::vector<EncodedVoice>, voiceBankCount> voices;
+    std::shared_ptr<const CampaignVoiceBank> campaignVoices;
     std::vector<uint8_t> glassHits;
     uint64_t storedBytes = 0, residentBytes = 0, peakBytes = 0;
     std::array<uint8_t, 20> sourceRevision{};
@@ -250,6 +268,7 @@ struct Assets {
     }
 
     bool load(const char* path, std::string& error);
+    bool loadCampaignVoices(const char* path, std::string& error);
 };
 
 } // namespace fod

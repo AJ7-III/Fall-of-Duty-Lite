@@ -8,6 +8,9 @@ namespace {
 constexpr float speechLevel = .90f;
 constexpr size_t minSpeechGap = audioHz * 3 / 4;
 constexpr size_t maxSpeechGap = audioHz * 3 / 2;
+constexpr uint32_t campaignChirpBit = 0x100u;
+constexpr uint32_t campaignRequestStep = 0x200u;
+constexpr int duckRampFrames = audioHz / 50;
 }
 
 Mixer::Mixer(const Assets& assets, uint32_t voiceSeed) : assets_(assets), voiceSeed_(voiceSeed ? voiceSeed : 0x29ea2831u) {
@@ -31,6 +34,13 @@ void Mixer::play(Sound sound, float gain, float pan) {
     push({sound, gain, pan, false, generation});
 }
 
+void Mixer::playCampaignVoice(CampaignVoiceCue cue) {
+    const uint32_t previous = campaignRequest_.load(std::memory_order_relaxed);
+    const uint32_t serial = (previous + campaignRequestStep) & ~(campaignRequestStep - 1u);
+    campaignRequest_.store(serial | uint32_t(cue.line) | (cue.chirp ? campaignChirpBit : 0u),
+                           std::memory_order_release);
+}
+
 void Mixer::loop(Sound sound, float gain, float pan) {
     if (gain <= 0) {
         stop(sound);
@@ -46,7 +56,10 @@ void Mixer::stop(Sound sound) {
     if (index < loopGenerations_.size()) loopGenerations_[index].fetch_add(1, std::memory_order_release);
 }
 
-void Mixer::stopSpeech() { speechGeneration_.fetch_add(1, std::memory_order_release); }
+void Mixer::stopSpeech() {
+    playCampaignVoice({});
+    speechGeneration_.fetch_add(1, std::memory_order_release);
+}
 void Mixer::pauseSpeech(bool paused) { speechPaused_.store(paused, std::memory_order_release); }
 
 uint32_t Mixer::voiceDraw() {
@@ -83,18 +96,52 @@ void Mixer::startSpeech(Command command) {
     }
     deck.last = deck.order[--deck.remaining];
     const auto& clip = clips[deck.last];
-    speech_.clip = &clip;
+    speech_.codes = clip.codes.data();
     speech_.count = clip.frames;
     speech_.decoder = {clip.predictor, clip.index};
 }
 
+void Mixer::startCampaignSpeech(CampaignVoiceCue cue) {
+    if (cue.line == CampaignLine::None) {
+        if (speech_.campaign) speech_ = {};
+        return;
+    }
+    speech_ = {};
+    speech_.campaign = true;
+    speech_.gain = speechLevel;
+    speechGapFrames_ = 0;
+    const size_t chirp = size_t(Sound::RadioChirp);
+    if (cue.chirp && chirp < assets_.audio.size()) {
+        const auto& samples = assets_.audio[chirp].samples;
+        speech_.chirp = samples.data();
+        speech_.chirpFrames = samples.size();
+        speech_.count = speech_.chirpFrames;
+    }
+    const size_t id = size_t(cue.line);
+    if (!assets_.campaignVoices || id > campaignVoiceClipCount) return;
+    const auto& bank = *assets_.campaignVoices;
+    const auto& clip = bank.clips[id - 1];
+    speech_.codes = bank.codes.get() + clip.offset;
+    speech_.count += size_t(clip.frames) * clip.rateDivisor;
+    speech_.decoder = {clip.predictor, clip.index};
+    speech_.sample = clip.predictor;
+    speech_.halfRate = clip.rateDivisor == 2;
+}
+
+int Mixer::decodeSpeechNibble(size_t nibble) {
+    return speech_.decoder.decode((speech_.codes[nibble / 2] >> ((nibble & 1) * 4)) & 15);
+}
+
 int Mixer::speechSample() {
-    if (speech_.pcm) return speech_.pcm[speech_.cursor++];
     const auto cursor = speech_.cursor++;
-    if (!cursor) return speech_.decoder.predictor;
-    const auto nibble = cursor - 1;
-    const auto code = (speech_.clip->codes[nibble / 2] >> ((nibble & 1) * 4)) & 15;
-    return speech_.decoder.decode(code);
+    if (speech_.pcm) return speech_.pcm[cursor];
+    if (cursor < speech_.chirpFrames) return speech_.chirp[cursor];
+    const auto frame = cursor - speech_.chirpFrames;
+    if (!speech_.halfRate) return frame ? decodeSpeechNibble(frame - 1) : speech_.decoder.predictor;
+    if (!(frame & 1)) return speech_.sample;
+    const int previous = speech_.sample;
+    if (cursor + 1 < speech_.count) speech_.sample = decodeSpeechNibble(frame / 2);
+    return (previous + speech_.sample) / 2;
 }
 
 void Mixer::applyEffect(Command command) {
@@ -127,9 +174,15 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
     const uint32_t write = write_.load(std::memory_order_acquire);
     const auto speechGeneration = speechGeneration_.load(std::memory_order_acquire);
     if (speechGeneration != activeSpeechGeneration_) {
-        speech_ = {};
+        if (!speech_.campaign) speech_ = {};
         speechGapFrames_ = 0;
         activeSpeechGeneration_ = speechGeneration;
+    }
+    const auto campaignRequest = campaignRequest_.load(std::memory_order_acquire);
+    if (campaignRequest != activeCampaignRequest_) {
+        activeCampaignRequest_ = campaignRequest;
+        startCampaignSpeech({CampaignLine(campaignRequest & (campaignChirpBit - 1u)),
+                             (campaignRequest & campaignChirpBit) != 0u});
     }
     const bool speechPaused = speechPaused_.load(std::memory_order_acquire);
     const bool canSpeak = !speechPaused && speech_.cursor == speech_.count && !speechGapFrames_;
@@ -175,6 +228,7 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
     }
 
     const int speechGain = int(speech_.gain * volume * 2.56f);
+    const int chirpGain = int(.52f * volume * 2.56f);
     const size_t speechFrames = speechPaused ? 0 : std::min(frames, speech_.count - speech_.cursor);
     for (size_t frame = 0; frame < frames; ++frame) {
         int sumLeft = 0, sumRight = 0;
@@ -194,8 +248,16 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
             }
             ++i;
         }
+        const bool chirping = frame < speechFrames && speech_.cursor < speech_.chirpFrames;
+        const bool campaignSpeech = speech_.campaign && speechGain && frame < speechFrames && !chirping;
+        if (campaignSpeech || campaignDuckFrames_) {
+            campaignDuckFrames_ = std::clamp(campaignDuckFrames_ + (campaignSpeech ? 1 : -1), 0, duckRampFrames);
+            const int duck = 256 - campaignDuckFrames_ * 75 / duckRampFrames;
+            sumLeft = (sumLeft / 256) * duck;
+            sumRight = (sumRight / 256) * duck;
+        }
         if (frame < speechFrames) {
-            const int voiced = speechSample() * speechGain;
+            const int voiced = speechSample() * (chirping ? chirpGain : speechGain);
             sumLeft += voiced;
             sumRight += voiced;
         }
@@ -203,7 +265,7 @@ void Mixer::mix(int16_t* stereo, size_t frames) {
         stereo[frame * 2 + 1] = int16_t(std::clamp(sumRight / 256, -32768, 32767));
     }
     if (!speechPaused) {
-        if (speechFrames && speech_.cursor == speech_.count) {
+        if (!speech_.campaign && speechFrames && speech_.cursor == speech_.count) {
             speechGapFrames_ = minSpeechGap + voiceDraw() % (maxSpeechGap - minSpeechGap + 1);
         }
         speechGapFrames_ -= std::min(speechGapFrames_, frames - speechFrames);

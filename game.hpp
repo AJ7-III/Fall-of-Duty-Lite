@@ -9,6 +9,7 @@
 namespace fod {
 
 struct Assets;
+struct CampaignVoiceCue;
 struct MissionSnapshot;
 enum class MissionChapter : uint8_t;
 enum class Match : uint8_t { Start, Playing, Paused, Results };
@@ -139,6 +140,7 @@ public:
     const Snapshot& state() const;
     const Event* events() const;
     size_t eventCount() const;
+    const CampaignVoiceCue* campaignVoiceCue() const;
     void start(uint32_t seed, int difficulty, bool alternateRival = false);
     void start(uint32_t seed, int difficulty, Opponent opponent);
     void startMission(uint32_t seed, int difficulty, bool fromCheckpoint = false);
