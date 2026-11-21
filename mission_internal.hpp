@@ -48,6 +48,8 @@ public:
                Vec3& playerPosOut, float& playerYawOut, MissionHost& host);
     void seedExtractionReplay();
     // Arrange the end of the previous mission so NextChapter starts this one with Nora alive.
+    CampaignProgress nextProgress() const;
+    void restoreBoundary(const CampaignProgress& progress);
     void seedChapterReplay(MissionChapter chapter, bool noraAlive = true, bool legacyArray = false);
     // Arrange a checkpoint at The Array's rear door, so a Retry starts with the beam already live.
     void seedFinaleReplay();

@@ -102,11 +102,11 @@ For parity replay, add `CONFIG_FOD_REPLAY_JOURNAL=y` with the desired scene in a
 
 No Guition appeared in the local USB registry or serial inventory. No hardware result is recorded. The remaining checks are panel orientation and optical frame ownership, all four touch corners, USB report and reconnect behavior, audio and SD recovery under scanout, six scene and resolution performance captures, optical latency, and full packaged first-to-ten play on both passing modes. Record measured PSRAM and internal memory at boot, pack load, peak action and after ten completed rematches. Record the time from pack load to `renderer-ready`, which includes the daylight bake. The default mode is 400×225 pending these measurements.
 
-The campaign adds its own checks. Choose **Campaign** from the title screen and confirm the board restarts to the loading card, logs `arena=MISSION 1: BRIAR HOUSE build_us=…` and `arena-built` memory, and returns to the title screen with Campaign selected. Play through Briar House, Timberline and The Array at both render sizes. Confirm that `L1` works as Signal: waving Ben over, sending the family to Dustoff, marking ground at Timberline and steering the beam. Record frame timings during:
+The campaign adds its own checks. From Ship Box, choose **Campaign → Solo Campaign**. Time the selection through the first controllable frame. Confirm that the board shows the loading card, logs `arena=MISSION 1: BRIAR HOUSE build_us=…` and `arena-built` memory, and starts the mission once the controller is ready. Repeat with the controller disconnected during the restart. Play through Briar House, Timberline and The Array at both render sizes. Confirm that `L1` works as Signal: waving Ben over, sending the family to Dustoff, marking ground at Timberline and steering the beam. Record frame timings during:
 
 - the breakout
 - the North Town Clearing hold, with Dustoff on the ground
 - a Timberline drop
 - the rear-door finale
 
-Check the **Next Mission** transition after each of the first two missions and a field checkpoint retry after leaving Briar House. Then pick a Ship Box bot match from the campaign title screen to confirm the restart back.
+After finishing Briar House, power-cycle at the debrief and choose **Campaign → Continue**. Check Nora’s outcome and elapsed campaign time at Timberline. Repeat for The Array and verify an in-session checkpoint retry. From the title, start a Briar House free-for-all through **Change Match**, finish it, return to **Main Menu**, and launch Campaign. Check the same path using touch and the D-pad.

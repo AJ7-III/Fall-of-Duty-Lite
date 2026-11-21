@@ -3,6 +3,9 @@
 #include "briar_house.hpp"
 #include "render.hpp"
 #include "trace.hpp"
+#ifdef FOD_DESKTOP
+#include "campaign_store.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -191,6 +194,9 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
     App app(assets);
     auto& menu = app.settings();
     menu.compact = width == 320;
+#ifdef FOD_DESKTOP
+    if (out.image && !trace) menu.controls = MenuControls::Keyboard;
+#endif
     const int height = menu.height();
     const bool renderFrames = out.benchmark || out.image;
     std::optional<Renderer> render;
@@ -285,10 +291,9 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
 std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int width, fod::RenderLook look,
                                            std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry,
                                            fod::MissionChapter chapter);
-int runLocalDuel(const fod::Assets& assets, fod::RenderLook look, int width, std::optional<float> stickSensitivity);
-std::optional<bool> runLocalCampaign(const fod::Assets& assets, fod::RenderLook look, int width,
-                                    std::optional<float> stickSensitivity, fod::MissionChapter chapter,
-                                    const fod::MenuState& settings);
+std::optional<bool> runLocalSession(const fod::Assets& assets, fod::RenderLook look, int& width,
+                                    std::optional<float> stickSensitivity, std::optional<fod::MissionChapter> chapter,
+                                    fod::MenuState& settings);
 #endif
 
 int main(int argc, char** argv) {
@@ -322,8 +327,7 @@ int main(int argc, char** argv) {
     if (out.inspect) return 0;
 #ifdef FOD_DESKTOP
     fod::optimizeShipBoxWorld(assets);
-    const int splitWidth = out.splitWidth ? out.splitWidth : 640;
-    if (out.localDuel) return runLocalDuel(assets, out.look, splitWidth, out.stickSensitivity);
+    int splitWidth = out.splitWidth ? out.splitWidth : 640;
 #ifdef __APPLE__
     constexpr int soloDefaultWidth = fod::desktopHdWidth;
 #else
@@ -332,23 +336,30 @@ int main(int argc, char** argv) {
     fod::MenuState carry{};
     carry.desktopRenderWidth = out.width ? out.width : soloDefaultWidth;
     carry.selectedArena = out.arena;
+    carry.progress = fod::desktop::readCampaign(fod::desktop::campaignPath());
+    carry.selection = int(out.briarMode == BriarHouseMode::Invasion ? StartItem::Campaign : StartItem::BotMatch);
     bool autoStart = out.chapter != MissionChapter::BriarHouse;
-    bool localCampaign = out.localCampaign;
+    bool localCampaign = out.localCampaign, localDuel = out.localDuel;
     auto chapter = out.chapter;
     for (;;) {
-        if (localCampaign) {
-            const auto backToTitle = runLocalCampaign(assets, out.look, splitWidth, out.stickSensitivity, chapter, carry);
+        if (localCampaign || localDuel) {
+            const auto backToTitle = runLocalSession(assets, out.look, splitWidth, out.stickSensitivity,
+                                                     localCampaign ? std::optional{chapter} : std::nullopt, carry);
             if (!backToTitle) return 1;
             if (!*backToTitle) return 0;
-            localCampaign = autoStart = false;
+            if (carry.screen == MenuScreen::Home)
+                carry.selection = int(localCampaign ? StartItem::Campaign : StartItem::LocalPlayers);
+            carry.pendingLaunch = LaunchAction::None;
+            localCampaign = localDuel = autoStart = false;
             chapter = MissionChapter::BriarHouse;
         }
         const auto launch = runDesktop(assets, carry.desktopRenderWidth, out.look, out.stickSensitivity, autoStart, &carry, chapter);
         if (!launch) return 1;
         const auto action = *launch;
         if (action == fod::LaunchAction::None) return 0;
-        localCampaign = action == fod::LaunchAction::LocalCampaign;
-        const bool campaign = localCampaign || action == fod::LaunchAction::Campaign;
+        localCampaign = action == LaunchAction::LocalCampaign || action == LaunchAction::ContinueCoOp;
+        localDuel = action == LaunchAction::LocalDuel;
+        const bool campaign = localCampaign || action == LaunchAction::Campaign || action == LaunchAction::ContinueCampaign;
         const auto arena = campaign ? fod::Arena::BriarHouse : carry.selectedArena;
         if (assets.arena != arena) {
             assets = fod::Assets{};
@@ -363,9 +374,6 @@ int main(int argc, char** argv) {
             fod::optimizeShipBoxWorld(assets);
         }
         prepareCampaignVoices(assets, out.pack);
-        if (action == fod::LaunchAction::LocalDuel) {
-            return runLocalDuel(assets, out.look, splitWidth, out.stickSensitivity);
-        }
         autoStart = true;
         chapter = MissionChapter::BriarHouse;
     }

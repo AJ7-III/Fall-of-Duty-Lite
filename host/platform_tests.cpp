@@ -1,4 +1,7 @@
 #include "app.hpp"
+#ifdef FOD_LOCAL_DUEL
+#include "campaign_store.hpp"
+#endif
 #include "assets.hpp"
 #include "briar_house.hpp"
 #include "briar_mission_data.hpp"
@@ -127,7 +130,7 @@ void checkComposedMenu() {
     check(!(idle == MenuFrameKey(1, Match::Start, menu, Speaker::None)), "Changing resolution should redraw.");
     const MenuFrameKey results(2, Match::Results, menu, Speaker::None);
     check(!(results == MenuFrameKey(2, Match::Results, menu, Speaker::Hanz)), "Visible speech should redraw.");
-    menu.selection = RivalRow;
+    menu.selection = int(StartItem::Settings);
     check(!(results == MenuFrameKey(2, Match::Results, menu, Speaker::None)), "Moving menu selection should redraw.");
 }
 
@@ -135,8 +138,8 @@ void checkComposedMenu() {
 void checkDesktopResolution(const Assets& assets) {
     App app(assets);
     auto& menu = app.settings();
-    menu.setup = true;
-    menu.selection = RenderRow;
+    menu.screen = MenuScreen::Settings;
+    menu.selection = menuOptions(menu, Match::Start).index(MenuAction::Render);
     menu.desktopRenderWidth = desktopHdWidth;
     const MenuFrameKey hd(1, Match::Start, menu, Speaker::None);
 
@@ -169,13 +172,20 @@ void checkDesktopResolution(const Assets& assets) {
     campaign.settings().desktopRenderWidth = 400;
     campaign.tick(Input{0, 0, 0, 0, Up, Up});
     campaign.tick(Input{0, 0, 0, 0, Confirm, Confirm});
-    check(campaign.settings().campaignMenu && campaign.settings().selection == CampaignSoloRow,
+    check(campaign.settings().screen == MenuScreen::Campaign && campaign.settings().selection == 0,
           "The desktop campaign card must open the solo and co-op choices.");
     campaign.tick(Input{0, 0, 0, 0, Back, Back});
-    check(!campaign.settings().campaignMenu && campaign.settings().selection == int(StartItem::Campaign),
+    check(campaign.settings().screen == MenuScreen::Home && campaign.settings().selection == int(StartItem::Campaign),
           "Back from the campaign choices must return to the campaign card.");
     campaign.tick(Input{0, 0, 0, 0, Confirm, Confirm});
     campaign.tick(Input{0, 0, 0, 0, Down, Down});
+    campaign.tick(Input{0, 0, 0, 0, Confirm, Confirm});
+    check(campaign.settings().screen == MenuScreen::CoOpSetup && campaign.settings().coOpFromCampaign,
+          "Campaign must link to the shared co-op setup.");
+    campaign.tick(Input{0, 0, 0, 0, Back, Back});
+    check(campaign.settings().screen == MenuScreen::Campaign && campaign.settings().selection == 1,
+          "Back from co-op setup must restore the Campaign choice.");
+    campaign.tick(Input{0, 0, 0, 0, Confirm, Confirm});
     campaign.tick(Input{0, 0, 0, 0, Confirm, Confirm});
     check(campaign.settings().pendingLaunch == LaunchAction::LocalCampaign,
           "Confirming 2 Player Co-op must launch the split-screen campaign.");
@@ -186,14 +196,14 @@ void checkTouchAndReconnect(const Assets& assets) {
     App app(assets);
     Input input;
     input.touchX = startX + 16;
-    input.touchY = startCard(StartItem::MatchSetup).y + 16;
+    input.touchY = startCard(StartItem::Settings).y + 16;
     app.tick(input);
-    check(app.settings().setup && app.state().match == Match::Start, "Touch Match Setup should open settings.");
+    check(app.settings().screen == MenuScreen::Settings && app.state().match == Match::Start, "Touch Settings should open settings.");
     input.touchX = 620;
-    input.touchY = menuY + RenderRow * menuRowHeight + 2;
+    input.touchY = menuY + menuOptions(app.settings(), Match::Start).index(MenuAction::Render) * menuRowHeight + 2;
     app.tick(input);
     check(app.settings().compact, "Touch should select the compact display setting.");
-    input.touchY = menuY + CallsignRow * menuRowHeight + 2;
+    input.touchY = menuY + menuOptions(app.settings(), Match::Start).index(MenuAction::Callsign) * menuRowHeight + 2;
     app.tick(input);
     check(app.settings().editing, "Touch should open the callsign editor.");
     input.touchX = keyboardX + 2;
@@ -203,9 +213,9 @@ void checkTouchAndReconnect(const Assets& assets) {
     input.touchY = 385;
     app.tick(input);
     check(!app.settings().editing, "Touch Done should save the callsign.");
-    input.touchY = menuY + 4;
+    input.touchY = menuY + menuOptions(app.settings(), Match::Start).index(MenuAction::Back) * menuRowHeight + 4;
     app.tick(input);
-    check(!app.settings().setup && app.state().match == Match::Start, "Back to Start should close settings.");
+    check(app.settings().screen == MenuScreen::Home && app.state().match == Match::Start, "Back should close Settings.");
     app.settings().voice = false;
     input.touchX = startX + 16;
     input.touchY = startCard(StartItem::BotMatch).y + 16;
@@ -239,75 +249,100 @@ void checkTouchAndReconnect(const Assets& assets) {
     check(app.state().clip == 29, "A new trigger press should fire after release.");
 }
 
+void press(App& app, Button button) {
+    app.tick(Input{0, 0, 0, 0, button, button});
+}
+
+void touchAction(App& app, MenuAction action) {
+    const auto rows = menuOptions(app.settings(), app.state().match);
+    const int row = rows.index(action);
+    check(rows.actions[size_t(row)] == action, "The action must be visible to touch.");
+    Input input;
+    input.touchX = menuX + menuWidth - 8;
+    input.touchY = menuY + row * menuRowHeight + 4;
+    app.tick(input);
+}
+
 void checkFreeForAllMenu(const Assets& assets) {
     App app(assets);
-    Input input;
-    input.touchX = startX + 16;
-    input.touchY = startCard(StartItem::MatchSetup).y + 16;
-    app.tick(input);
-    input.touchX = menuX + menuWidth - 8;
-    input.touchY = menuY + RivalRow * menuRowHeight + 2;
-    app.tick(input);
-    check(app.settings().opponent == Opponent::FreeForAll, "Touch should select Free-for-all.");
-    app.tick(input);
-    check(app.settings().opponent == Opponent::IPwndUrMom, "Opponent selection should wrap after Free-for-all.");
-    input.touchX = menuX + 8;
-    app.tick(input);
-    check(app.settings().opponent == Opponent::FreeForAll, "Opponent selection should wrap backwards.");
-    input = {};
-    input.pressed = Back;
-    app.tick(input);
-    input.pressed = Confirm;
-    app.tick(input);
-    check(app.state().match == Match::Playing && app.state().freeForAll, "Start should launch Free-for-all.");
-    input.pressed = Pause;
-    app.tick(input);
-    input = {};
-    input.touchX = menuX + menuWidth - 8;
-    input.touchY = menuY + RivalRow * menuRowHeight + 2;
-    app.tick(input);
-    check(app.state().freeForAll && app.settings().opponent == Opponent::FreeForAll,
-          "Pause should preserve the active lineup.");
-    input.touchY = menuY + ExitRow * menuRowHeight + 2;
-    app.tick(input);
-    check(app.state().match == Match::Results, "End Match should show the Free-for-all results.");
-    input.touchY = menuY + RivalRow * menuRowHeight + 2;
-    app.tick(input);
-    input.touchY = menuY + 2;
-    app.tick(input);
-    check(app.state().match == Match::Playing && !app.state().freeForAll && !app.state().alternateRival,
-          "The results picker should allow a rematch in a different mode.");
-
-    // Verify Main Menu hub options: Campaign, Bot Match, Multiplayer LAN lobby, Arena toggle, and focus-loss preservation.
-    App hub(assets);
-    check(hub.settings().selection == int(StartItem::BotMatch), "Ship Box main menu must start focused on Bot Match.");
-    Input lostFocus{};
-    lostFocus.disconnected = true;
-    hub.tick(lostFocus);
-    hub.tick({});
-    check(hub.settings().selection == int(StartItem::BotMatch),
-          "Focus loss on the main menu must not reset the highlighted option.");
-    hub.tick(Input{0, 0, 0, 0, Up, Up});
-    check(hub.settings().selection == int(StartItem::Campaign), "Up from Bot Match must select Campaign.");
-    hub.tick(Input{0, 0, 0, 0, Confirm, Confirm});
-    check(hub.settings().pendingLaunch == LaunchAction::Campaign, "Selecting Campaign on Ship Box must request Campaign launch.");
-    hub.settings().pendingLaunch = LaunchAction::None;
-    hub.tick(Input{0, 0, 0, 0, Down, Down});
-    hub.tick(Input{0, 0, 0, 0, Down, Down});
-    check(hub.settings().selection == int(StartItem::MultiplayerLan), "Down twice from Campaign must select Multiplayer LAN.");
-    hub.tick(Input{0, 0, 0, 0, Confirm, Confirm});
-    check(hub.settings().lanMenu && hub.settings().selection == LanStartRow, "Multiplayer LAN must open the LAN lobby.");
-    hub.tick(Input{0, 0, 0, 0, Down, Down});
-    hub.tick(Input{0, 0, 0, 0, Right, Right});
-    check(hub.settings().selectedArena == Arena::BriarHouse, "Right on LAN Arena row must toggle to Briar House.");
-    hub.tick(Input{0, 0, 0, 0, Up, Up});
-    hub.tick(Input{0, 0, 0, 0, Confirm, Confirm});
+    Input lost;
+    lost.disconnected = true;
+    app.tick(lost);
+    check(app.settings().selection == int(StartItem::BotMatch), "Focus loss must preserve the title selection.");
+    press(app, Down);
+    press(app, Confirm);
+    touchAction(app, MenuAction::Format);
+    check(app.settings().opponent == Opponent::FreeForAll, "Change Match must offer an explicit Free-for-all mode.");
+    touchAction(app, MenuAction::Arena);
+    check(app.settings().selectedArena == Arena::BriarHouse, "Touch must select the other arena.");
+    press(app, Back);
+    check(app.settings().selection == int(StartItem::ChangeMatch), "Back must focus the originating card.");
+    press(app, Up);
+    press(app, Confirm);
+    check(app.settings().pendingLaunch == LaunchAction::BotMatch, "Starting on another arena must request a handoff.");
 #ifdef FOD_LOCAL_DUEL
-    check(hub.settings().pendingLaunch == LaunchAction::LocalDuel, "Start 2P Local Duel must request LocalDuel launch.");
-#else
-    check(hub.settings().pendingLaunch == LaunchAction::None && hub.settings().lanMenu,
-          "Headless/handheld builds must not emit a desktop-only LocalDuel launch request.");
+    App lobby(assets);
+    lobby.settings().selection = int(StartItem::LocalPlayers);
+    press(lobby, Confirm);
+    touchAction(lobby, MenuAction::CoOp);
+    check(lobby.settings().screen == MenuScreen::CoOpSetup && !lobby.settings().coOpFromCampaign,
+          "Local 2 Player must reach the same co-op setup.");
+    press(lobby, Back);
+    check(lobby.settings().screen == MenuScreen::LocalPlayers && lobby.settings().selection == 0,
+          "Back must return to the local party mode chooser.");
+    touchAction(lobby, MenuAction::Versus);
+    touchAction(lobby, MenuAction::Arena);
+    touchAction(lobby, MenuAction::Play);
+    check(lobby.settings().pendingLaunch == LaunchAction::LocalDuel && lobby.settings().selectedArena == Arena::BriarHouse,
+          "Local Duel must carry its chosen arena to the join screen.");
 #endif
+}
+
+void checkLoadedBotJourney(const Assets& assets) {
+    App app(assets);
+    app.settings().opponent = Opponent::FreeForAll;
+    app.queueLoadedLaunch(LaunchAction::BotMatch);
+    Input input;
+    input.disconnected = true;
+    app.tick(input);
+    check(app.state().match == Match::Start, "A queued game must wait for its controller.");
+    input.disconnected = false;
+    input.held = Fire;
+    app.tick(input);
+    app.tick(input);
+    check(app.state().match == Match::Playing && app.state().freeForAll && app.state().clip == 30,
+          "The chosen game must start once, with held fire suppressed.");
+    press(app, Pause);
+    touchAction(app, MenuAction::Settings);
+    touchAction(app, MenuAction::Volume);
+    press(app, Back);
+    check(app.state().match == Match::Paused && app.settings().selection == 1,
+          "Back from Settings must keep the game paused and restore focus.");
+    press(app, Pause);
+    Fixture point{};
+    point.player = assets.spawns[0].position;
+    point.rival = assets.spawns[1].position;
+    point.rivalScore = 9;
+    point.killPlayerAtTick = app.state().tick + 1;
+    app.game.setupFixture(point);
+    app.tick({});
+    check(app.state().match == Match::Results && app.state().rivalScore == 10,
+          "A deciding elimination must open free-for-all results.");
+    touchAction(app, MenuAction::ChangeMatch);
+    touchAction(app, MenuAction::Format);
+    touchAction(app, MenuAction::Rival);
+    touchAction(app, MenuAction::Play);
+    check(app.state().match == Match::Playing && !app.state().freeForAll && !app.state().alternateRival,
+          "Change Match must start a duel with the displayed rival from results.");
+    press(app, Pause);
+    touchAction(app, MenuAction::Exit);
+    touchAction(app, MenuAction::Exit);
+    check(app.state().match == Match::Start && app.settings().selection == int(StartItem::BotMatch),
+          "Main Menu must focus Bot Match after a bot game.");
+    press(app, Up);
+    press(app, Confirm);
+    touchAction(app, MenuAction::Solo);
+    check(app.settings().pendingLaunch == LaunchAction::Campaign, "Campaign must launch from the same session.");
 }
 
 void checkFreeForAllRender(const Assets& assets) {
@@ -1723,7 +1758,8 @@ void playBriarHouse(const Assets& assets, const game_detail::World& world, game_
     App app(assets, 23);
     auto& mission = app.game;
     const auto step = [&](const Input& input) {
-        stepCampaign(mission, input, world, nav);
+        if (coOp) stepCampaign(mission, input, world, nav);
+        else app.tick(input);
         const auto& s = mission.state();
         if (!s.apacheActive && !s.mission->evacVisible) return;
         for (size_t i = 0; i < fleetHulls.size(); ++i) {
@@ -1742,7 +1778,10 @@ void playBriarHouse(const Assets& assets, const game_detail::World& world, game_
     else
 #endif
     if (retries) mission.startMission(42, 3, false);
-    else app.tick(Input{0, 0, 0, 0, Confirm, Confirm});
+    else {
+        press(app, Confirm);
+        touchAction(app, MenuAction::Solo);
+    }
     for (int i = 0; i < 65; ++i) step({});
     check(mission.state().mission->titleCard > 0.f && mission.state().mission->phase == MissionPhase::Intro,
           "Mission 1 must open on the title card.");
@@ -2016,8 +2055,35 @@ void playBriarHouse(const Assets& assets, const game_detail::World& world, game_
           "Reinforcements must keep landing during the timed hold.");
     if (!retries) {
         float previousTime = result.missionSeconds;
+        if (coOp) app.recordCampaignResult();
+        const auto boundary = app.settings().progress;
+        check(boundary.available() && boundary.next == MissionChapter::Timberline && boundary.coOp == coOp &&
+              boundary.seconds == previousTime && boundary.noraStayed && boundary.boarded == 2,
+              "A completed chapter must produce a restorable boundary for this party.");
+        App relaunch(assets);
+#ifdef FOD_LOCAL_DUEL
+        const auto path = std::filesystem::temp_directory_path() / ("fod-campaign-test-" + std::to_string(std::random_device{}()));
+        check(desktop::storeCampaign(path, boundary), "Completing a chapter must write a save.");
+        relaunch.settings().progress = desktop::readCampaign(path);
+        check(desktop::storeCampaign(path, {}) && !desktop::readCampaign(path).available(), "Clearing a save must remove Continue.");
+#else
+        relaunch.settings().progress = boundary;
+#endif
+        press(relaunch, Confirm);
+        touchAction(relaunch, MenuAction::Continue);
+        if (coOp) {
+            check(relaunch.settings().pendingLaunch == LaunchAction::ContinueCoOp, "Continue must restore the two-player party.");
+            relaunch.game.resumeCampaign(88, boundary);
+        }
+        const auto& resumed = relaunch.state();
+        check(resumed.match == Match::Playing && resumed.mission->chapter == MissionChapter::Timberline &&
+              resumed.mission->earlierMissionSeconds == previousTime && resumed.mission->actors[1].active &&
+              resumed.mission->civiliansSaved == result.civiliansSaved && resumed.difficulty == boundary.difficulty,
+              "Continue after relaunch must reproduce the first chapter's outcomes and time.");
         playTimberlineThroughMenu(app, assets, previousTime);
         playArrayThroughMenu(app, assets, world, nav, previousTime);
+        app.recordCampaignResult();
+        check(!app.settings().progress.available(), "A completed campaign must clear its Continue entry.");
         check(!mission.state().mission->nextMissionReady() && mission.state().mission->chapter == MissionChapter::Array,
               "The campaign must finish after The Array.");
     }
@@ -2025,6 +2091,29 @@ void playBriarHouse(const Assets& assets, const game_detail::World& world, game_
     mission.quit();
     check(mission.state().match == Match::Start && !mission.state().mission,
           "Returning to Main Menu from mission results must clear stale mission state.");
+}
+
+void checkSavedCampaignBranches(const Assets& assets) {
+    for (const auto chapter : {MissionChapter::Timberline, MissionChapter::Array}) {
+        for (const bool nora : {false, true}) {
+            CampaignProgress save;
+            save.next = chapter;
+            save.seconds = 286.75f;
+            save.difficulty = 8;
+            save.boarded = 1;
+            save.saved = 1 + nora;
+            save.noraStayed = nora;
+            App app(assets);
+            app.settings().progress = save;
+            press(app, Confirm);
+            touchAction(app, MenuAction::Continue);
+            const auto& s = app.state();
+            check(s.match == Match::Playing && s.mission->chapter == chapter &&
+                  s.mission->earlierMissionSeconds == save.seconds && s.difficulty == 8 &&
+                  s.mission->civiliansBoarded == 1 && s.mission->civiliansSaved == save.saved &&
+                  s.mission->actors[1].active == nora, "Both chapter saves must restore the recorded family outcome.");
+        }
+    }
 }
 
 void checkBriarHouseMission(Assets& assets) {
@@ -2154,11 +2243,11 @@ void checkBriarHouseMission(Assets& assets) {
 
     App app(assets, 19);
     check(app.settings().campaign, "App must auto-enable campaign mode for Invasion Briar House.");
-    // Press Confirm on Start Screen to launch Mission 1.
-    app.tick(Input{0, 0, 0, 0, Confirm, Confirm});
+    press(app, Confirm);
+    touchAction(app, MenuAction::Solo);
     check(app.state().match == Match::Playing && app.state().mission &&
               app.state().mission->active && app.state().mission->campaign,
-          "Confirm on Invasion Start Screen must launch the full campaign at Briar House.");
+          "Solo Campaign must launch the full campaign at Briar House.");
     check(app.state().mission->phase == MissionPhase::Intro, "Mission 1 must begin with the concussed wake-up intro.");
     check(app.state().eyeHeight < 0.6f && app.state().mission->concussion > 0.9f,
           "Concussed intro must start prone with full disorientation.");
@@ -3628,8 +3717,10 @@ int main(int argc, char** argv) {
     const auto stockSky = assets.sky;
     const auto stockAudio = assets.audio.size();
     checkBriarHouse(assets);
+    checkLoadedBotJourney(assets);
     const auto standardMaterials = assets.materials.size(), standardTextures = assets.textures.size();
     checkBriarHouseMission(assets);
+    checkSavedCampaignBranches(assets);
     checkMissionRules(assets);
     const auto invasionMaterials = assets.materials.size(), invasionTextures = assets.textures.size();
     check(assets.sky == stockSky, "Building the invasion must leave the source sky available for daylight rendering.");

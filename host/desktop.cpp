@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "desktop_controls.hpp"
+#include "campaign_store.hpp"
 #include "render.hpp"
 
 #include <SDL.h>
@@ -107,8 +108,15 @@ std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int initi
                                            fod::MissionChapter chapter) {
     using namespace fod;
     App app(assets, std::random_device{}());
+    app.setProgressWriter(fod::desktop::writeCampaign);
     if (carry) {
         auto& dst = app.settings();
+        dst.screen = autoStart ? MenuScreen::Home : carry->screen;
+        dst.coOpFromCampaign = carry->coOpFromCampaign;
+        dst.selection = carry->selection;
+        dst.progress = carry->progress;
+        dst.saveFailed = carry->saveFailed;
+        dst.lastRival = carry->lastRival;
         dst.callsign = carry->callsign;
         dst.difficulty = carry->difficulty;
         dst.volume = carry->volume;
@@ -124,7 +132,10 @@ std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int initi
     }
     if (autoStart) {
         const bool isCampaign = assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion;
-        app.startImmediate(isCampaign, chapter);
+        if (carry && carry->pendingLaunch != LaunchAction::None) {
+            app.queueLoadedLaunch(carry->pendingLaunch);
+            app.settings().selection = int(isCampaign ? StartItem::Campaign : StartItem::BotMatch);
+        } else app.startImmediate(isCampaign, chapter);
     }
     constexpr int maxWorldPixels = desktopHdWidth * (desktopHdWidth * 9 / 16);
     constexpr int maxCanvasPixels = desktopHdWidth * (desktopHdWidth * 3 / 5);

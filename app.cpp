@@ -23,7 +23,67 @@ void toggleArena(Arena& arena) {
     arena = arena == Arena::ShipBox ? Arena::BriarHouse : Arena::ShipBox;
 }
 
+#ifdef FOD_LOCAL_DUEL
+template <size_t N>
+int cycleWidth(const std::array<int, N>& choices, int width, int direction) {
+    const auto current = std::find(choices.begin(), choices.end(), width);
+    const int index = int(current - choices.begin());
+    return choices[size_t((index + int(N) + direction) % int(N))];
+}
+#endif
+
 } // namespace
+
+MenuOptions menuOptions(const MenuState& menu, Match match) {
+    using A = MenuAction;
+    MenuOptions rows;
+    switch (menu.screen) {
+    case MenuScreen::Campaign:
+        if (menu.progress.available()) rows.add(A::Continue);
+        rows.add(A::Solo);
+#ifdef FOD_LOCAL_DUEL
+        rows.add(A::CoOp);
+#endif
+        rows.add(A::Difficulty);
+        break;
+    case MenuScreen::LocalPlayers:
+        rows.add(A::CoOp);
+        rows.add(A::Versus);
+        break;
+    case MenuScreen::CoOpSetup:
+        if (menu.progress.available() && menu.progress.coOp) rows.add(A::Continue);
+        rows.add(A::StartCoOp);
+        rows.add(A::Difficulty);
+        break;
+    case MenuScreen::VersusSetup:
+        rows.add(A::Play);
+        rows.add(A::Arena);
+        break;
+    case MenuScreen::BotSetup:
+        rows.add(A::Play);
+        rows.add(A::Arena);
+        rows.add(A::Format);
+        if (menu.opponent != Opponent::FreeForAll) rows.add(A::Rival);
+        rows.add(A::Difficulty);
+        break;
+    case MenuScreen::Settings:
+        rows.add(A::Voice);
+        rows.add(A::Volume);
+        rows.add(A::Render);
+        rows.add(A::Callsign);
+        break;
+    case MenuScreen::Home:
+        rows.add(A::Play);
+        if (match == Match::Paused) {
+            rows.add(A::Settings);
+            rows.add(A::Difficulty);
+        } else if (!menu.campaign) rows.add(A::ChangeMatch);
+        rows.add(A::Exit);
+        return rows;
+    }
+    rows.add(A::Back);
+    return rows;
+}
 
 App::App(const Assets& assets, uint32_t voiceSeed)
     : game(assets, voiceSeed), audio(assets, voiceSeed ? voiceSeed ^ 0x29ea2831u : 0u),
@@ -35,10 +95,10 @@ App::App(const Assets& assets, uint32_t voiceSeed)
 
 void App::startImmediate(bool asCampaign, MissionChapter chapter) {
     menu_.campaign = asCampaign;
-    menu_.setup = false;
-    menu_.lanMenu = false;
+    menu_.screen = MenuScreen::Home;
+    chapterReplay_ = asCampaign && chapter != MissionChapter::BriarHouse;
     menu_.pendingLaunch = LaunchAction::None;
-    menu_.selection = PlayRow;
+    menu_.selection = 0;
     audio.setVolume(menu_.volume);
     audio.pauseSpeech(false);
     if (asCampaign && chapter != MissionChapter::BriarHouse) {
@@ -55,7 +115,10 @@ void App::beginMatch(bool retryCheckpoint) {
     const auto seed = seed_++;
     if (menu_.campaign) {
         if (retryCheckpoint) game.startMission(seed, menu_.difficulty, true);
-        else if (!game.advanceCampaign(seed, menu_.difficulty)) game.startCampaign(seed, menu_.difficulty);
+        else if (!game.advanceCampaign(seed, menu_.difficulty)) {
+            chapterReplay_ = false;
+            game.startCampaign(seed, menu_.difficulty);
+        }
     } else {
         game.start(seed, menu_.difficulty, menu_.opponent);
     }
@@ -136,47 +199,53 @@ void App::routeAudio() {
     }
 }
 
-void App::change(int direction) {
-    switch (menu_.selection) {
-    case DifficultyRow:
+void App::change(MenuAction action, int direction) {
+    switch (action) {
+    case MenuAction::Difficulty:
         menu_.difficulty = std::clamp(menu_.difficulty + direction, 1, 10);
         game.setDifficulty(menu_.difficulty);
         break;
-    case RivalRow:
-        if (!(menu_.campaign && state().match != Match::Start) && state().match != Match::Paused) {
-            constexpr int count = int(Opponent::FreeForAll) + 1;
-            menu_.opponent = Opponent((int(menu_.opponent) + count + direction) % count);
+    case MenuAction::Arena: toggleArena(menu_.selectedArena); break;
+    case MenuAction::Format:
+        if (menu_.opponent == Opponent::FreeForAll) menu_.opponent = menu_.lastRival;
+        else {
+            menu_.lastRival = menu_.opponent;
+            menu_.opponent = Opponent::FreeForAll;
         }
         break;
-    case VoiceRow:
+    case MenuAction::Rival:
+        menu_.opponent = menu_.opponent == Opponent::Hanz ? Opponent::IPwndUrMom : Opponent::Hanz;
+        break;
+    case MenuAction::Voice:
         menu_.voice = !menu_.voice;
         if (!menu_.voice) audio.stopSpeech();
         break;
-    case VolumeRow:
+    case MenuAction::Volume:
         menu_.volume = std::clamp(menu_.volume + 10 * direction, 0, 100);
         audio.setVolume(menu_.volume);
         break;
-    case RenderRow:
+    case MenuAction::Render:
 #ifdef FOD_LOCAL_DUEL
+        if (menu_.splitRenderWidth) {
+            menu_.splitRenderWidth = cycleWidth(splitRenderWidths, menu_.splitRenderWidth, direction);
+            break;
+        }
         if (menu_.desktopRenderWidth) {
-            constexpr int count = int(desktopRenderWidths.size());
-            const auto current = std::find(desktopRenderWidths.begin(), desktopRenderWidths.end(), menu_.desktopRenderWidth);
-            const int index = int(current - desktopRenderWidths.begin());
-            menu_.desktopRenderWidth = desktopRenderWidths[(index + count + direction) % count];
+            menu_.desktopRenderWidth = cycleWidth(desktopRenderWidths, menu_.desktopRenderWidth, direction);
             break;
         }
 #endif
         menu_.compact = !menu_.compact;
         break;
-    case CallsignRow: menu_.editing = true; break;
+    case MenuAction::Callsign: menu_.editing = true; break;
     default: break;
     }
 }
 
 void App::startOrResume(const Input& input) {
     if (!connected_) return;
-    menu_.selection = PlayRow;
-    menu_.setup = false;
+    menu_.selection = 0;
+    menu_.screen = MenuScreen::Home;
     audio.setVolume(menu_.volume);
     audio.pauseSpeech(false);
     if (state().match == Match::Paused) game.resume(input.down(Fire));
@@ -190,106 +259,105 @@ void App::startOrResume(const Input& input) {
     blockedActions_ = input.held & actions;
 }
 
-void App::returnToStartMenu() {
-    menu_.setup = false;
-    menu_.selection = int(menu_.campaign ? StartItem::Campaign : StartItem::BotMatch);
+void App::returnToStartMenu(StartItem item) {
+    menu_.screen = MenuScreen::Home;
+    menu_.selection = int(item);
 }
 
-void App::selectCampaign(const Input& input) {
-    menu_.campaign = true;
-    if (loadedArena_ == Arena::BriarHouse && loadedBriarMode_ == BriarHouseMode::Invasion) startOrResume(input);
-    else menu_.pendingLaunch = LaunchAction::Campaign;
+void App::launch(LaunchAction action, const Input& input) {
+#ifdef FOD_LOCAL_DUEL
+    if (!connected_) return;
+#endif
+    if (action == LaunchAction::LocalDuel || action == LaunchAction::LocalCampaign || action == LaunchAction::ContinueCoOp) {
+        menu_.pendingLaunch = action;
+        return;
+    }
+    menu_.campaign = action != LaunchAction::BotMatch;
+    const bool ready = menu_.campaign
+        ? loadedArena_ == Arena::BriarHouse && loadedBriarMode_ == BriarHouseMode::Invasion
+        : loadedArena_ == menu_.selectedArena && (loadedArena_ == Arena::ShipBox || loadedBriarMode_ == BriarHouseMode::Standard);
+    if (!ready) {
+        menu_.pendingLaunch = action;
+        return;
+    }
+    if (!connected_) {
+        queueLoadedLaunch(action);
+        return;
+    }
+    chapterReplay_ = false;
+    if (action == LaunchAction::ContinueCampaign && menu_.progress.available()) {
+        menu_.difficulty = menu_.progress.difficulty;
+        menu_.screen = MenuScreen::Home;
+        menu_.selection = 0;
+        audio.setVolume(menu_.volume);
+        audio.pauseSpeech(false);
+        audio.stopSpeech();
+        game.resumeCampaign(seed_++, menu_.progress);
+        routeAudio();
+        blockedActions_ = input.held;
+    } else startOrResume(input);
 }
 
 void App::startMenuInput(const Input& input) {
     moveSelection(menu_.selection, input, int(startCards.size()));
-    const auto selected = StartItem(menu_.selection);
-    if ((input.edge(Left) || input.edge(Right)) &&
-        (selected == StartItem::BotMatch || selected == StartItem::MultiplayerLan)) {
-        toggleArena(menu_.selectedArena);
-    }
-    int touch = -1;
+    bool touched = false;
     if (input.touchX >= startX && input.touchX < startX + startWidth) {
         for (size_t i = 0; i < startCards.size(); ++i) {
             const auto& card = startCards[i];
-            if (input.touchY >= card.y && input.touchY < card.y + card.height) {
-                touch = int(i);
-                break;
-            }
-        }
-    }
-    if (touch >= 0) menu_.selection = touch;
-    if (touch < 0 && !input.edge(Confirm)) return;
-
-    switch (StartItem(menu_.selection)) {
-    case StartItem::Campaign:
-#ifdef FOD_LOCAL_DUEL
-        if (menu_.desktopRenderWidth) {
-            menu_.campaignMenu = true;
-            menu_.selection = CampaignSoloRow;
+            if (input.touchY < card.y || input.touchY >= card.y + card.height) continue;
+            menu_.selection = int(i);
+            touched = true;
             break;
         }
-#endif
-        selectCampaign(input);
-        break;
-    case StartItem::BotMatch:
-        menu_.campaign = false;
-        if (loadedArena_ == menu_.selectedArena &&
-            (loadedArena_ == Arena::ShipBox || loadedBriarMode_ == BriarHouseMode::Standard)) startOrResume(input);
-        else menu_.pendingLaunch = LaunchAction::BotMatch;
-        break;
-    case StartItem::MultiplayerLan:
-        menu_.lanMenu = true;
-        menu_.selection = LanStartRow;
-        break;
-    case StartItem::MatchSetup:
-        menu_.setup = true;
-        menu_.selection = DifficultyRow;
-        break;
-    case StartItem::Count:
-        break;
     }
-}
-
+    if (!touched && !input.edge(Confirm)) return;
+    switch (StartItem(menu_.selection)) {
+    case StartItem::Campaign:
+        menu_.screen = MenuScreen::Campaign;
+        break;
+    case StartItem::BotMatch: launch(LaunchAction::BotMatch, input); return;
+    case StartItem::ChangeMatch: menu_.screen = MenuScreen::BotSetup; break;
 #ifdef FOD_LOCAL_DUEL
-void App::campaignMenuInput(const Input& input) {
-    moveSelection(menu_.selection, input, CampaignRows);
-    const int touch = touchMenuRow(input, CampaignRows);
-    if (touch >= 0) menu_.selection = touch;
-    const bool back = input.edge(Back) || input.edge(Pause);
-    if (!back && touch < 0 && !input.edge(Confirm)) return;
-    menu_.campaignMenu = false;
-    if (back || menu_.selection == CampaignBackRow) menu_.selection = int(StartItem::Campaign);
-    else if (menu_.selection == CampaignCoOpRow) menu_.pendingLaunch = LaunchAction::LocalCampaign;
-    else selectCampaign(input);
-}
+    case StartItem::LocalPlayers: menu_.screen = MenuScreen::LocalPlayers; break;
 #endif
+    case StartItem::Settings: menu_.screen = MenuScreen::Settings; break;
+    case StartItem::Count: return;
+    }
+    menu_.selection = 0;
+}
 
-void App::lanMenuInput(const Input& input) {
-    const auto close = [&] {
-        menu_.lanMenu = false;
-        menu_.selection = int(StartItem::MultiplayerLan);
-    };
-    if (input.edge(Back) || input.edge(Pause)) {
-        close();
+void App::leaveScreen() {
+    const auto previous = menu_.screen;
+    menu_.screen = MenuScreen::Home;
+    if (state().match != Match::Start) {
+        menu_.selection = menuOptions(menu_, state().match).index(
+            previous == MenuScreen::Settings ? MenuAction::Settings : MenuAction::ChangeMatch);
         return;
     }
-    moveSelection(menu_.selection, input, LanRows);
-    if (menu_.selection == LanArenaRow && (input.edge(Left) || input.edge(Right))) toggleArena(menu_.selectedArena);
-    const int touch = touchMenuRow(input, LanRows);
-    if (touch >= 0) menu_.selection = touch;
-    if (touch < 0 && !input.edge(Confirm)) return;
-
-    if (menu_.selection == LanStartRow) {
+    switch (previous) {
+    case MenuScreen::Settings: returnToStartMenu(StartItem::Settings); break;
+    case MenuScreen::BotSetup: returnToStartMenu(StartItem::ChangeMatch); break;
 #ifdef FOD_LOCAL_DUEL
-        menu_.lanMenu = false;
-        menu_.pendingLaunch = LaunchAction::LocalDuel;
+    case MenuScreen::CoOpSetup:
+        menu_.screen = menu_.coOpFromCampaign ? MenuScreen::Campaign : MenuScreen::LocalPlayers;
+        menu_.selection = menuOptions(menu_, Match::Start).index(MenuAction::CoOp);
+        break;
+    case MenuScreen::VersusSetup:
+        menu_.screen = MenuScreen::LocalPlayers;
+        menu_.selection = menuOptions(menu_, Match::Start).index(MenuAction::Versus);
+        break;
+    case MenuScreen::LocalPlayers: returnToStartMenu(StartItem::LocalPlayers); break;
 #endif
-    } else if (menu_.selection == LanArenaRow) {
-        toggleArena(menu_.selectedArena);
-    } else if (menu_.selection == LanBackRow) {
-        close();
+    default: returnToStartMenu(StartItem::Campaign); break;
     }
+}
+
+void App::recordCampaignResult() {
+    const auto& s = state();
+    if (chapterReplay_ || s.match != Match::Results || !s.mission || !s.mission->campaign ||
+        s.mission->phase != MissionPhase::Victory) return;
+    menu_.progress = game.nextCampaignProgress();
+    menu_.saveFailed = writeProgress_ && !writeProgress_(menu_.progress);
 }
 
 void App::callsignInput(const Input& input) {
@@ -329,47 +397,56 @@ void App::callsignInput(const Input& input) {
 }
 
 void App::menuInput(const Input& input) {
-    const bool starting = state().match == Match::Start;
-#ifdef FOD_LOCAL_DUEL
-    if (starting && menu_.campaignMenu) return campaignMenuInput(input);
-#endif
-    if (starting && menu_.lanMenu) return lanMenuInput(input);
-    if (starting && !menu_.setup) return startMenuInput(input);
+    const Match match = state().match;
     if (menu_.editing) return callsignInput(input);
-
-    if (starting && (input.edge(Back) || input.edge(Pause))) {
-        returnToStartMenu();
+    if (match == Match::Start && menu_.screen == MenuScreen::Home) return startMenuInput(input);
+    if (input.edge(Back) || input.edge(Pause)) {
+        if (menu_.screen != MenuScreen::Home) leaveScreen();
+        else if (match == Match::Paused) startOrResume(input);
+        else if (match == Match::Results) exitMatch();
         return;
     }
-    const int rows = starting ? MenuRows - 1 : MenuRows;
-    moveSelection(menu_.selection, input, rows);
-    if (input.edge(Left)) change(-1);
-    if (input.edge(Right)) change(1);
-
-    const int touchedRow = touchMenuRow(input, rows);
-    const bool touch = touchedRow >= 0;
-    if (touch) menu_.selection = touchedRow;
-    const bool resume = state().match == Match::Paused && (input.edge(Pause) || input.edge(Back) ||
-                        ((touch || input.edge(Confirm)) && menu_.selection == PlayRow));
-    const bool confirm = touch || input.edge(Confirm);
-    if (!resume && !confirm) return;
-    if (starting && menu_.selection == PlayRow) {
-        returnToStartMenu();
-    } else if (resume || menu_.selection == PlayRow) {
-        startOrResume(input);
-    } else if (menu_.selection == ExitRow) {
-        game.quit();
-        if (state().match == Match::Start) {
-            audio.stopSpeech();
-            returnToStartMenu();
-        } else {
-            menu_.selection = PlayRow;
-        }
-        audio.pauseSpeech(false);
-        routeAudio();
-        stopAmbientLoops();
-    } else {
-        change(touch && input.touchX < menuX + menuWidth / 2 ? -1 : 1);
+    const auto rows = menuOptions(menu_, match);
+    moveSelection(menu_.selection, input, rows.count);
+    const int touched = touchMenuRow(input, rows.count);
+    if (touched >= 0) menu_.selection = touched;
+    const auto action = rows.actions[size_t(menu_.selection)];
+    if (touched < 0 && !input.edge(Confirm)) {
+        const int direction = int(input.edge(Right)) - int(input.edge(Left));
+        if (direction && action != MenuAction::Callsign) change(action, direction);
+        return;
+    }
+    switch (action) {
+    case MenuAction::Play:
+        if (menu_.screen == MenuScreen::VersusSetup) launch(LaunchAction::LocalDuel, input);
+        else if (menu_.screen == MenuScreen::BotSetup) launch(LaunchAction::BotMatch, input);
+        else startOrResume(input);
+        break;
+    case MenuAction::Solo: launch(LaunchAction::Campaign, input); break;
+    case MenuAction::CoOp:
+        menu_.coOpFromCampaign = menu_.screen == MenuScreen::Campaign;
+        menu_.screen = MenuScreen::CoOpSetup;
+        menu_.selection = 0;
+        break;
+    case MenuAction::Versus:
+        menu_.screen = MenuScreen::VersusSetup;
+        menu_.selection = 0;
+        break;
+    case MenuAction::StartCoOp: launch(LaunchAction::LocalCampaign, input); break;
+    case MenuAction::Continue:
+        launch(menu_.progress.coOp ? LaunchAction::ContinueCoOp : LaunchAction::ContinueCampaign, input);
+        break;
+    case MenuAction::ChangeMatch:
+        menu_.screen = MenuScreen::BotSetup;
+        menu_.selection = 0;
+        break;
+    case MenuAction::Settings:
+        menu_.screen = MenuScreen::Settings;
+        menu_.selection = 0;
+        break;
+    case MenuAction::Back: leaveScreen(); break;
+    case MenuAction::Exit: exitMatch(); break;
+    default: change(action, touched >= 0 && input.touchX < menuX + menuWidth / 2 ? -1 : 1); break;
     }
 }
 
@@ -383,6 +460,17 @@ void App::tick(Input input) {
         if (input.touchX < 0) return;
     } else {
         connected_ = true;
+    }
+    if (menu_.loadedLaunch != LaunchAction::None) {
+        if (input.edge(Back) || input.edge(Pause) || touchMenuRow(input, 1) == 0) {
+            menu_.loadedLaunch = LaunchAction::None;
+        } else if (connected_) {
+            const auto action = menu_.loadedLaunch;
+            menu_.loadedLaunch = LaunchAction::None;
+            launch(action, input);
+            blockedActions_ = input.held;
+        }
+        return;
     }
     if (state().match != Match::Playing) {
         menuInput(input);
@@ -399,16 +487,29 @@ void App::tick(Input input) {
     game.step(input);
     routeAudio();
     if (state().match == Match::Results) {
+        recordCampaignResult();
         stopAmbientLoops();
-        menu_.selection = PlayRow;
+        menu_.selection = 0;
     }
 }
 
 void App::pauseMatch() {
+    if (state().match != Match::Playing) return;
     game.pause();
-    if (state().match == Match::Paused) {
-        audio.pauseSpeech(true);
-        menu_.selection = PlayRow;
+    audio.pauseSpeech(true);
+    menu_.selection = 0;
+    stopAmbientLoops();
+}
+
+void App::exitMatch() {
+    game.quit();
+    audio.pauseSpeech(false);
+    if (state().match == Match::Start) {
+        audio.stopSpeech();
+        returnToStartMenu(menu_.campaign ? StartItem::Campaign : StartItem::BotMatch);
+    } else {
+        menu_.selection = 0;
+        routeAudio();
     }
     stopAmbientLoops();
 }

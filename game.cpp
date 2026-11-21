@@ -809,7 +809,7 @@ struct Game::Impl {
 
     void startMission(uint32_t seed, int level, mission_detail::MissionStart mode,
                       MissionChapter replayChapter = MissionChapter::BriarHouse, bool finale = false, bool noraAlive = true,
-                      [[maybe_unused]] bool coOp = false) {
+                      [[maybe_unused]] bool coOp = false, const CampaignProgress* progress = nullptr) {
 #ifdef FOD_LOCAL_DUEL
         player.slot = playerSlot;
         if (!coOp) guest.reset();
@@ -833,7 +833,8 @@ struct Game::Impl {
                 ((mode == mission_detail::MissionStart::NextChapter && snapshot.mission->chapter == MissionChapter::BriarHouse) ||
                  (mode == mission_detail::MissionStart::Retry && snapshot.mission->chapter == MissionChapter::Timberline)));
         useGeometry(remote ? ArenaScene::Timberline : ArenaScene::Estate);
-        if (finale) mission->seedFinaleReplay();
+        if (progress) mission->restoreBoundary(*progress);
+        else if (finale) mission->seedFinaleReplay();
         else if (replayChapter != MissionChapter::BriarHouse) mission->seedChapterReplay(replayChapter, noraAlive);
         signalLower = 0;
         snapshot = {};
@@ -2163,6 +2164,14 @@ void Game::startMission(uint32_t seed, int difficulty, bool fromCheckpoint) {
 }
 void Game::startCampaign(uint32_t seed, int difficulty) {
     impl_->startMission(seed, difficulty, mission_detail::MissionStart::Campaign);
+}
+CampaignProgress Game::nextCampaignProgress() const {
+    return impl_->mission ? impl_->mission->nextProgress() : CampaignProgress{};
+}
+void Game::resumeCampaign(uint32_t seed, const CampaignProgress& progress) {
+    if (!progress.available()) return;
+    impl_->startMission(seed, progress.difficulty, mission_detail::MissionStart::NextChapter,
+                        progress.next, false, progress.noraStayed, progress.coOp, &progress);
 }
 bool Game::advanceCampaign(uint32_t seed, int difficulty) {
     const auto& snap = state();

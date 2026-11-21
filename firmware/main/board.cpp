@@ -197,6 +197,27 @@ esp_err_t writeSettings(const SavedSettings& settings) {
     return err;
 }
 
+fod::CampaignProgress readCampaign() {
+    fod::CampaignProgress progress;
+    nvs_handle_t handle;
+    if (!nvsReady || nvs_open("fod", NVS_READONLY, &handle) != ESP_OK) return {};
+    size_t size = sizeof(progress);
+    const auto err = nvs_get_blob(handle, "campaign_v1", &progress, &size);
+    nvs_close(handle);
+    return err == ESP_OK && size == sizeof(progress) && progress.available() && !progress.coOp
+        ? progress : fod::CampaignProgress{};
+}
+
+bool writeCampaign(const fod::CampaignProgress& progress) {
+    if (!nvsReady) return false;
+    nvs_handle_t handle;
+    if (nvs_open("fod", NVS_READWRITE, &handle) != ESP_OK) return false;
+    auto err = nvs_set_blob(handle, "campaign_v1", &progress, sizeof(progress));
+    if (err == ESP_OK) err = nvs_commit(handle);
+    nvs_close(handle);
+    return err == ESP_OK;
+}
+
 esp_err_t requestLaunch(uint8_t launch) {
     nvs_handle_t handle;
     if (!nvsReady) return ESP_ERR_INVALID_STATE;
@@ -213,8 +234,7 @@ uint8_t takeLaunch() {
     nvs_handle_t handle;
     if (!nvsReady || nvs_open("fod", NVS_READWRITE, &handle) != ESP_OK) return 0;
     if (nvs_get_u8(handle, "launch", &launch) == ESP_OK) {
-        nvs_erase_key(handle, "launch");
-        nvs_commit(handle);
+        if (nvs_erase_key(handle, "launch") != ESP_OK || nvs_commit(handle) != ESP_OK) launch = 0;
     }
     nvs_close(handle);
     return launch;

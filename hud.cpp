@@ -466,32 +466,36 @@ void startScreen(const Painter& p, const MenuState& menu, Arena arena) {
     p.shadeTitle();
 
     constexpr uint16_t selectedPanel = rgb(34, 43, 42);
-    constexpr uint16_t cardAccents[]{gold, playerColor, rgb(156, 193, 226), muted};
-    const uint16_t focus = cardAccents[menu.selection < int(startCards.size()) && menu.selection >= 0
-                                       ? menu.selection : int(StartItem::BotMatch)];
+    constexpr uint16_t cardAccents[]{gold, playerColor, playerColor,
+#ifdef FOD_LOCAL_DUEL
+                                      rgb(156, 193, 226),
+#endif
+                                      muted};
+    const uint16_t focus = cardAccents[size_t(menu.selection)];
     p.text(startX, 53, "FALL OF DUTY", paper, 4);
     p.text(startX - 1, 89, "LITE", paper, 7);
     p.rect(startX, 146, 56, 3, focus);
 
-    char botSub[48], lanSub[48];
-    std::snprintf(botSub, sizeof(botSub), "%s / %s / LEVEL %d",
-                  arenaLabel(menu.selectedArena), opponentName(menu.opponent), menu.difficulty);
+    char botSub[54];
+    std::snprintf(botSub, sizeof(botSub), "%s / %s%s / LEVEL %d", arenaLabel(menu.selectedArena),
+                  menu.opponent == Opponent::FreeForAll ? "" : "DUEL VS ",
+                  menu.opponent == Opponent::FreeForAll ? "FREE-FOR-ALL" : opponentName(menu.opponent), menu.difficulty);
+    const char* descriptions[]{"OPERATION BRIAR / THREE MISSIONS", botSub, "",
 #ifdef FOD_LOCAL_DUEL
-    std::snprintf(lanSub, sizeof(lanSub), "LOCAL SPLIT-SCREEN / %s", arenaLabel(menu.selectedArena));
-#else
-    std::snprintf(lanSub, sizeof(lanSub), "LOCAL SPLIT-SCREEN ON DESKTOP");
+                               "CAMPAIGN CO-OP OR VERSUS DUEL",
 #endif
-    const char* descriptions[]{"OPERATION BRIAR / 3 MISSIONS", botSub, lanSub, "DIFFICULTY, RIVAL, AUDIO & DISPLAY"};
+                               "AUDIO, DISPLAY & CALLSIGN"};
     for (size_t i = 0; i < startCards.size(); ++i) {
         const auto& card = startCards[i];
-        const bool selected = menu.selection == int(i);
+        const bool selected = menu.selection == int(i), secondary = i == size_t(StartItem::ChangeMatch);
+        const int x = startX + (secondary ? 10 : 0);
         const uint16_t tint = cardAccents[i];
-        p.rect(startX, card.y, startWidth, card.height, selected ? selectedPanel : panel);
-        p.rect(startX, card.y, 3, card.height, selected ? tint : lineColor);
-        p.rect(startX + 3, card.y + card.height - 1, startWidth - 3, 1, lineColor);
-        p.text(startX + 15, card.y + 10, card.label, selected ? tint : paper, 2);
-        p.text(startX + 15, card.y + 31, descriptions[i], selected ? paper : muted, 1);
-        if (selected) p.text(startX + startWidth - 20, card.y + 17, ">", tint, 2);
+        p.rect(x, card.y, startX + startWidth - x, card.height, selected ? selectedPanel : panel);
+        p.rect(x, card.y, 3, card.height, selected ? tint : lineColor);
+        p.rect(x + 3, card.y + card.height - 1, startX + startWidth - x - 3, 1, lineColor);
+        p.text(x + 15, card.y + (secondary ? 8 : 7), card.label, selected ? tint : paper, 2);
+        if (!secondary) p.text(x + 15, card.y + 29, descriptions[i], selected ? paper : muted, 1);
+        if (selected) p.text(startX + startWidth - 20, card.y + (secondary ? 8 : 15), ">", tint, 2);
     }
 
     const std::string_view background(arenaLabel(arena));
@@ -500,84 +504,18 @@ void startScreen(const Painter& p, const MenuState& menu, Arena arena) {
     p.text(774 - backdropLabel, 437, background, paper, 1);
 
     char status[48];
-    std::snprintf(status, sizeof(status), "%s  /  %s %d", menu.callsign.data(),
-                  difficultyName(menu.difficulty), menu.difficulty);
+    std::snprintf(status, sizeof(status), "CALLSIGN / %s", menu.callsign.data());
     p.text(startX, 416, status, muted, 1);
 #ifdef FOD_LOCAL_DUEL
     if (const auto labels = menuLabels(menu.controls); labels.confirm) {
         char hint[52];
-        const bool canSwapMap = menu.selection == int(StartItem::BotMatch) ||
-                                menu.selection == int(StartItem::MultiplayerLan);
-        if (canSwapMap) {
-            std::snprintf(hint, sizeof(hint), "%s SELECT  /  L-R MAP", labels.confirm);
-        } else {
-            std::snprintf(hint, sizeof(hint), "%s SELECT", labels.confirm);
-        }
+        std::snprintf(hint, sizeof(hint), "%s SELECT", labels.confirm);
         p.text(startX, 434, hint, paper, 1);
     }
 #else
     p.text(startX, 434, "TAP OR PRESS X TO SELECT", paper, 1);
 #endif
 }
-
-void lanScreen(const Painter& p, const MenuState& menu) {
-    p.rect(menuX - 8, 46, menuWidth + 16, 387, ink);
-    p.rect(menuX - 8, 46, menuWidth + 16, 4, gold);
-    p.text(menuX + 10, 66, "MULTIPLAYER LAN", paper, 4);
-
-    const char* labels[LanRows]{
-#ifdef FOD_LOCAL_DUEL
-        "START 2P LOCAL DUEL",
-#else
-        "LOCAL 2P (DESKTOP ONLY)",
-#endif
-        "ARENA", "NETWORK LAN", "BACK TO MAIN MENU"
-    };
-    const char* values[LanRows]{"", arenaLabel(menu.selectedArena), "UNAVAILABLE", ""};
-    for (int row = 0; row < LanRows; ++row) {
-        const int py = menuY + row * menuRowHeight;
-        const bool active = row == menu.selection;
-        p.rect(menuX, py, menuWidth, menuRowHeight - 2, active ? lineColor : panel);
-        if (active) p.rect(menuX, py, 3, menuRowHeight - 2, gold);
-        p.text(menuX + 12, py + 9, labels[row], row == LanStartRow ? gold : paper);
-        const std::string_view val(values[row]);
-        p.text(menuX + menuWidth - 12 - int(val.size()) * 6, py + 12, val, active ? paper : muted, 1);
-    }
-#ifdef FOD_LOCAL_DUEL
-    p.text(menuX + 12, 313, "CONNECT TWO GAMEPADS TO PLAY ON THIS SCREEN.", muted, 1);
-#endif
-#ifdef FOD_LOCAL_DUEL
-    if (const auto lbl = menuLabels(menu.controls); lbl.confirm) {
-        char hint[58];
-        std::snprintf(hint, sizeof(hint), "%s SELECT / %s BACK", lbl.confirm, lbl.back);
-        p.rect(menuX - 8, 435, menuWidth + 16, 22, ink);
-        p.text(menuX + 12, 443, hint, muted, 1);
-    }
-#endif
-}
-
-#ifdef FOD_LOCAL_DUEL
-void campaignScreen(const Painter& p, const MenuState& menu) {
-    p.rect(menuX - 8, 46, menuWidth + 16, 268, ink);
-    p.rect(menuX - 8, 46, menuWidth + 16, 4, gold);
-    p.text(menuX + 10, 66, "OPERATION BRIAR", paper, 4);
-    p.text(menuX + 12, 112, "THREE MISSIONS / SOLO OR LOCAL SPLIT-SCREEN", muted, 1);
-    constexpr const char* labels[CampaignRows]{"SOLO CAMPAIGN", "2 PLAYER CO-OP", "BACK TO MAIN MENU"};
-    for (int row = 0; row < CampaignRows; ++row) {
-        const int y = menuY + row * menuRowHeight;
-        const bool active = row == menu.selection;
-        p.rect(menuX, y, menuWidth, menuRowHeight - 2, active ? lineColor : panel);
-        if (active) p.rect(menuX, y, 3, menuRowHeight - 2, gold);
-        p.text(menuX + 12, y + 9, labels[row], active ? gold : paper);
-    }
-    p.text(menuX + 12, 256, "CO-OP REQUIRES TWO GAMEPADS", muted, 1);
-    if (const auto labels = menuLabels(menu.controls); labels.confirm) {
-        char hint[58];
-        std::snprintf(hint, sizeof(hint), "%s SELECT / %s BACK", labels.confirm, labels.back);
-        p.text(menuX + 12, 280, hint, paper, 1);
-    }
-}
-#endif
 
 constexpr float sRankSeconds = 5 * 60.f;
 
@@ -591,35 +529,58 @@ char missionGrade(const MissionSnapshot& m) {
 }
 
 void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena arena) {
-#ifdef FOD_LOCAL_DUEL
-    if (s.match == Match::Start && menu.campaignMenu) {
-        campaignScreen(p, menu);
+    using A = MenuAction;
+    if (menu.loadedLaunch != LaunchAction::None) {
+        const char* destination = menu.loadedLaunch == LaunchAction::ContinueCampaign ? missionName(menu.progress.next)
+            : menu.loadedLaunch == LaunchAction::Campaign ? "OPERATION BRIAR" : arenaLabel(menu.selectedArena);
+        p.rect(menuX - 8, 58, menuWidth + 16, 136, ink);
+        p.text(menuX + 12, 79, destination, paper, 3);
+        p.text(menuX + 12, 119, "READY TO START", muted, 1);
+        p.rect(menuX, menuY, menuWidth, menuRowHeight - 2, panel);
+        p.text(menuX + 12, menuY + 9, "BACK", paper);
         return;
     }
-#endif
-    if (s.match == Match::Start && menu.lanMenu) {
-        lanScreen(p, menu);
-        return;
-    }
-    if (s.match == Match::Start && !menu.setup) {
+    if (s.match == Match::Start && menu.screen == MenuScreen::Home) {
         startScreen(p, menu, arena);
         return;
     }
-    const bool isCampaign = s.match != Match::Start && (menu.campaign || (s.mission && s.mission->active));
+    const bool home = menu.screen == MenuScreen::Home;
+    const bool isCampaign = menu.campaign || (s.mission && s.mission->active);
     const auto chapter = s.mission ? s.mission->chapter : MissionChapter::BriarHouse;
     const bool campaignWon = s.mission && s.mission->campaign && chapter == MissionChapter::Array &&
                              s.mission->phase == MissionPhase::Victory;
-    const char* title = s.match == Match::Start ? (isCampaign ? "MISSION SETUP" : "MATCH SETUP")
+    const char* title = menu.screen == MenuScreen::Campaign ? "OPERATION BRIAR"
+        : menu.screen == MenuScreen::LocalPlayers ? "LOCAL 2 PLAYER"
+        : menu.screen == MenuScreen::CoOpSetup ? "CAMPAIGN CO-OP"
+        : menu.screen == MenuScreen::VersusSetup ? "VERSUS DUEL"
+        : menu.screen == MenuScreen::Settings ? "SETTINGS"
+        : menu.screen == MenuScreen::BotSetup ? "CHANGE MATCH"
         : s.match == Match::Paused ? "PAUSED"
         : isCampaign ? (campaignWon ? "CAMPAIGN COMPLETE"
                         : s.mission && s.mission->phase == MissionPhase::Victory ? "MISSION COMPLETE"
                         : s.mission && s.mission->phase == MissionPhase::Failed ? "MISSION FAILED" : "MISSION ENDED")
         : (s.playerScore >= 10 ? "VICTORY" : s.leadingRivalScore() >= 10 ? "DEFEAT" : "MATCH ENDED");
-    p.rect(menuX - 8, 46, menuWidth + 16, 387, ink);
+    const auto rows = menuOptions(menu, s.match);
+    const bool showSaveError = menu.saveFailed && (menu.screen == MenuScreen::Campaign ||
+        menu.screen == MenuScreen::CoOpSetup || (home && isCampaign && s.match == Match::Results));
+    const int contentBottom = menu.editing ? 417 : menuY + rows.count * menuRowHeight + (showSaveError ? 26 : 8);
+    p.rect(menuX - 8, 46, menuWidth + 16, contentBottom - 46, ink);
     p.rect(menuX - 8, 46, menuWidth + 16, 4,
            isCampaign && s.match == Match::Results && s.mission && s.mission->phase == MissionPhase::Failed ? alert : accent);
-    p.text(menuX + 10, 66, title, paper, isCampaign && s.match == Match::Results ? 4 : 5);
-    if (isCampaign && s.match == Match::Results && s.mission) {
+    p.text(menuX + 10, 66, title, paper, std::strlen(title) > 14 || (isCampaign && s.match == Match::Results) ? 4 : 5);
+    if (!home) {
+        const char* subtitle = menu.screen == MenuScreen::Campaign
+#ifdef FOD_LOCAL_DUEL
+            ? "THREE MISSIONS / CO-OP REQUIRES TWO GAMEPADS"
+#else
+            ? "THREE MISSIONS / SOLO CAMPAIGN"
+#endif
+            : menu.screen == MenuScreen::LocalPlayers ? "TWO GAMEPADS / ONE SCREEN"
+            : menu.screen == MenuScreen::CoOpSetup ? "OPERATION BRIAR / TWO GAMEPADS / SHARED CHECKPOINTS"
+            : menu.screen == MenuScreen::VersusSetup ? "TWO GAMEPADS / FIRST TO TEN"
+            : menu.screen == MenuScreen::BotSetup ? "FIRST TO TEN" : "AUDIO, DISPLAY & CALLSIGN";
+        p.text(menuX + 12, 119, subtitle, muted, 1);
+    } else if (isCampaign && s.match == Match::Results && s.mission) {
         const auto& m = *s.mission;
         char summary[112];
         const int mins = int(m.missionSeconds) / 60, secs = int(m.missionSeconds) % 60;
@@ -684,50 +645,78 @@ void menus(const Painter& p, const Snapshot& s, const MenuState& menu, Arena are
         p.text(menuX + 207, 385, "DPAD TO EDIT / X TO SAVE", muted, 1);
         return;
     }
-    const int count = s.match == Match::Start ? MenuRows - 1 : MenuRows;
-    const char* primary = s.match == Match::Start ? "BACK TO START"
+    const char* primary = menu.screen == MenuScreen::BotSetup ? "START MATCH"
+        : menu.screen == MenuScreen::VersusSetup ? "JOIN VERSUS DUEL"
         : s.match == Match::Paused ? "RESUME"
         : isCampaign ? (s.mission && s.mission->nextMissionReady() ? (chapter == MissionChapter::BriarHouse ? "FLY TO TIMBERLINE" : "RETURN TO BRIAR HOUSE")
                         : s.mission && s.mission->phase == MissionPhase::Failed && s.mission->checkpointStage != MissionCheckpoint::None
                         ? "RETRY CHECKPOINT" : "PLAY AGAIN")
         : "REMATCH";
-    const char* labels[MenuRows]{primary, "DIFFICULTY", isCampaign ? "MISSION" : "RIVAL",
-                                 isCampaign ? "RADIO SOUND" : "RIVAL VOICE", "VOLUME", "RENDER SIZE", "CALLSIGN",
-                                 s.match == Match::Paused ? (isCampaign ? "END MISSION" : "END MATCH") : "MAIN MENU"};
-    char difficulty[26], volume[12];
-    std::snprintf(difficulty, sizeof(difficulty), "%s %d", difficultyName(menu.difficulty), menu.difficulty);
-    std::snprintf(volume, sizeof(volume), "%d%%", menu.volume);
-    const char* renderSize = menu.compact ? "320 X 180" : "400 X 225";
-#ifdef FOD_LOCAL_DUEL
-    char desktopSize[24];
-    if (menu.desktopRenderWidth) {
-        std::snprintf(desktopSize, sizeof(desktopSize), "%d X %d", menu.width(), menu.height());
-        renderSize = desktopSize;
-    }
-#endif
-    const char* values[MenuRows]{"", difficulty, isCampaign ? missionName(chapter) : opponentName(menu.opponent),
-                                menu.voice ? "ON" : "OFF", volume, renderSize, menu.callsign.data(), ""};
-    for (int row = 0; row < count; ++row) {
+    for (int row = 0; row < rows.count; ++row) {
         const int py = menuY + row * menuRowHeight;
         const bool active = row == menu.selection;
         p.rect(menuX, py, menuWidth, menuRowHeight - 2, active ? lineColor : panel);
         if (active) p.rect(menuX, py, 3, menuRowHeight - 2, accent);
-        p.text(menuX + 12, py + 9, labels[row], (row == PlayRow) ? accent : paper);
-        const auto text = std::string_view(values[row]);
+        const char* label = "";
+        const char* value = "";
+        char number[32];
+        switch (rows.actions[size_t(row)]) {
+        case A::Play: label = primary; break;
+        case A::ChangeMatch: label = "CHANGE MATCH"; break;
+        case A::Settings: label = "SETTINGS"; break;
+        case A::Back: label = "BACK"; break;
+        case A::Exit: label = s.match == Match::Paused ? (isCampaign ? "END MISSION" : "END MATCH") : "MAIN MENU"; break;
+        case A::Solo: label = menu.progress.available() ? "NEW SOLO CAMPAIGN" : "SOLO CAMPAIGN"; break;
+        case A::CoOp:
+            label = menu.screen == MenuScreen::LocalPlayers ? "CAMPAIGN CO-OP" : "2 PLAYER CO-OP";
+            if (menu.screen == MenuScreen::LocalPlayers) value = "3 MISSIONS";
+            break;
+        case A::Versus: label = "VERSUS DUEL"; value = "FIRST TO TEN"; break;
+        case A::StartCoOp: label = menu.progress.available() ? "NEW CO-OP CAMPAIGN" : "JOIN CAMPAIGN CO-OP"; break;
+        case A::Continue:
+            label = menu.progress.coOp ? "CONTINUE CO-OP" : "CONTINUE";
+            value = missionName(menu.progress.next);
+            break;
+        case A::Arena: label = "ARENA"; value = arenaLabel(menu.selectedArena); break;
+        case A::Format: label = "MODE"; value = menu.opponent == Opponent::FreeForAll ? "FREE-FOR-ALL" : "DUEL"; break;
+        case A::Rival: label = "OPPONENT"; value = opponentName(menu.opponent); break;
+        case A::Difficulty:
+            label = "DIFFICULTY";
+            std::snprintf(number, sizeof(number), "%s %d", difficultyName(menu.difficulty), menu.difficulty);
+            value = number;
+            break;
+        case A::Voice: label = "VOICES"; value = menu.voice ? "ON" : "OFF"; break;
+        case A::Volume:
+            label = "VOLUME";
+            std::snprintf(number, sizeof(number), "%d%%", menu.volume);
+            value = number;
+            break;
+        case A::Render:
+            label = "RENDER SIZE";
+            std::snprintf(number, sizeof(number), "%d X %d", menu.width(), menu.height());
+            value = number;
+            break;
+        case A::Callsign: label = "CALLSIGN"; value = menu.callsign.data(); break;
+        }
+        p.text(menuX + 12, py + 9, label, active ? accent : paper);
+        const auto text = std::string_view(value);
         p.text(menuX + menuWidth - 12 - int(text.size()) * 12, py + 9, text, active ? paper : muted);
     }
+    if (showSaveError)
+        p.text(menuX + 12, contentBottom - 19, "COULD NOT SAVE CAMPAIGN TO STORAGE", alert, 1);
+    const char* confirm = "CROSS";
+    const char* back = "CIRCLE";
 #ifdef FOD_LOCAL_DUEL
     if (const auto labels = menuLabels(menu.controls); labels.confirm) {
-        char hint[58];
-        if (s.match == Match::Start) {
-            std::snprintf(hint, sizeof(hint), "%s SELECT / %s BACK", labels.confirm, labels.back);
-        } else {
-            std::snprintf(hint, sizeof(hint), "%s SELECT", labels.confirm);
-        }
-        p.rect(menuX - 8, 435, menuWidth + 16, 22, ink);
-        p.text(menuX + 12, 443, hint, muted, 1);
+        confirm = labels.confirm;
+        back = labels.back;
     }
 #endif
+    char hint[72];
+    std::snprintf(hint, sizeof(hint), "%s SELECT / %s %s", confirm, back,
+                  home ? (s.match == Match::Paused ? "RESUME" : "MAIN MENU") : "BACK");
+    p.rect(menuX - 8, contentBottom + 2, menuWidth + 16, 22, ink);
+    p.text(menuX + 12, contentBottom + 10, hint, muted, 1);
 }
 
 void comms(const Painter& p, Speaker speaker, int y) {

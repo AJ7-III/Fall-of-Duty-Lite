@@ -35,6 +35,7 @@ if(BUILD_TESTING)
     add_test(NAME platform_tests COMMAND fod_platform_tests "${FOD_TEST_PACK}"
         "${CMAKE_CURRENT_SOURCE_DIR}/reference/fixtures/ffa-apache.fodtrace")
     if(FOD_DESKTOP)
+        target_link_libraries(fod_platform_tests PRIVATE SDL2::SDL2)
         add_executable(fod_duel_tests host/local_duel_tests.cpp host/local_duel.cpp)
         target_compile_definitions(fod_duel_tests PRIVATE FOD_DUEL_DESKTOP_TEST=1)
         target_link_libraries(fod_duel_tests PRIVATE fod_core SDL2::SDL2)

@@ -8,6 +8,7 @@ namespace fod {
 
 #ifdef FOD_LOCAL_DUEL
 constexpr std::array<int, 4> desktopRenderWidths{320, 400, 800, 1280};
+constexpr std::array<int, 3> splitRenderWidths{400, 640, 800};
 constexpr int desktopHdWidth = desktopRenderWidths.back();
 
 enum class MenuControls { Default, Keyboard, Gamepad, Xbox, PlayStation, Nintendo };
@@ -29,24 +30,36 @@ constexpr MenuLabels menuLabels(MenuControls controls) {
 }
 #endif
 
-enum class StartItem : uint8_t { Campaign = 0, BotMatch = 1, MultiplayerLan = 2, MatchSetup = 3, Count = 4 };
-enum class LaunchAction : uint8_t { None, Campaign, BotMatch, LocalDuel, LocalCampaign };
+enum class StartItem : uint8_t { Campaign, BotMatch, ChangeMatch,
+#ifdef FOD_LOCAL_DUEL
+    LocalPlayers,
+#endif
+    Settings, Count };
+enum class LaunchAction : uint8_t { None, Campaign, ContinueCampaign, BotMatch, LocalDuel, LocalCampaign, ContinueCoOp };
+enum class MenuScreen : uint8_t { Home, Campaign, BotSetup, LocalPlayers, CoOpSetup, VersusSetup, Settings };
+enum class MenuAction : uint8_t {
+    Play, ChangeMatch, Settings, Exit, Back, Solo, CoOp, Versus, StartCoOp, Continue, Arena, Format, Rival,
+    Difficulty, Voice, Volume, Render, Callsign
+};
 
 struct MenuState {
     std::array<char, 17> callsign{'P', 'L', 'A', 'Y', 'E', 'R', '\0'};
     int selection = int(StartItem::BotMatch), difficulty = defaultDifficulty, volume = 70, callsignCursor = 0;
-    Opponent opponent = defaultOpponent;
+    Opponent opponent = defaultOpponent, lastRival = defaultOpponent;
     Arena selectedArena = Arena::ShipBox;
-    LaunchAction pendingLaunch = LaunchAction::None;
-    bool compact = false, voice = true, editing = false, setup = false, campaign = false, lanMenu = false;
+    LaunchAction pendingLaunch = LaunchAction::None, loadedLaunch = LaunchAction::None;
+    MenuScreen screen = MenuScreen::Home;
+    bool coOpFromCampaign = false;
+    CampaignProgress progress{};
+    bool compact = false, voice = true, editing = false, campaign = false, saveFailed = false;
 #ifdef FOD_LOCAL_DUEL
     MenuControls controls = MenuControls::Default;
-    int desktopRenderWidth = 0;
-    bool campaignMenu = false;
+    int desktopRenderWidth = 0, splitRenderWidth = 0;
 #endif
 
     int width() const {
 #ifdef FOD_LOCAL_DUEL
+        if (splitRenderWidth) return splitRenderWidth;
         if (desktopRenderWidth) return desktopRenderWidth;
 #endif
         return compact ? 320 : 400;
@@ -56,13 +69,14 @@ struct MenuState {
     bool operator==(const MenuState& other) const {
 #ifdef FOD_LOCAL_DUEL
         if (controls != other.controls || desktopRenderWidth != other.desktopRenderWidth ||
-            campaignMenu != other.campaignMenu) return false;
+            splitRenderWidth != other.splitRenderWidth) return false;
 #endif
         return callsign == other.callsign && selection == other.selection && difficulty == other.difficulty &&
                volume == other.volume && callsignCursor == other.callsignCursor && opponent == other.opponent &&
-               selectedArena == other.selectedArena && pendingLaunch == other.pendingLaunch &&
-               compact == other.compact && voice == other.voice && editing == other.editing && setup == other.setup &&
-               campaign == other.campaign && lanMenu == other.lanMenu;
+               loadedLaunch == other.loadedLaunch && selectedArena == other.selectedArena && pendingLaunch == other.pendingLaunch &&
+               compact == other.compact && voice == other.voice && editing == other.editing &&
+               campaign == other.campaign && screen == other.screen && progress.next == other.progress.next &&
+               progress.coOp == other.progress.coOp && saveFailed == other.saveFailed;
     }
 };
 
@@ -85,19 +99,29 @@ struct MenuFrameKey {
     bool controllerPrompt, marker;
 };
 
-enum MenuRow { PlayRow, DifficultyRow, RivalRow, VoiceRow, VolumeRow, RenderRow, CallsignRow, ExitRow, MenuRows };
-enum LanRow { LanStartRow, LanArenaRow, LanStatusRow, LanBackRow, LanRows };
-#ifdef FOD_LOCAL_DUEL
-enum CampaignRow { CampaignSoloRow, CampaignCoOpRow, CampaignBackRow, CampaignRows };
-#endif
+struct MenuOptions {
+    std::array<MenuAction, 8> actions{};
+    int count = 0;
+    void add(MenuAction action) { actions[size_t(count++)] = action; }
+    int index(MenuAction action) const {
+        for (int i = 0; i < count; ++i) if (actions[size_t(i)] == action) return i;
+        return 0;
+    }
+};
+MenuOptions menuOptions(const MenuState& menu, Match match);
+
 constexpr int startX = 42, startWidth = 326;
 struct StartCard {
     int y, height;
     const char* label;
 };
 constexpr std::array<StartCard, size_t(StartItem::Count)> startCards{{
-    {183, 50, "CAMPAIGN"}, {241, 50, "BOT MATCH"},
-    {299, 50, "MULTIPLAYER LAN"}, {357, 50, "MATCH SETUP"},
+    {173, 48, "CAMPAIGN"}, {229, 48, "BOT MATCH"}, {277, 30, "CHANGE MATCH"},
+#ifdef FOD_LOCAL_DUEL
+    {315, 46, "LOCAL 2 PLAYER"}, {369, 43, "SETTINGS"},
+#else
+    {315, 46, "SETTINGS"},
+#endif
 }};
 constexpr const StartCard& startCard(StartItem item) { return startCards[size_t(item)]; }
 constexpr int menuX = 177, menuY = 148, menuWidth = 446, menuRowHeight = 33;
@@ -110,6 +134,9 @@ public:
     void tick(Input input);
     void startImmediate(bool asCampaign, MissionChapter chapter = MissionChapter::BriarHouse);
     void routeAudio();
+    void queueLoadedLaunch(LaunchAction action) { menu_.loadedLaunch = action; }
+    void setProgressWriter(bool (*writer)(const CampaignProgress&)) { writeProgress_ = writer; }
+    void recordCampaignResult();
     const Snapshot& state() const { return game.state(); }
     MenuState& settings() { return menu_; }
     const MenuState& settings() const { return menu_; }
@@ -119,21 +146,21 @@ public:
 private:
     void menuInput(const Input& input);
     void startMenuInput(const Input& input);
-    void lanMenuInput(const Input& input);
-#ifdef FOD_LOCAL_DUEL
-    void campaignMenuInput(const Input& input);
-#endif
-    void selectCampaign(const Input& input);
+    void launch(LaunchAction action, const Input& input);
+    void leaveScreen();
     void callsignInput(const Input& input);
     void beginMatch(bool retryCheckpoint);
     void startOrResume(const Input& input);
-    void returnToStartMenu();
+    void returnToStartMenu(StartItem item);
     void pauseMatch();
-    void change(int direction);
+    void exitMatch();
+    void change(MenuAction action, int direction);
     void stopAmbientLoops();
     Arena loadedArena_ = Arena::ShipBox;
     BriarHouseMode loadedBriarMode_ = BriarHouseMode::Standard;
     MenuState menu_{};
+    bool (*writeProgress_)(const CampaignProgress&) = nullptr;
+    bool chapterReplay_ = false;
     uint32_t seed_ = 0x464f4425;
     uint32_t blockedActions_ = 0;
     bool connected_ = true, rotor_ = false, invasionHum_ = false;

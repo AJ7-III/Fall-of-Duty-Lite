@@ -19,7 +19,6 @@ enum class MissionPhase : uint8_t {
     Boarding // Dustoff is down in the clearing and the family waits for the player's signal.
 };
 enum class MissionCheckpoint : uint8_t { None, Overwatch, Rescue, Uplink, Extraction, Operation };
-enum class MissionChapter : uint8_t { BriarHouse, Timberline, Array };
 // Stayed: Nora refused Dustoff to stay with her dish. She counts as saved and carries into the later missions.
 enum class CivilianOutcome : uint8_t { Pinned, Escorting, Evacuating, Sheltered, Boarded, Lost, Stayed };
 enum class TracerStyle : uint8_t { Ballistic, Scanner, DropBeam, ShieldLink, PlasmaImpact };

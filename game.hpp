@@ -1,6 +1,7 @@
 #pragma once
 
 #include "types.hpp"
+#include "campaign_progress.hpp"
 
 #include <array>
 #include <cstddef>
@@ -11,7 +12,6 @@ namespace fod {
 struct Assets;
 struct CampaignVoiceCue;
 struct MissionSnapshot;
-enum class MissionChapter : uint8_t;
 enum class Match : uint8_t { Start, Playing, Paused, Results };
 enum class Device : uint8_t { None, Laptop, Transmitter };
 enum class Weapon : uint8_t { Mp44, Sniper, Pistol };
@@ -147,6 +147,8 @@ public:
     void start(uint32_t seed, int difficulty, Opponent opponent);
     void startMission(uint32_t seed, int difficulty, bool fromCheckpoint = false);
     void startCampaign(uint32_t seed, int difficulty);
+    CampaignProgress nextCampaignProgress() const;
+    void resumeCampaign(uint32_t seed, const CampaignProgress& progress);
     bool advanceCampaign(uint32_t seed, int difficulty);
     void startExtractionReplay(uint32_t seed, int difficulty);
     // Begin a later campaign mission directly, with Nora alive, for replays and qualification.

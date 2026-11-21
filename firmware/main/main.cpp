@@ -206,9 +206,10 @@ struct StageSample {
 };
 
 // Arena switches restart the board and build the requested arena before any task touches it.
-enum Launch : uint8_t { LaunchDefault = 0, LaunchCampaign = 1, LaunchBriarMatch = 2, LaunchShipMatch = 3 };
+enum Launch : uint8_t { LaunchDefault = 0, LaunchCampaign = 1, LaunchBriarMatch = 2, LaunchShipMatch = 3, LaunchContinue = 4 };
 
 const char* launchTitle(uint8_t launch) {
+    if (launch == LaunchContinue) return "CONTINUING OPERATION BRIAR";
     return launch == LaunchCampaign ? "MISSION 1: BRIAR HOUSE" : launch == LaunchBriarMatch ? "BRIAR HOUSE" : "SHIP BOX";
 }
 
@@ -528,12 +529,15 @@ void runSimulation(Live& live, fod::ReplayTrace* replay) {
                 app.settings().pendingLaunch = fod::LaunchAction::None;
                 uint8_t launch = LaunchDefault;
                 if (action == fod::LaunchAction::Campaign) launch = LaunchCampaign;
+                else if (action == fod::LaunchAction::ContinueCampaign) launch = LaunchContinue;
                 else if (action == fod::LaunchAction::BotMatch) {
                     launch = app.settings().selectedArena == fod::Arena::BriarHouse ? LaunchBriarMatch : LaunchShipMatch;
                 }
                 if (launch != LaunchDefault) {
-                    reportError("Settings save", board::writeSettings(fromMenu(app.settings())));
-                    const auto err = board::requestLaunch(launch);
+                    auto err = board::writeSettings(fromMenu(app.settings()));
+                    if (err == ESP_OK && launch == LaunchContinue && app.settings().saveFailed &&
+                        !board::writeCampaign(app.settings().progress)) err = ESP_FAIL;
+                    if (err == ESP_OK) err = board::requestLaunch(launch);
                     if (err == ESP_OK) {
                         ESP_LOGI(tag, "restarting into %s", launchTitle(launch));
                         live.loading.store(launch);
@@ -594,11 +598,12 @@ void gameplay() {
         replay = &trace;
     }
     const uint8_t launch = replay ? uint8_t(replay->campaign() ? LaunchCampaign : LaunchDefault) : board::takeLaunch();
-    if (launch == LaunchCampaign || launch == LaunchBriarMatch) {
+    const bool campaign = launch == LaunchCampaign || launch == LaunchContinue;
+    if (campaign || launch == LaunchBriarMatch) {
         showLoading(launchTitle(launch));
         const auto begin = board::timeUs();
         try {
-            fod::buildBriarHouse(assets, launch == LaunchCampaign ? fod::BriarHouseMode::Invasion
+            fod::buildBriarHouse(assets, campaign ? fod::BriarHouseMode::Invasion
                                                                   : fod::BriarHouseMode::Standard);
         } catch (const std::bad_alloc&) {
             // The request was already cleared, so a retry boots straight back into Ship Box.
@@ -609,7 +614,7 @@ void gameplay() {
         ESP_LOGI(tag, "arena=%s build_us=%" PRId64 " resident_payload=%llu", launchTitle(launch), board::timeUs() - begin,
                  static_cast<unsigned long long>(assets.residentBytes));
         board::logMemory("arena-built");
-        if (launch == LaunchCampaign) {
+        if (campaign) {
             std::string error;
             const auto voiceStart = board::timeUs();
             if (assets.loadCampaignVoices("/sd/campaign-voices.fodv", error)) {
@@ -629,6 +634,14 @@ void gameplay() {
     }
     fod::App app(assets, replay ? 0u : esp_random());
     toMenu(board::readSettings(), app.settings());
+    if (!replay) {
+        app.settings().progress = board::readCampaign();
+        app.setProgressWriter(board::writeCampaign);
+        if (launch == LaunchContinue && app.settings().progress.available())
+            app.queueLoadedLaunch(fod::LaunchAction::ContinueCampaign);
+        else if (launch == LaunchCampaign) app.queueLoadedLaunch(fod::LaunchAction::Campaign);
+        else if (launch == LaunchShipMatch || launch == LaunchBriarMatch) app.queueLoadedLaunch(fod::LaunchAction::BotMatch);
+    }
     if (replay) {
 #if CONFIG_FOD_REPLAY_COMPACT
         app.settings().compact = true;

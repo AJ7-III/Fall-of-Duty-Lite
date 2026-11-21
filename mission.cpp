@@ -604,21 +604,48 @@ void MissionController::seedExtractionReplay() {
     }
 }
 
-void MissionController::seedChapterReplay(MissionChapter chapter, bool noraAlive, bool legacyArray) {
+CampaignProgress MissionController::nextProgress() const {
+    if (!state_.nextMissionReady()) return {};
+    const bool first = state_.chapter == MissionChapter::BriarHouse;
+    const bool stayed = first ? agents_[sectors_[nora].civSlot].civilian == CivilianOutcome::Stayed : noraAlive_;
+    CampaignProgress progress;
+    progress.next = first ? MissionChapter::Timberline : MissionChapter::Array;
+    progress.difficulty = uint8_t(difficulty_);
+    progress.saved = uint8_t(state_.civiliansSaved);
+    progress.boarded = uint8_t(state_.civiliansBoarded);
+    progress.noraStayed = stayed;
+#ifdef FOD_LOCAL_DUEL
+    progress.coOp = coOp_;
+#endif
+    progress.seconds = state_.earlierMissionSeconds + state_.missionSeconds;
+    return progress;
+}
+
+void MissionController::restoreBoundary(const CampaignProgress& progress) {
     checkpoint_ = {};
     retries_ = 0;
     state_ = {};
     state_.campaign = true;
     state_.phase = MissionPhase::Victory;
-    state_.chapter = chapter == MissionChapter::Array ? MissionChapter::Timberline : MissionChapter::BriarHouse;
-    state_.civiliansSaved = noraAlive ? 3 : 2;
-    state_.civiliansBoarded = 2;
-    noraAlive_ = noraAlive;
-    legacyArray_ = legacyArray;
-    legacyScout_ = false;
+    state_.chapter = progress.next == MissionChapter::Array ? MissionChapter::Timberline : MissionChapter::BriarHouse;
+    state_.earlierMissionSeconds = progress.seconds;
+    state_.civiliansSaved = progress.saved;
+    state_.civiliansBoarded = progress.boarded;
+    noraAlive_ = progress.noraStayed;
+    legacyArray_ = legacyScout_ = false;
     for (auto& sec : sectors_) sec = {};
     sectors_[nora].civSlot = nora + 1;
-    agents_[size_t(nora + 1)].civilian = noraAlive ? CivilianOutcome::Stayed : CivilianOutcome::Lost;
+    agents_[size_t(nora + 1)].civilian = noraAlive_ ? CivilianOutcome::Stayed : CivilianOutcome::Lost;
+}
+
+void MissionController::seedChapterReplay(MissionChapter chapter, bool noraAlive, bool legacyArray) {
+    CampaignProgress progress;
+    progress.next = chapter;
+    progress.saved = noraAlive ? 3 : 2;
+    progress.boarded = 2;
+    progress.noraStayed = noraAlive;
+    restoreBoundary(progress);
+    legacyArray_ = legacyArray;
 }
 
 void MissionController::seedFinaleReplay() {

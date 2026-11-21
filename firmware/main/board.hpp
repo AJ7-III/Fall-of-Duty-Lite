@@ -4,6 +4,7 @@
 #include <cstdint>
 #include "esp_err.h"
 #include "types.hpp"
+#include "campaign_progress.hpp"
 
 namespace board {
 
@@ -31,6 +32,8 @@ struct SavedSettings {
     uint8_t opponent = uint8_t(fod::defaultOpponent);
     char callsign[20] = "PLAYER";
 };
+fod::CampaignProgress readCampaign();
+bool writeCampaign(const fod::CampaignProgress& progress);
 SavedSettings readSettings();
 esp_err_t writeSettings(const SavedSettings& settings);
 // One-shot arena request that survives the restart used to switch arenas; taking it clears it.

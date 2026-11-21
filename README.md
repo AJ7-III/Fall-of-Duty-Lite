@@ -1,6 +1,6 @@
 # Fall of Duty Lite
 
-**An offline, software-rendered first-person shooter for the ESP32-P4 handheld and SDL2 desktops** — packing a three-mission alien-invasion campaign, 1v1 and three-way bot matches, and local split-screen duels into a **4.00 MB** core game pack, plus a **3.38 MB** optional voice bank (**7.38 MB** total on SD for the full voiced campaign).
+**An offline, software-rendered first-person shooter for the ESP32-P4 handheld and SDL2 desktops** — packing a three-mission alien-invasion campaign, 1v1 and three-way bot matches, and desktop split-screen co-op and versus into a **4.00 MB** core game pack, plus a **3.38 MB** optional voice bank (**7.38 MB** total on SD for the full voiced campaign).
 
 - **Core SD pack (`fall-of-duty.fodp`):** `4,001,984 bytes` (**4.00 MB**) ([manifest](assets/fall-of-duty.fodp.json)) — complete game & playable 3-mission campaign with subtitles, **4.6% smaller than the Doom v1.9 shareware WAD** ([reference](https://github.com/viti95/FastDoom/blob/master/README.txt))
 - **Voiced campaign bank (`campaign-voices.fodv`):** `3,379,439 bytes` (**3.38 MB**) ([manifest](assets/campaign-voices.fodv.json)) — 104 spoken lines across five voices, loaded only during Campaign (**7.38 MB** combined on SD)
@@ -8,7 +8,7 @@
 
 [Operation Briar](#operation-briar-campaign) · [Play on Desktop](#play-on-desktop) · [Controls](#controls) · [Screenshots](#screenshots) · [Handheld Setup](#handheld-download-and-hardware) · [Verification & Benchmarks](#verification-and-testing)
 
-![Fall of Duty Lite start screen over dusk Briar House showing Campaign, Bot Match, Multiplayer LAN, and Match Setup](docs/images/title.png)
+![Fall of Duty Lite start screen over dusk Briar House showing Campaign, Bot Match, Change Match, Local 2 Player, and Settings](docs/images/title.png)
 
 ---
 
@@ -16,13 +16,17 @@
 
 - **Operation Briar (Campaign)** — A three-mission story set across the Colorado Front Range on Day One of an alien landing. Sweep a mist-covered mountain town, use the invaders' homing signal to ground the fleet, then seize a scout ship and fly it back for recovery.
 - **Bot Match (1v1 & Free-for-All)** — First to ten in **Ship Box** (a rain-soaked container yard) or **Briar House** (a two-lobby mansion with covered flanks). Face **IPwndUrMom**, **Hanz**, or both at once across difficulty levels 1–10 (default 5), complete with UAV radar (3 kills), targeted Airstrike laptop (5 kills), Apache gunship support (7 kills), and 27 voiced rival taunts.
-- **Local Two-Player Duel (Desktop)** — Plug in two SDL gamepads and run `--local-duel` for 60 fps split-screen matches on either arena.
+- **Local 2 Player (desktop)** — Choose **Campaign Co-op** to play Operation Briar together, or **Versus Duel** to face each other on either arena. Both use two gamepads and one split screen.
+
+![Local 2 Player menu with Campaign Co-op for three missions and Versus Duel for first to ten](docs/images/local-2-player.png)
 
 ---
 
 ## Operation Briar campaign
 
-Choose **Campaign** on the title screen. On desktop, choose **Solo Campaign** or **2 Player Co-op**. Choose the flight or mission listed on the results screen to carry your time and survivor outcomes forward.
+Choose **Campaign → Solo Campaign** to play alone. On desktop, **Campaign → 2 Player Co-op** and **Local 2 Player → Campaign Co-op** open the same setup. Both gamepads join before the mission starts.
+
+Completing Briar House or Timberline saves the next mission, the family’s outcome, difficulty, party type, and elapsed campaign time. Choose the flight on the debrief to keep playing, or quit and choose **Campaign → Continue** on your next launch. A two-player save reads **Continue Co-op** and reopens the join screen. Each device has one campaign slot. Finishing a chapter in a new run replaces the previous save. Field checkpoints support retries during the current session.
 
 In desktop co-op, two gamepads control two operatives in the same campaign. Alien patrols and reinforcements double, with room for up to eight active aliens. Player 1 handles scripted interactions and pilots the scout. Player 2 can fight independently and hold **L1 / LB** during the scout flight to reduce crosswind. A downed player rejoins near their partner after five seconds if the partner stays alive. If both go down, use the shared checkpoint retry on the results screen.
 
@@ -49,7 +53,7 @@ In desktop co-op, two gamepads control two operatives in the same campaign. Alie
 
 - **One control for everything:** **Signal** (`F`, `L1`, or `LB`) calls people across cover, paints drop zones, and steers the mothership's beam. You cannot fire while holding it; the prompt beneath the reticle shows what it will do.
 - **Branching outcomes:** If Nora is lost in Briar House, Delta-1 works from her notes through Timberline and The Array — without her jammer warnings — and the closing lines and epilogues reflect who made it out and whether the clearing survived.
-- **Campaign voices and subtitles:** The 104 recorded lines across Delta-1, Nora Marsh, Dustoff-1, Walt Marsh, and Ben Marsh are encoded in `assets/campaign-voices.fodv`. New Mission 3 exchanges appear as subtitles. Keep `campaign-voices.fodv` beside `fall-of-duty.fodp`. Subtitles remain active if the voice bank is missing or **Radio Sound** is muted.
+- **Campaign voices and subtitles:** The 104 recorded lines across Delta-1, Nora Marsh, Dustoff-1, Walt Marsh, and Ben Marsh are encoded in `assets/campaign-voices.fodv`. New Mission 3 exchanges appear as subtitles. Keep `campaign-voices.fodv` beside `fall-of-duty.fodp`. Subtitles remain active if the voice bank is missing or **Voices** is off.
 - **Tactical combat:** Enforcers lower their frontal guard before firing. Hit the exposed chest to interrupt a charging cannon. Scout drones sweep with scanners, and jammer drones hover while disrupting the emitter or dish. Blue plasma travels visibly downrange and briefly slows anyone it hits.
 - **Checkpoints & Rank S:** Checkpoints save at key transitions and restore civilian outcomes, kills, and time on retry. Rank S on Briar House requires all three civilians saved, zero checkpoint reloads, and a clear time under 5:00.
 
@@ -84,7 +88,7 @@ See [QUALITY.md](QUALITY.md), [EVIDENCE.md](EVIDENCE.md), and [ASSET_PIPELINE.md
 
 | Start screen (Ship Box) | Airstrike targeting laptop |
 | --- | --- |
-| ![Fall of Duty Lite start menu over Ship Box with Campaign, Bot Match, Multiplayer LAN, and Match Setup](docs/images/title-shipbox.png) | ![Airstrike laptop tactical targeting map](docs/images/airstrike.png) |
+| ![Fall of Duty Lite start menu over Ship Box with Campaign, Bot Match, Change Match, Local 2 Player, and Settings](docs/images/title-shipbox.png) | ![Airstrike laptop tactical targeting map](docs/images/airstrike.png) |
 
 ---
 
@@ -112,9 +116,10 @@ build/host/fod_host --map briar-house       # Briar House mansion bot duel
 build/host/fod_host --local-duel            # 2-player split-screen (two SDL gamepads)
 ```
 
-- **Display:** Solo renders at **1280×720** by default at 60 fps. Change **Render Size** in Match Setup or the pause menu, or pass `--mode 800`, `--mode 400`, or `--mode 320`. Pass `--look classic` for flat lighting and nearest-neighbor scaling, or `-DFOD_DESKTOP=OFF` to CMake for a headless CLI/test build without SDL2.
-- **Local two-player duel:** Connect two SDL-compatible gamepads (an 8BitDo Pro 2 in Switch mode may appear as *Pro Controller*). Press **Start** or **+** on each pad to claim a seat, then press Player 1's confirm button (**B** on the Pro 2). First to ten wins; simultaneous 10–10 is a draw. Renders at 640×360 per view by default (use `--duel-resolution 400` or `--duel-resolution 800` to change).
-- **Local campaign co-op:** Connect two SDL-compatible gamepads. Press **Start** or **+** on each pad to join, then confirm on Player 1's pad. Either pad can pause the game. Rejoin and resume if a pad disconnects.
+- **Bot matches:** Choose **Bot Match** to start the lineup shown on the title. Choose **Change Match** for arena, Duel or Free-for-all, duel opponent, and difficulty. Results offer **Rematch**, **Change Match**, and **Main Menu**.
+- **Display:** Solo defaults to **1280×720** on macOS and **400×225** on other desktops. Change **Render Size** under **Settings** on the title or pause screen, or pass `--mode 800`, `--mode 400`, or `--mode 320`. Pass `--look classic` for flat lighting and nearest-neighbor scaling, or `-DFOD_DESKTOP=OFF` to CMake for a headless CLI/test build without SDL2.
+- **Versus Duel:** Choose **Local 2 Player → Versus Duel**, pick an arena, and choose **Join Versus Duel**. Connect two SDL-compatible gamepads (an 8BitDo Pro 2 in Switch mode may appear as *Pro Controller*). Press **Start** or **+** on each pad to claim a seat, then press Player 1's confirm button (**B** on the Pro 2). First to ten wins; simultaneous 10–10 is a draw. Renders at 640×360 per view by default (use `--duel-resolution 400` or `--duel-resolution 800` to change).
+- **Local campaign co-op:** Connect two SDL-compatible gamepads. Press **Start** or **+** on each pad to join, then confirm on Player 1's pad. Either pad can pause the game. Rejoin and resume if a pad disconnects. In either split-screen mode, press Down while paused for Settings. Escape or Player 1’s Back button leaves the lobby, pause screen, or results and returns to setup.
 
 ---
 
@@ -150,7 +155,7 @@ Nintendo-layout controllers (including 8BitDo Pro 2 in Switch mode) default to 8
 - **Voiced Operation Briar preview (`7.81 MB` / `7,806,754 bytes`, recommended for Campaign):** [campaign-voices-preview-2](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/campaign-voices-preview-2) · [Fall-of-Duty-Lite-Guition-ESP32-P4-Campaign-Voices.zip](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/campaign-voices-preview-2/Fall-of-Duty-Lite-Guition-ESP32-P4-Campaign-Voices.zip) · [SHA-256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/campaign-voices-preview-2/Fall-of-Duty-Lite-Guition-ESP32-P4-Campaign-Voices.zip.sha256) — bundles the ESP32-P4 firmware, `fall-of-duty.fodp` (`4.00 MB`), and `campaign-voices.fodv` (`3.38 MB`) (plus source archive for desktop).
 - **Base v1.1.0 handheld release (`4.47 MB`, Ship Box only):** [v1.1.0 release](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/tag/v1.1.0) · [Fall-of-Duty-Lite-Guition-ESP32-P4.zip](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.1.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip) · [SHA-256](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/download/v1.1.0/Fall-of-Duty-Lite-Guition-ESP32-P4.zip.sha256) · [All releases](https://github.com/AJ7-III/Fall-of-Duty-Lite/releases/latest)
 
-Keep the firmware and SD pack from the same archive together. Each release bundles the bootloader, partition table, app binary, SD files, replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`.
+The downloads above are earlier releases. The menus and chapter saves described here are in builds from the current source. Use the install guide bundled with your archive. Keep the firmware and SD pack from the same archive together. Each release bundles the bootloader, partition table, app binary, SD files, replay traces, `INSTALL.md`, licenses, and `SHA256SUMS`.
 
 ### Target hardware
 
@@ -161,7 +166,7 @@ Keep the firmware and SD pack from the same archive together. Each release bundl
 | **Audio & storage** | ES8311 I²S speaker output and FAT32 microSD over SDMMC (`/sd/fall-of-duty.fodp` + `/sd/campaign-voices.fodv`) |
 | **Controller** | Wired Sony DualShock 4 (`VID 054c`, `PID 05c4` or `09cc`) on the P4 high-speed USB host port |
 
-Follow [INSTALL.md](INSTALL.md) to verify `SHA256SUMS`, copy `sd/` to the root of a FAT32 microSD card, check chip/flash IDs with `esptool`, and flash `@flash_args`. Selecting **Campaign** or switching arenas restarts the board into a loading card, builds Briar House (and loads `campaign-voices.fodv` in Campaign mode), and returns to the title screen ready to play.
+Follow [INSTALL.md](INSTALL.md) to verify `SHA256SUMS`, copy `sd/` to the root of a FAT32 microSD card, check chip/flash IDs with `esptool`, and flash `@flash_args`. Starting a session that needs a different arena restarts the board, loads the selected content, and starts play when the controller is ready.
 
 > [!NOTE]
 > Handheld packages are cross-built with ESP-IDF v5.5.3 and checked for flash layout and checksums, while physical Guition `JC4880P443C_I_W` board qualification (live scanout, touch corners, USB gamepad, audio under scanout, and optical latency) remains pending per [BOARD.md](BOARD.md).

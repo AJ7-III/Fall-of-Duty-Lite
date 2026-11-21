@@ -1,6 +1,7 @@
 #include "assets.hpp"
 #include "audio.hpp"
 #include "desktop_controls.hpp"
+#include "campaign_store.hpp"
 #include "hud_font.hpp"
 #include "render.hpp"
 
@@ -263,15 +264,15 @@ struct DuelOverlay {
         text(center + 64 * scale, top + scale, "P2", scale, accents[1]);
     }
 
-    void menu(int width, int height, bool started, const Snapshot& state, const DuelPads& pads, int second, Arena arena) {
+    void menu(int width, int height, bool started, const Snapshot& state, const DuelPads& pads, int second, Arena arena, bool saveFailed) {
         const auto* mission = state.mission.get();
         const auto match = state.match;
         const int first = state.playerScore;
-        const int scale = std::clamp(std::min(width / 350, mission ? height / 110 : 5), 1, 5);
+        const int scale = std::clamp(std::min(width / 350, height / 110), 1, 5);
         const int center = width / 2;
         const int boxWidth = std::min(width - 12 * scale, (mission ? 205 : 173) * scale);
-        const int boxHeight = (mission ? 103 : 78) * scale;
-        const int boxY = mission ? (height - boxHeight) / 2 : height / 2 - 36 * scale;
+        const int boxHeight = (mission ? 113 : 99) * scale;
+        const int boxY = (height - boxHeight) / 2;
         const SDL_Rect box{center - boxWidth / 2, boxY, boxWidth, boxHeight};
         SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
         fill({0, 0, width, height}, {6, 9, 10, 155});
@@ -292,9 +293,10 @@ struct DuelOverlay {
             if (match == Match::Results) {
                 char summary[52];
                 const int seconds = int(mission->missionSeconds);
-                if (!won) std::snprintf(summary, sizeof(summary), "%s", mission->failReason);
-                else std::snprintf(summary, sizeof(summary), "%02d:%02d / ALIENS %d / RETRIES %d",
-                                   seconds / 60, seconds % 60, mission->aliensKilled, mission->retries);
+                if (saveFailed) std::snprintf(summary, sizeof(summary), "COULD NOT SAVE CAMPAIGN TO STORAGE");
+                else if (!won) std::snprintf(summary, sizeof(summary), "%s", mission->failReason);
+                else std::snprintf(summary, sizeof(summary), "%02d:%02d / FAMILY SAVED %d/%d",
+                                   seconds / 60, seconds % 60, mission->civiliansSaved, mission->civiliansTotal);
                 if (summary[0]) {
                     const int size = std::clamp((box.w - 12 * scale) / textWidth(summary, 1), 1, scale);
                     centered(center, y + 28 * scale, summary, size, won ? paper : alert);
@@ -303,7 +305,7 @@ struct DuelOverlay {
                 centered(center, y + 28 * scale, "P1 LEADS / P2 PROVIDES COVER", scale, muted);
             }
         } else if (!started) {
-            centered(center, y, "LOCAL DUEL", scale + 1, paper);
+            centered(center, y, "VERSUS DUEL", scale + 1, paper);
             std::snprintf(location, sizeof(location), "%s / FIRST TO 10", arenaLabel(arena));
             centered(center, y + 16 * scale, location, scale, muted);
         } else if (match == Match::Results) {
@@ -336,14 +338,14 @@ struct DuelOverlay {
         } else {
             std::snprintf(hint, sizeof(hint), "PRESS START/+ TO RESUME");
         }
-        const int hintScale = mission ? std::clamp((box.w - 12 * scale) / textWidth(hint, 1), 1, scale) : scale;
+        const int hintScale = std::clamp((box.w - 12 * scale) / textWidth(hint, 1), 1, scale);
         centered(center, readyY + 18 * scale, hint, hintScale, paper);
-        if (mission) {
-            if (pads.joined(0)) std::snprintf(hint, sizeof(hint), "ESC OR P1 %s / TITLE", menuLabels(pads.controls(0)).back);
-            else std::snprintf(hint, sizeof(hint), "ESC / TITLE");
-            const int size = std::clamp((box.w - 12 * scale) / textWidth(hint, 1), 1, scale);
-            centered(center, readyY + 33 * scale, hint, size, muted);
-        }
+        if (pads.joined(0)) std::snprintf(hint, sizeof(hint), "ESC OR P1 %s / BACK", menuLabels(pads.controls(0)).back);
+        else std::snprintf(hint, sizeof(hint), "ESC / BACK");
+        const int size = std::clamp((box.w - 12 * scale) / textWidth(hint, 1), 1, scale);
+        centered(center, readyY + 33 * scale, hint, size, muted);
+        if (started && match == Match::Paused)
+            centered(center, readyY + 45 * scale, "DOWN / SETTINGS", scale, paper);
     }
 };
 
@@ -359,14 +361,17 @@ public:
                        std::optional<float> stickSensitivity = std::nullopt,
                        std::optional<MissionChapter> chapter = std::nullopt, const MenuState& settings = {})
         : app(assets), game(app.game), mixer(app.audio), assets(assets),
-          worldRenderer(assets, look, size_t(sourceWidth) * (sourceWidth * 9 / 16)),
+          worldRenderer(assets, look, size_t(splitRenderWidths.back()) * (splitRenderWidths.back() * 9 / 16)),
           pixels(size_t(sourceWidth) * (sourceWidth * 9 / 16)), width(sourceWidth), height(sourceWidth * 9 / 16),
           smooth(look == RenderLook::Enhanced), nextSeed(seed), stickSensitivity(stickSensitivity), chapter(chapter) {
+        app.settings() = settings;
+        app.settings().screen = MenuScreen::Home;
+        app.settings().campaign = bool(chapter);
+        app.settings().splitRenderWidth = width;
+        mixer.setVolume(settings.volume);
         if (chapter) {
             campaignCanvas.resize(800 * 480);
-            app.settings() = settings;
-            mixer.setVolume(settings.volume);
-            game.startLocalCampaign(nextSeed++, settings.difficulty, *chapter);
+            prepareCampaign();
         } else {
             game.startLocalDuel(nextSeed++);
         }
@@ -375,13 +380,14 @@ public:
     ~SplitScreenDesktop() {
         if (audio) SDL_CloseAudioDevice(audio);
         for (auto* texture : textures) if (texture) SDL_DestroyTexture(texture);
+        if (settingsTexture) SDL_DestroyTexture(settingsTexture);
         if (renderer) SDL_DestroyRenderer(renderer);
         if (window) SDL_DestroyWindow(window);
     }
 
     bool open() {
         const char* title = chapter ? "Fall of Duty Lite | Operation Briar Co-op" :
-            assets.arena == Arena::BriarHouse ? "Fall of Duty Lite | Briar House Local Duel" : "Fall of Duty Lite | Local Duel";
+            assets.arena == Arena::BriarHouse ? "Fall of Duty Lite | Briar House Versus Duel" : "Fall of Duty Lite | Versus Duel";
         window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                   1200, 480, SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
         if (!window) return false;
@@ -413,9 +419,15 @@ public:
             switch (event.type) {
             case SDL_QUIT: running = false; break;
             case SDL_KEYDOWN:
-                if (chapter && !playing() && event.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
-                    returnToTitle = true;
-                    running = false;
+                if (playing() || !focused || event.key.repeat) break;
+                switch (event.key.keysym.scancode) {
+                case SDL_SCANCODE_ESCAPE: menuKeys |= Back; break;
+                case SDL_SCANCODE_RETURN: menuKeys |= Confirm; break;
+                case SDL_SCANCODE_UP: menuKeys |= Up; break;
+                case SDL_SCANCODE_DOWN: menuKeys |= Down; break;
+                case SDL_SCANCODE_LEFT: menuKeys |= Left; break;
+                case SDL_SCANCODE_RIGHT: menuKeys |= Right; break;
+                default: break;
                 }
                 break;
             case SDL_WINDOWEVENT:
@@ -434,6 +446,8 @@ public:
                 requested = true;
                 break;
             case SDL_RENDER_DEVICE_RESET:
+                if (settingsTexture) SDL_DestroyTexture(settingsTexture);
+                settingsTexture = nullptr;
                 if (!createTextures()) return false;
                 requested = true;
                 break;
@@ -441,6 +455,8 @@ public:
                 worldDirty = requested = true;
                 break;
             default:
+                if (event.type == SDL_CONTROLLERBUTTONDOWN && event.cbutton.button == SDL_CONTROLLER_BUTTON_B &&
+                    focused && !playing() && !pads.joined(0)) menuKeys |= Back;
                 if (pads.event(event, focused)) requested = true;
                 break;
             }
@@ -453,7 +469,26 @@ public:
         auto inputs = pads.sample(focused && !interrupted, stickSensitivity);
         const bool presentPads = !inputs[0].disconnected && !inputs[1].disconnected;
         const auto before = game.state().match;
-        if (chapter && focused && !playing() && inputs[0].edge(Back)) {
+        const auto keys = std::exchange(menuKeys, 0u);
+        Input navigation = inputs[0];
+        navigation.pressed |= keys;
+        navigation.disconnected = false;
+        if (keys) app.settings().controls = MenuControls::Keyboard;
+        else if (navigation.pressed && pads.joined(0)) app.settings().controls = pads.controls(0);
+        if (started && before == Match::Paused && focused && !interrupted) {
+            if (app.settings().screen == MenuScreen::Settings) {
+                app.tick(navigation);
+                requested = true;
+                return;
+            }
+            if (navigation.edge(Down)) {
+                app.settings().screen = MenuScreen::Settings;
+                app.settings().selection = 0;
+                requested = true;
+                return;
+            }
+        }
+        if (focused && !playing() && navigation.edge(Back)) {
             returnToTitle = true;
             running = false;
             return;
@@ -470,7 +505,11 @@ public:
                 mixer.pauseSpeech(true);
                 mixer.stop(Sound::Rotor);
                 mixer.stop(Sound::InvasionHum);
-            } else app.routeAudio();
+            } else {
+                app.routeAudio();
+                if (game.state().match == Match::Results && *chapter == MissionChapter::BriarHouse)
+                    app.recordCampaignResult();
+            }
         } else if (presentPads) {
             if (before == Match::Paused &&
                 (inputs[0].edge(Confirm) || inputs[1].edge(Confirm) || inputs[0].edge(Pause) || inputs[1].edge(Pause))) {
@@ -503,6 +542,26 @@ public:
             requested = false;
             return true;
         }
+        if (app.settings().screen == MenuScreen::Settings) {
+            if (!settingsTexture) settingsTexture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB565,
+                                                                     SDL_TEXTUREACCESS_STREAMING, 800, 480);
+            if (!settingsTexture) return false;
+            settingsCanvas.assign(800 * 480, 0);
+            drawHud(assets, game.state(), app.settings(), settingsCanvas.data(), false);
+            const auto panel = fitView({0, 0, w, h}, 800, 480);
+            overlay.color(DuelOverlay::ink);
+            if (SDL_UpdateTexture(settingsTexture, nullptr, settingsCanvas.data(), 800 * sizeof(uint16_t)) != 0 ||
+                SDL_RenderClear(renderer) != 0 || SDL_RenderCopy(renderer, settingsTexture, nullptr, &panel) != 0) return false;
+            SDL_RenderPresent(renderer);
+            requested = false;
+            return true;
+        }
+        if (app.settings().splitRenderWidth != width) {
+            width = app.settings().splitRenderWidth;
+            height = width * 9 / 16;
+            pixels.resize(size_t(width) * height);
+            if (!createTextures()) return false;
+        }
         if (worldDirty) {
             for (int seat = 0; seat < 2; ++seat) {
                 const auto& view = game.localView(seat);
@@ -513,8 +572,9 @@ public:
                     scaleWorld(pixels.data(), width, height, campaignCanvas.data(), false, smooth);
                     auto hud = view;
                     hud.match = Match::Playing;
-                    app.settings().controls = pads.controls(seat);
-                    drawHud(assets, hud, app.settings(), campaignCanvas.data(), false);
+                    auto menu = app.settings();
+                    menu.controls = pads.controls(seat);
+                    drawHud(assets, hud, menu, campaignCanvas.data(), false);
                     frame = campaignCanvas.data();
                     stride = 800;
                 }
@@ -542,7 +602,7 @@ public:
             if (SDL_RenderCopy(renderer, textures[seat], nullptr, &rect) != 0) return false;
             if (started && !chapter) overlay.viewHud(rect, game.localView(seat), seat);
         }
-        if (!playing()) overlay.menu(w, h, started, first, pads, second.playerScore, assets.arena);
+        if (!playing()) overlay.menu(w, h, started, first, pads, second.playerScore, assets.arena, app.settings().saveFailed);
         if (!chapter) overlay.score(w, margin, scoreScale, first.playerScore, second.playerScore);
         SDL_RenderPresent(renderer);
         requested = false;
@@ -569,6 +629,9 @@ private:
     SDL_Window* window = nullptr;
     SDL_Renderer* renderer = nullptr;
     std::array<SDL_Texture*, 2> textures{};
+    SDL_Texture* settingsTexture = nullptr;
+    std::vector<uint16_t> settingsCanvas;
+    uint32_t menuKeys = 0;
     SDL_AudioDeviceID audio = 0;
     DuelOverlay overlay{};
     bool focused = true, focusLost = false, worldDirty = true;
@@ -591,15 +654,23 @@ private:
         started = requested = worldDirty = true;
         pads.clearPressed();
         if (chapter) {
-            game.startLocalCampaign(nextSeed++, app.settings().difficulty, *chapter);
+            prepareCampaign();
             app.routeAudio();
         } else game.startLocalDuel(nextSeed++);
+    }
+
+    void prepareCampaign() {
+        const auto& saved = app.settings().progress;
+        if (app.settings().pendingLaunch == LaunchAction::ContinueCoOp && saved.available()) {
+            app.settings().difficulty = saved.difficulty;
+            game.resumeCampaign(nextSeed++, saved);
+        } else game.startLocalCampaign(nextSeed++, app.settings().difficulty, *chapter);
     }
 
     void playSounds() {
         for (size_t i = 0; i < game.eventCount(); ++i) {
             const auto& event = game.events()[i];
-            if (event.kind != EventKind::Sound) continue;
+            if (event.kind != EventKind::Sound || (!app.settings().voice && isVoiceSound(event.sound))) continue;
             float gain = event.volume;
             if (event.positional) {
                 const float first = length(event.position - game.localView(0).camera.position);
@@ -642,8 +713,8 @@ private:
     Clock::time_point nextTick = Clock::now();
 };
 
-std::optional<bool> runSplitScreen(const Assets& assets, RenderLook look, int width, std::optional<float> stickSensitivity,
-                                   std::optional<MissionChapter> chapter, const MenuState& settings) {
+std::optional<bool> runSplitScreen(const Assets& assets, RenderLook look, int& width, std::optional<float> stickSensitivity,
+                                   std::optional<MissionChapter> chapter, MenuState& settings) {
     SdlSession session;
     SDL_SetMainReady();
     configureControllers();
@@ -652,6 +723,7 @@ std::optional<bool> runSplitScreen(const Assets& assets, RenderLook look, int wi
         return std::nullopt;
     }
     SplitScreenDesktop duel(assets, look, width, std::random_device{}(), stickSensitivity, chapter, settings);
+    duel.app.setProgressWriter(fod::desktop::writeCampaign);
     if (!duel.open()) {
         std::fprintf(stderr, "SDL split-screen display: %s\n", SDL_GetError());
         return std::nullopt;
@@ -660,9 +732,9 @@ std::optional<bool> runSplitScreen(const Assets& assets, RenderLook look, int wi
     SplitScreenLoop loop;
     while (duel.running) {
         if (!duel.pump()) break;
-        if (!duel.running) return duel.returnToTitle;
+        if (!duel.running) break;
         if (!loop.frame(duel, Clock::now())) break;
-        if (!duel.running) return duel.returnToTitle;
+        if (!duel.running) break;
         if (duel.playing()) {
             const auto remaining = std::chrono::ceil<std::chrono::milliseconds>(loop.deadline() - Clock::now());
             if (remaining.count() > 0) SDL_WaitEventTimeout(nullptr, int(remaining.count()));
@@ -670,19 +742,24 @@ std::optional<bool> runSplitScreen(const Assets& assets, RenderLook look, int wi
             if (!SDL_WaitEvent(nullptr)) break;
         }
     }
+    if (!duel.running) {
+        width = duel.app.settings().splitRenderWidth;
+        settings.voice = duel.app.settings().voice;
+        settings.volume = duel.app.settings().volume;
+        settings.callsign = duel.app.settings().callsign;
+        settings.progress = duel.app.settings().progress;
+        settings.saveFailed = duel.app.settings().saveFailed;
+        return duel.returnToTitle;
+    }
     std::fprintf(stderr, "SDL split-screen frame: %s\n", SDL_GetError());
     return std::nullopt;
 }
 
 } // namespace
 
-int runLocalDuel(const fod::Assets& assets, fod::RenderLook look, int width, std::optional<float> stickSensitivity) {
-    return runSplitScreen(assets, look, width, stickSensitivity, std::nullopt, {}).has_value() ? 0 : 1;
-}
-
-std::optional<bool> runLocalCampaign(const fod::Assets& assets, fod::RenderLook look, int width,
-                                    std::optional<float> stickSensitivity, fod::MissionChapter chapter,
-                                    const fod::MenuState& settings) {
+std::optional<bool> runLocalSession(const fod::Assets& assets, fod::RenderLook look, int& width,
+                                    std::optional<float> stickSensitivity, std::optional<fod::MissionChapter> chapter,
+                                    fod::MenuState& settings) {
     return runSplitScreen(assets, look, width, stickSensitivity, chapter, settings);
 }
 
@@ -761,7 +838,40 @@ void testLocalDuelDesktop(const fod::Assets& assets, bool live, int width) {
     CHECK(!wantsRelativeMouse(Match::Paused, MenuControls::Keyboard, true));
     CHECK(!wantsRelativeMouse(Match::Playing, MenuControls::Keyboard, false));
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) == 0);
+    // An unfilled lobby must allow Escape, or the first player's Back button.
+    if (!live) {
+        MenuState settings;
+        settings.screen = MenuScreen::VersusSetup;
+        int renderWidth = width;
+        const auto escape = [](Uint32, void*) -> Uint32 {
+            SDL_Event event{};
+            event.type = SDL_KEYDOWN;
+            event.key.keysym.scancode = SDL_SCANCODE_ESCAPE;
+            SDL_PushEvent(&event);
+            return 0;
+        };
+        CHECK(SDL_AddTimer(100, escape, nullptr) != 0);
+        const auto back = runSplitScreen(assets, RenderLook::Enhanced, renderWidth, {}, {}, settings);
+        CHECK(back && *back && settings.screen == MenuScreen::VersusSetup);
+        CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) == 0);
+    }
     VirtualPad first, second;
+    if (!live) {
+        SplitScreenDesktop waiting(assets, RenderLook::Enhanced, width, 9);
+        CHECK(waiting.open());
+        const auto press = [&](SDL_GameControllerButton button) {
+            SDL_Event event{};
+            event.type = SDL_CONTROLLERBUTTONDOWN;
+            event.cbutton.which = first.id;
+            event.cbutton.button = Uint8(button);
+            CHECK(SDL_PushEvent(&event) == 1 && waiting.pump());
+            waiting.tick();
+        };
+        press(SDL_CONTROLLER_BUTTON_START);
+        CHECK(waiting.pads.joined(0) && !waiting.pads.joined(1));
+        press(SDL_CONTROLLER_BUTTON_B);
+        CHECK(waiting.returnToTitle && !waiting.running && !waiting.started);
+    }
     SplitScreenDesktop duel(assets, RenderLook::Enhanced, width, 8);
     CHECK(duel.open());
     CHECK(duel.present());
@@ -915,6 +1025,18 @@ void testLocalDuelDesktop(const fod::Assets& assets, bool live, int width) {
         std::printf("%dx%d per view, live SDL: %.1f fps, p50 %.2f ms, p95 %.2f ms, %d/%zu missed deadlines.\n",
                     width, width * 9 / 16, fps, frameMs[149], frameMs[284], missed, frameMs.size());
     }
+    if (!live) {
+        tap(replacement, SDL_CONTROLLER_BUTTON_START); tick();
+        CHECK(duel.game.state().match == Match::Paused);
+        tap(replacement, SDL_CONTROLLER_BUTTON_DPAD_DOWN); tick();
+        CHECK(duel.app.settings().screen == MenuScreen::Settings && duel.present());
+        tap(replacement, SDL_CONTROLLER_BUTTON_DPAD_DOWN); tick();
+        const auto volume = duel.app.settings().volume;
+        tap(replacement, SDL_CONTROLLER_BUTTON_DPAD_LEFT); tick();
+        CHECK(duel.app.settings().volume == volume - 10);
+        tap(replacement, SDL_CONTROLLER_BUTTON_B); tick();
+        CHECK(duel.app.settings().screen == MenuScreen::Home && !duel.playing());
+    }
     SDL_Event close{};
     close.type = SDL_WINDOWEVENT;
     close.window.event = SDL_WINDOWEVENT_CLOSE;
@@ -928,15 +1050,43 @@ void testLocalCampaignDesktop(const fod::Assets& assets) {
     configureControllers();
     CHECK(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) == 0);
     VirtualPad first, second;
+    const auto tapIn = [](SplitScreenDesktop& lobby, VirtualPad& pad, SDL_GameControllerButton button) {
+        pad.set(button, true);
+        CHECK(SDL_WaitEventTimeout(nullptr, 100) == 1 && lobby.pump());
+        pad.set(button, false);
+        CHECK(lobby.pump());
+        lobby.tick();
+    };
+    {
+        MenuState settings;
+        settings.pendingLaunch = LaunchAction::ContinueCoOp;
+        auto& save = settings.progress;
+        save.coOp = 1;
+        save.next = MissionChapter::Timberline;
+        save.seconds = 276.5f;
+        save.difficulty = 7;
+        save.saved = save.boarded = 2;
+        SplitScreenDesktop returning(assets, RenderLook::Enhanced, 400, 9, {}, MissionChapter::BriarHouse, settings);
+        CHECK(returning.open());
+        tapIn(returning, first, SDL_CONTROLLER_BUTTON_START);
+        tapIn(returning, first, SDL_CONTROLLER_BUTTON_A);
+        CHECK(!returning.started);
+        tapIn(returning, second, SDL_CONTROLLER_BUTTON_START);
+        tapIn(returning, first, SDL_CONTROLLER_BUTTON_A);
+        CHECK(returning.playing());
+        for (int seat = 0; seat < 2; ++seat) {
+            const auto& view = returning.game.localView(seat);
+            CHECK(view.campaignSeat == seat && view.mission && view.mission->chapter == save.next);
+            CHECK(view.mission->earlierMissionSeconds == save.seconds &&
+                  view.mission->civiliansBoarded == 2 && !view.mission->actors[1].active);
+        }
+        CHECK(returning.app.settings().difficulty == save.difficulty);
+    }
     SplitScreenDesktop coOp(assets, RenderLook::Enhanced, 400, 12, {}, MissionChapter::BriarHouse);
     CHECK(coOp.open() && coOp.present());
     const auto tick = [&] { CHECK(coOp.pump()); coOp.tick(); };
     const auto tap = [&](VirtualPad& pad, SDL_GameControllerButton button) {
-        pad.set(button, true);
-        CHECK(SDL_WaitEventTimeout(nullptr, 100) == 1);
-        CHECK(coOp.pump());
-        pad.set(button, false);
-        tick();
+        tapIn(coOp, pad, button);
     };
     tap(first, SDL_CONTROLLER_BUTTON_START);
     tap(first, SDL_CONTROLLER_BUTTON_A);
@@ -985,7 +1135,7 @@ void testLocalCampaignDesktop(const fod::Assets& assets) {
     tap(first, SDL_CONTROLLER_BUTTON_START);
     tap(first, SDL_CONTROLLER_BUTTON_B);
     CHECK(coOp.returnToTitle && !coOp.running);
-    std::puts("Campaign co-op lobby, split views, independent controls and reconnect passed.");
+    std::puts("Campaign co-op lobby, saved chapter rejoin, split views, independent controls and reconnect passed.");
 }
 #else
 void testLocalDuelDesktop(const fod::Assets&, bool, int) {
