@@ -52,15 +52,29 @@ struct ShotHit {
 
 class World {
 public:
-    explicit World(const Assets& assets) : assets_(assets) {
-        boxBounds_.reserve(assets.obstacles.size());
-        for (const auto& b : assets.obstacles) {
+    explicit World(const ArenaGeometry& geometry) { useGeometry(geometry); }
+
+    const ArenaGeometry& geometry() const { return *geometry_; }
+    void useGeometry(const ArenaGeometry& geometry) {
+        if (geometry_ == &geometry) return;
+        geometry_ = &geometry;
+        hillBounds_ = {{infinity, infinity, infinity}, {-infinity, -infinity, -infinity}};
+        boxBounds_.clear();
+        walkSolid_.clear();
+        for (const auto& face : geometry.hillside) {
+            for (const auto p : face) hillBounds_.include(p);
+        }
+        boxBounds_.reserve(geometry.obstacles.size());
+        walkSolid_.reserve(geometry.obstacles.size());
+        for (const auto& b : geometry.obstacles) {
             // Packed rotations can be slightly short of unit length. The inverse
             // transform then makes the actual obstacle wider than a pure rotation.
             const float scale = std::max(1.f, 1.f / (b.cos * b.cos + b.sin * b.sin));
             const float ex = (std::abs(b.cos) * b.hw + std::abs(b.sin) * b.hd) * scale;
             const float ez = (std::abs(b.sin) * b.hw + std::abs(b.cos) * b.hd) * scale;
             boxBounds_.push_back({{b.cx - ex, b.minY, b.cz - ez}, {b.cx + ex, b.maxY, b.cz + ez}});
+            const float base = groundHeight({b.cx, 0.f, b.cz});
+            walkSolid_.push_back(b.minY <= base + 1.75f && b.maxY >= base + .15f);
         }
     }
 
@@ -71,13 +85,19 @@ public:
         return grounded;
     }
 
-    float clampX(float x) const { return std::clamp(x, -assets_.extent.x, assets_.extent.x); }
-    float clampZ(float z) const { return std::clamp(z, -assets_.extent.z, assets_.extent.z); }
+    float clampX(float x) const { return std::clamp(x, -geometry_->extent.x, geometry_->extent.x); }
+    float clampZ(float z) const { return std::clamp(z, -geometry_->extent.z, geometry_->extent.z); }
+
+    float groundHeight(Vec3 p) const {
+        if (geometry_->hillside.empty() || outsideXZ(p, hillBounds_, 0)) return 0.f;
+        const float top = hillBounds_.max.y + 1.f;
+        return std::max(0.f, top - hillRay({p.x, top, p.z}, {0, -1, 0}, top));
+    }
 
     bool canStand(Vec3 pos, float eye) const {
         const float margin = rotationMargin(.38f);
         for (size_t i = 0; i < boxBounds_.size(); ++i) {
-            const auto& b = assets_.obstacles[i];
+            const auto& b = geometry_->obstacles[i];
             if (b.maxY <= pos.y + .05f || b.minY >= pos.y + eye + .15f) continue;
             if (outsideXZ(pos, boxBounds_[i], margin)) continue;
             const Vec3 p = local(b, pos);
@@ -92,10 +112,10 @@ public:
         const float left = std::min(from.x, to.x) - margin, right = std::max(from.x, to.x) + margin;
         const float front = std::min(from.z, to.z) - margin, back = std::max(from.z, to.z) + margin;
         for (size_t i = 0; i < boxBounds_.size(); ++i) {
+            if (!walkSolid_[i]) continue;
             const auto& bounds = boxBounds_[i];
             if (bounds.min.x > right || bounds.max.x < left || bounds.min.z > back || bounds.max.z < front) continue;
-            const auto& b = assets_.obstacles[i];
-            if (b.minY > 1.75f || b.maxY < .15f) continue;
+            const auto& b = geometry_->obstacles[i];
             const Vec3 p = local(b, from), d = localDirection(b, delta);
             const float w = b.hw + pad, h = b.hd + pad;
             if ((std::abs(d.x) < 1e-8f && std::abs(p.x) >= w) ||
@@ -107,11 +127,11 @@ public:
     }
 
     bool blocked(Vec3 from, Vec3 to) const {
-        return boxRay(from, to - from, 1, true) != infinity;
+        return boxRay(from, to - from, 1, true) != infinity || hillRay(from, to - from, 1) < 1.f;
     }
 
     float ray(Vec3 p, Vec3 direction, float maxDistance) const {
-        float best = boxRay(p, direction, maxDistance, false);
+        float best = std::min(boxRay(p, direction, maxDistance, false), hillRay(p, direction, maxDistance));
         if (direction.y < -1e-6f) {
             const float floor = -p.y / direction.y;
             if (floor <= maxDistance) best = std::min(best, floor);
@@ -119,22 +139,29 @@ public:
         return best;
     }
 
+    // Town houses and trees use the same solid cover for player rounds and plasma.
+    ShotHit missionShot(Vec3 p, Vec3 d, uint64_t broken) const {
+        const auto mesh = shot(p, d, broken);
+        const float cover = ray(p, d, mesh.distance);
+        return cover < mesh.distance ? ShotHit{cover, 0, -1, true} : mesh;
+    }
+
     ShotHit shot(Vec3 p, Vec3 d, uint64_t broken) const {
         ShotHit result;
         const auto test = [&](uint32_t first, uint32_t count) {
             for (uint32_t i = first; i < first + count; ++i) {
-                const auto& tri = assets_.shotSurfaces[i];
+                const auto& tri = geometry_->shotSurfaces[i];
                 if (tri.glass >= 0 && tri.glass < 64 && (broken & (uint64_t(1) << tri.glass))) continue;
-                const float hit = triangle(p, d, assets_.shotCorners(i));
+                const float hit = triangle(p, d, geometry_->shotCorners(i));
                 if (hit < result.distance) result = {hit, tri.surface, tri.glass, true};
             }
         };
         // Shot chunks carry the browser mesh geometry independently of the
         // render pack, so render LOD never changes the surface that a ray hits.
-        if (assets_.shotChunks.empty()) {
-            test(0, uint32_t(assets_.shotSurfaces.size()));
+        if (geometry_->shotChunks.empty()) {
+            test(0, uint32_t(geometry_->shotSurfaces.size()));
         } else {
-            for (const auto& chunk : assets_.shotChunks) {
+            for (const auto& chunk : geometry_->shotChunks) {
                 float near = 0;
                 constexpr Vec3 margin{.00001f, .00001f, .00001f};
                 const Bounds bounds{chunk.bounds.min - margin, chunk.bounds.max + margin};
@@ -145,8 +172,18 @@ public:
     }
 
 private:
-    const Assets& assets_;
+    const ArenaGeometry* geometry_ = nullptr;
     std::vector<Bounds> boxBounds_;
+    std::vector<uint8_t> walkSolid_;
+    Bounds hillBounds_{{infinity, infinity, infinity}, {-infinity, -infinity, -infinity}};
+
+    float hillRay(Vec3 p, Vec3 d, float limit) const {
+        float near = 0.f;
+        if (geometry_->hillside.empty() || !intersects(p, d, hillBounds_, near, limit)) return infinity;
+        float hit = infinity;
+        for (const auto& face : geometry_->hillside) hit = std::min(hit, triangle(p, d, face));
+        return hit <= limit ? hit : infinity;
+    }
 
     // Rotating an expanded obstacle can add up to sqrt(2) times the local clearance on either axis.
     static constexpr float rotationMargin(float clearance) { return clearance * 1.415f + .0001f; }
@@ -184,7 +221,7 @@ private:
             const auto& bounds = boxBounds_[i];
             if (bounds.min.x > hi.x || bounds.max.x < lo.x || bounds.min.z > hi.z ||
                 bounds.max.z < lo.z || bounds.min.y > hi.y || bounds.max.y < lo.y) continue;
-            const auto& b = assets_.obstacles[i];
+            const auto& b = geometry_->obstacles[i];
             if (!b.blocksSight) continue;
             float first = 0;
             if (!intersects(p, d, bounds, first, best)) continue;
@@ -206,7 +243,7 @@ private:
             bool pushed = false;
             for (size_t i = 0; i < boxBounds_.size(); ++i) {
                 if (outsideXZ(next, boxBounds_[i], margin)) continue;
-                const auto& b = assets_.obstacles[i];
+                const auto& b = geometry_->obstacles[i];
                 if (pos.y >= b.maxY || pos.y + height <= b.minY) continue;
                 Vec3 p = local(b, next);
                 const float x = b.hw + radius - std::abs(p.x), z = b.hd + radius - std::abs(p.z);
@@ -235,10 +272,11 @@ private:
         const float apex = pos.y + std::max(0.f, (vy + .5f * gravity * rise) * rise);
         next.y += (vy + .5f * gravity * dt) * dt;
         v.y += gravity * dt;
-        float floor = 0, roof = infinity;
+        const float terrain = groundHeight(next);
+        float floor = terrain, roof = infinity;
         for (size_t i = 0; i < boxBounds_.size(); ++i) {
             if (outsideXZ(next, boxBounds_[i], margin)) continue;
-            const auto& b = assets_.obstacles[i];
+            const auto& b = geometry_->obstacles[i];
             const bool landing = v.y <= 0 && apex >= b.maxY - .05f && next.y <= b.maxY;
             const bool bonk = vy > 0 && pos.y + height <= b.minY + .05f && apex + height > b.minY;
             if (!landing && !bonk) continue;
@@ -250,7 +288,7 @@ private:
         if (roof < infinity) {
             next.y = std::max(0.f, roof);
             v.y = 0;
-        } else if (next.y <= floor) {
+        } else if (next.y <= floor || (vy == 0 && pos.y > 0 && pos.y <= groundHeight(pos) + .001f)) {
             next.y = floor;
             v.y = 0;
             pos = next;

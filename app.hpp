@@ -2,6 +2,7 @@
 
 #include "audio.hpp"
 #include "game.hpp"
+#include "mission.hpp"
 
 namespace fod {
 
@@ -29,7 +30,7 @@ constexpr MenuLabels menuLabels(MenuControls controls) {
 #endif
 
 enum class StartItem : uint8_t { Campaign = 0, BotMatch = 1, MultiplayerLan = 2, MatchSetup = 3, Count = 4 };
-enum class LaunchAction : uint8_t { None, Campaign, BotMatch, LocalDuel };
+enum class LaunchAction : uint8_t { None, Campaign, BotMatch, LocalDuel, LocalCampaign };
 
 struct MenuState {
     std::array<char, 17> callsign{'P', 'L', 'A', 'Y', 'E', 'R', '\0'};
@@ -41,6 +42,7 @@ struct MenuState {
 #ifdef FOD_LOCAL_DUEL
     MenuControls controls = MenuControls::Default;
     int desktopRenderWidth = 0;
+    bool campaignMenu = false;
 #endif
 
     int width() const {
@@ -53,7 +55,8 @@ struct MenuState {
 
     bool operator==(const MenuState& other) const {
 #ifdef FOD_LOCAL_DUEL
-        if (controls != other.controls || desktopRenderWidth != other.desktopRenderWidth) return false;
+        if (controls != other.controls || desktopRenderWidth != other.desktopRenderWidth ||
+            campaignMenu != other.campaignMenu) return false;
 #endif
         return callsign == other.callsign && selection == other.selection && difficulty == other.difficulty &&
                volume == other.volume && callsignCursor == other.callsignCursor && opponent == other.opponent &&
@@ -84,6 +87,9 @@ struct MenuFrameKey {
 
 enum MenuRow { PlayRow, DifficultyRow, RivalRow, VoiceRow, VolumeRow, RenderRow, CallsignRow, ExitRow, MenuRows };
 enum LanRow { LanStartRow, LanArenaRow, LanStatusRow, LanBackRow, LanRows };
+#ifdef FOD_LOCAL_DUEL
+enum CampaignRow { CampaignSoloRow, CampaignCoOpRow, CampaignBackRow, CampaignRows };
+#endif
 constexpr int startX = 42, startWidth = 326;
 struct StartCard {
     int y, height;
@@ -102,7 +108,7 @@ class App {
 public:
     explicit App(const Assets& assets, uint32_t voiceSeed = 0);
     void tick(Input input);
-    void startImmediate(bool asCampaign);
+    void startImmediate(bool asCampaign, MissionChapter chapter = MissionChapter::BriarHouse);
     void routeAudio();
     const Snapshot& state() const { return game.state(); }
     MenuState& settings() { return menu_; }
@@ -114,6 +120,10 @@ private:
     void menuInput(const Input& input);
     void startMenuInput(const Input& input);
     void lanMenuInput(const Input& input);
+#ifdef FOD_LOCAL_DUEL
+    void campaignMenuInput(const Input& input);
+#endif
+    void selectCampaign(const Input& input);
     void callsignInput(const Input& input);
     void beginMatch(bool retryCheckpoint);
     void startOrResume(const Input& input);

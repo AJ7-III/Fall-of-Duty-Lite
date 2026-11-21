@@ -25,6 +25,8 @@ struct LightProfile {
 };
 constexpr LightProfile daylightProfile{.69f, .69f, .38f, 1.12f, sunward};
 // Colorado dusk sunset: low west-northwest sun casting long alpenglow light against moody twilight shadows.
+constexpr LightProfile basinProfile{.66f, .59f, .43f, 1.05f, {-.49f, .57f, .66f}};
+constexpr LightProfile scoutProfile{.53f, .56f, .19f, .99f, {-.42f, .73f, .54f}};
 constexpr LightProfile duskProfile{.59f, .69f, .52f, 1.1f, {-0.8190f, 0.3396f, 0.4594f}};
 
 // Turf, kerbs and floor slabs stay below the clutter height and never shade the yard.
@@ -241,25 +243,26 @@ uint64_t SceneLight::bytes() const {
     return map_.capacity() + faces.capacity() * sizeof(FaceLight) + patches.capacity() * sizeof(GroundPatch);
 }
 
-void SceneLight::bake(const Assets& assets) {
+void SceneLight::bake(const Assets& assets, const ArenaGeometry& geometry) {
     const bool dusk = assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion;
-    const LightProfile& profile = dusk ? duskProfile : daylightProfile;
+    const LightProfile& profile = &geometry == assets.scoutInterior.get() ? scoutProfile :
+                                  &geometry == assets.timberline.get() ? basinProfile : dusk ? duskProfile : daylightProfile;
     sun = profile.sun;
     movingCoefficients_ = {profile.ambient * (.5f + .5f * profile.bounce) * profile.exposure,
                            profile.ambient * .5f * (1.f - profile.bounce) * profile.exposure,
                            profile.direct * profile.exposure};
-    const auto& world = assets.world;
+    const auto& world = geometry.world;
     Field field;
 
     // The yard is wherever the rivals can walk, with room for the walls around it.
     Bounds yard{{1e9f, 0, 1e9f}, {-1e9f, 0, -1e9f}};
-    for (const auto& node : assets.navNodes) {
+    for (const auto& node : geometry.navNodes) {
         yard.min.x = std::min(yard.min.x, node.position.x);
         yard.min.z = std::min(yard.min.z, node.position.z);
         yard.max.x = std::max(yard.max.x, node.position.x);
         yard.max.z = std::max(yard.max.z, node.position.z);
     }
-    if (!assets.navNodes.empty() && !world.triangles.empty()) {
+    if (!geometry.navNodes.empty() && !world.triangles.empty()) {
         const float half = std::max(yard.max.x - yard.min.x, yard.max.z - yard.min.z) * 0.5f + 5;
         field.size = size;
         field.cell = cell_ = 2 * half / size;
@@ -275,7 +278,7 @@ void SceneLight::bake(const Assets& assets) {
                       world.vertices[triangle.c].position);
         }
         // Let instanced Ship Box trucks and cars cast real directional sunset shadows onto roads & lawns.
-        for (const auto& inst : assets.propInstances) {
+        for (const auto& inst : geometry.propInstances) {
             const float cs = std::cos(inst.yaw), sn = std::sin(inst.yaw);
             const Vec3 along{cs, 0, -sn}, side{sn, 0, cs};
             const float hl = inst.halfLen * 0.92f, hw = inst.halfWidth * 0.88f, h = inst.height;
@@ -312,7 +315,7 @@ void SceneLight::bake(const Assets& assets) {
         }
         constexpr float footprint = 0.34f;
         std::vector<float> light(size * size);
-        const bool hasLamps = !assets.lamps.empty();
+        const bool hasLamps = !geometry.lamps.empty();
         for (int z = 0; z < size; ++z) {
             const float worldZ = field.minZ + (z + 0.5f) * field.cell;
             for (int x = 0; x < size; ++x) {
@@ -327,7 +330,7 @@ void SceneLight::bake(const Assets& assets) {
                 // A roof hides the zenith. Low cover hides more of the sky than a lamp arm.
                 if (field.high[i] > eye) sky *= std::clamp((field.low[i] - eye) / 8, 0.45f, 1.0f);
                 light[i] = shade({0, 1, 0}, sky, field.sunExposure(point, profile.sun), profile);
-                if (hasLamps) light[i] += lampLight(field, assets.lamps, point, {0, 1, 0});
+                if (hasLamps) light[i] += lampLight(field, geometry.lamps, point, {0, 1, 0});
             }
         }
         soften(light, size);
@@ -400,7 +403,7 @@ void SceneLight::bake(const Assets& assets) {
         const Vec3 center = (a + b + c) / 3;
         const auto lit = [&](Vec3 point, Vec3 direction, bool thorough) {
             const float daylight = faceLight(field, point, direction, thorough, profile);
-            return level(daylight + lampLight(field, assets.lamps, point, direction), profile);
+            return level(daylight + lampLight(field, geometry.lamps, point, direction), profile);
         };
         if (doubled * 0.5f >= largeFace) {
             // Corners carry their own light so a wall darkens toward the ground.

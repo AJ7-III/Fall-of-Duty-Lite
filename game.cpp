@@ -19,6 +19,7 @@ constexpr float standEye = 1.7f, crouchEye = .95f, proneEye = .42f;
 constexpr float footstepGain = .35f;
 constexpr int playerSlot = -1;
 constexpr int matchTarget = 10;
+constexpr double campaignRejoinSeconds = 5.0;
 constexpr int maxDifficulty = std::size(game_data::levels[0]);
 
 constexpr auto freeForAllHanzLevels = [] {
@@ -161,7 +162,10 @@ struct Game::Impl {
     Snapshot& snapshot = player.view;
 #ifdef FOD_LOCAL_DUEL
     std::unique_ptr<Human> guest;
-    std::array<Random, 2> duelRandom{};
+    std::array<Random, 2> localRandom{};
+    std::array<uint32_t, 2> campaignBlockedActions{};
+    float scoutLookYaw = 0, scoutLookPitch = 0;
+    bool partnerCameraShared = false;
 #endif
     std::array<Event, 96> eventBuffer{};
     size_t eventCount = 0;
@@ -296,7 +300,14 @@ struct Game::Impl {
 
     void setDifficulty(int level) { snapshot.difficulty = std::clamp(level, 1, maxDifficulty); }
 
+    void useGeometry(ArenaScene scene) {
+        const auto& geometry = assets.geometry(scene);
+        world.useGeometry(geometry);
+        navigation.useGeometry(geometry);
+    }
+
     void start(uint32_t seed, int level, Opponent opponent) {
+        useGeometry(ArenaScene::Estate);
 #ifdef FOD_LOCAL_DUEL
         guest.reset();
         player.slot = playerSlot;
@@ -474,7 +485,7 @@ struct Game::Impl {
         s.eyeHeight += (desired - s.eyeHeight) * float(1 - std::exp(-15 * dt));
         s.sprint = input.down(Sprint) && input.moveY > 0 && !s.crouch && !s.prone && progress < .1;
         const float gait = s.prone ? .9f : s.crouch ? 2.f : s.sprint ? 6.2f : 4.f;
-        const float shock = s.mission ? s.mission->plasmaShock / plasmaShockDuration : 0.f;
+        const float shock = playerPlasmaShock(s) / plasmaShockDuration;
         const float speed = gait * (1.f - .27f * shock);
         const float sy = std::sin(s.playerYaw), cy = std::cos(s.playerYaw);
         const Vec3 desiredVel{sy * input.moveY + cy * input.moveX, 0, cy * input.moveY - sy * input.moveX};
@@ -736,7 +747,15 @@ struct Game::Impl {
         explicit HostAdapter(Impl& impl) : g(impl) {}
         void playSound(Sound id, float vol, bool pos, Vec3 at) override { g.sound(id, vol, pos, at); }
         void setCampaignVoice(CampaignVoiceCue cue) override { g.campaignVoice = cue; }
-        void damagePlayer(float dmg, Vec3 from) override {
+        void damagePlayer(float dmg, Vec3 from, [[maybe_unused]] bool partner) override {
+#ifdef FOD_LOCAL_DUEL
+            if (partner) {
+                auto& human = *g.guest;
+                if (g.hurtPlayer(human, g.localRandom[1], dmg, from) && human.view.dead)
+                    g.emit(EventKind::PlayerDeath, int(Cause::Weapon), human.view.player.position, 0, human.slot, 0);
+                return;
+            }
+#endif
             if (g.hurtPlayer(g.player, g.random, dmg, from) && g.snapshot.dead) {
                 if (g.laptop == Phase::Raising || g.laptop == Phase::Out) g.closeLaptop();
                 if (g.transmitter != Phase::Away) g.transmitter = Phase::Away;
@@ -745,21 +764,82 @@ struct Game::Impl {
         }
         void hitWorld(const ShotHit& hit, Vec3 point) override { g.hitWorld(hit, point); }
         void updateActorFrame(Actor& a) override { g.updateActorFrame(a); }
-        void refillPlayer(bool newMatch) override { g.refill(g.player, newMatch); }
+        void equipSniper(Human& human) {
+            if (human.view.weapon == Weapon::Sniper) return;
+            g.cancelWeapon(human);
+            human.previousWeapon = human.weapon();
+            human.view.weapon = Weapon::Sniper;
+            human.swap = Phase::Raising;
+            human.switchTimer = 0;
+            g.emit(EventKind::Swap, human.weapon(), {}, 0, human.slot);
+        }
+        void equipSniper() override {
+            equipSniper(g.player);
+#ifdef FOD_LOCAL_DUEL
+            if (g.snapshot.campaignSeat == 0) equipSniper(*g.guest);
+#endif
+        }
+        void refillPlayer(bool newMatch) override {
+            g.refill(g.player, newMatch);
+#ifdef FOD_LOCAL_DUEL
+            if (g.snapshot.campaignSeat == 0) g.refill(*g.guest, newMatch);
+#endif
+        }
+        void useMissionScene(ArenaScene scene) override {
+            g.useGeometry(scene);
+            g.paneHits.fill(0);
+        }
+        void transferPlayer(Vec3 position, float yaw) override {
+            auto& s = g.snapshot;
+            s.player.position = position;
+            s.playerVelocity = {};
+            s.player.yaw = yaw;
+            s.playerYaw = yaw;
+            s.playerPitch = 0;
+            s.camera.position = atHeight(position, s.eyeHeight);
+            s.camera.yaw = yaw;
+            s.camera.pitch = 0;
+            s.grounded = true;
+            g.player.recoilPitch = g.player.recoilYaw = g.player.recoilKick = 0;
+#ifdef FOD_LOCAL_DUEL
+            if (s.campaignSeat == 0) g.placePartner(position, yaw);
+#endif
+        }
     };
 
     void startMission(uint32_t seed, int level, mission_detail::MissionStart mode,
-                      MissionChapter replayChapter = MissionChapter::BriarHouse, bool finale = false) {
+                      MissionChapter replayChapter = MissionChapter::BriarHouse, bool finale = false, bool noraAlive = true,
+                      [[maybe_unused]] bool coOp = false) {
 #ifdef FOD_LOCAL_DUEL
-        guest.reset();
         player.slot = playerSlot;
+        if (!coOp) guest.reset();
+        else {
+            if (!guest) guest = std::make_unique<Human>();
+            else *guest = {};
+            guest->slot = 1;
+            guest->view.campaignSeat = 1;
+            localRandom[1] = {};
+            const uint32_t stream = seed ^ 0x82f63b78u;
+            localRandom[1].state = stream ? stream : 1u;
+            refill(*guest, true);
+            campaignBlockedActions = {};
+            partnerCameraShared = false;
+        }
 #endif
         second.reset();
         if (!mission) mission = std::make_unique<mission_detail::MissionController>(assets, world, navigation);
+        const bool remote = replayChapter == MissionChapter::Timberline ||
+            (!finale && replayChapter == MissionChapter::BriarHouse && snapshot.mission &&
+                ((mode == mission_detail::MissionStart::NextChapter && snapshot.mission->chapter == MissionChapter::BriarHouse) ||
+                 (mode == mission_detail::MissionStart::Retry && snapshot.mission->chapter == MissionChapter::Timberline)));
+        useGeometry(remote ? ArenaScene::Timberline : ArenaScene::Estate);
         if (finale) mission->seedFinaleReplay();
-        else if (replayChapter != MissionChapter::BriarHouse) mission->seedChapterReplay(replayChapter);
+        else if (replayChapter != MissionChapter::BriarHouse) mission->seedChapterReplay(replayChapter, noraAlive);
         signalLower = 0;
         snapshot = {};
+#ifdef FOD_LOCAL_DUEL
+        if (coOp) snapshot.campaignSeat = 0;
+#endif
         snapshot.match = Match::Playing;
         setDifficulty(level);
         random.state = seed ? seed : 1;
@@ -794,26 +874,33 @@ struct Game::Impl {
         }
         viewWeapon(player, handheld());
         viewWorld();
+#ifdef FOD_LOCAL_DUEL
+        if (coOp) {
+            placePartner(startPos, startYaw);
+            player.blockFire = true;
+            viewWeapon(*guest, false);
+            publishPartner();
+        }
+#endif
+    }
+
+    void resolveCampaignShot(const Shot& shot, Snapshot& shooter) {
+        const auto hit = world.missionShot(shot.origin, shot.direction, snapshot.brokenGlass);
+        Vec3 hitPoint{};
+        HostAdapter host(*this);
+        if (!mission->resolvePlayerShot(shot.origin, shot.direction, shot.damage, hit.distance, shooter, host, hitPoint) &&
+            hit.hit) {
+            hitWorld(hit, shot.origin + shot.direction * hit.distance);
+        }
     }
 
     void resolveSoloShot(const Shot& shot) {
-        const Vec3 p = shot.origin, d = shot.direction;
-        auto hit = world.shot(p, d, snapshot.brokenGlass);
         if (mission && mission->active()) {
-            // Also stop shots on surrounding town houses, parked trucks and barricades.
-            const float townWall = world.ray(p, d, hit.distance);
-            if (townWall < hit.distance) {
-                hit = {townWall, 0, -1, true};
-            }
-            Vec3 hitPoint{};
-            HostAdapter host(*this);
-            if (mission->resolvePlayerShot(p, d, shot.damage, hit.distance, snapshot, host, hitPoint)) {
-                return;
-            }
-            const Vec3 point = p + d * (hit.hit ? hit.distance : 100.f);
-            if (hit.hit) hitWorld(hit, point);
+            resolveCampaignShot(shot, snapshot);
             return;
         }
+        const Vec3 p = shot.origin, d = shot.direction;
+        const auto hit = world.shot(p, d, snapshot.brokenGlass);
         float zone = 1, distance = hit.distance;
         int victim = playerSlot;
         for (int slot = 0; slot < rivalCount(); ++slot) {
@@ -836,7 +923,7 @@ struct Game::Impl {
             const uint64_t pane = uint64_t(1) << hit.glass;
             if (snapshot.brokenGlass & pane) return;
             const int count = ++paneHits[hit.glass];
-            const int needed = hit.glass < int(assets.glassHits.size()) ? assets.glassHits[hit.glass] : 1;
+            const int needed = hit.glass < int(world.geometry().glassHits.size()) ? world.geometry().glassHits[hit.glass] : 1;
             emit(EventKind::GlassHit, count, point, hit.surface);
             sound(Sound::Glass, count < needed ? .55f : 1.f, true, point);
             if (count >= needed) {
@@ -866,7 +953,7 @@ struct Game::Impl {
             if (human.switchTimer >= .22) {
                 const int current = human.weapon();
                 int next = (current + 1) % 3;
-                if (mission && mission->active() && &human == &player) {
+                if (mission && mission->active()) {
                     // Campaign: a tap returns to the previous weapon; holding Swap through the lower
                     // reaches the third. Duels and replays keep the plain cycle.
                     next = input.down(Swap) ? 3 - current - human.previousWeapon : human.previousWeapon;
@@ -1583,6 +1670,13 @@ struct Game::Impl {
         resetInput(player);
         eventCount = 0;
         player.blockFire = true;
+#ifdef FOD_LOCAL_DUEL
+        if (snapshot.campaignSeat == 0) {
+            guest->view.match = Match::Paused;
+            resetInput(*guest);
+            guest->blockFire = true;
+        }
+#endif
     }
 
     void releaseFire(Human& human, Input& input) {
@@ -1594,6 +1688,108 @@ struct Game::Impl {
 
 #ifdef FOD_LOCAL_DUEL
     Human& localPlayer(int slot) { return slot == 0 ? player : *guest; }
+
+    Vec3 partnerSpawn(Vec3 position, float yaw) const {
+        const Vec3 ahead = forward(yaw, 0.f), right{ahead.z, 0.f, -ahead.x};
+        for (const auto offset : {right, right * -1.f, ahead * -1.f, ahead}) {
+            Vec3 at = position + offset * 1.3f;
+            at.x = world.clampX(at.x);
+            at.z = world.clampZ(at.z);
+            at.y = world.groundHeight(at);
+            if (std::abs(at.y - position.y) < .8f && world.canStand(at, standEye) &&
+                !world.blocked(atHeight(position, 1.f), atHeight(at, 1.f))) return at;
+        }
+        return position;
+    }
+
+    void placePartner(Vec3 position, float yaw) {
+        const float health = guest->view.dead ? 100.f : guest->view.player.health;
+        resetPlayer(*guest, partnerSpawn(position, yaw), yaw);
+        guest->view.player.health = health;
+        guest->blockFire = true;
+        guest->death = {};
+        scoutLookYaw = scoutLookPitch = 0.f;
+    }
+
+    void publishPartner() {
+        auto& s = snapshot;
+        auto& p = guest->view;
+        p.mission = s.mission;
+        p.match = s.match;
+        p.difficulty = s.difficulty;
+        p.brokenGlass = s.brokenGlass;
+        p.apachePosition = s.apachePosition;
+        p.apacheYaw = s.apacheYaw;
+        p.apachePitch = s.apachePitch;
+        p.apacheRoll = s.apacheRoll;
+        p.apacheActive = s.apacheActive;
+        p.jets = s.jets;
+        const bool flying = s.mission->operation.stage == OperationStage::ScoutFlight;
+        const bool sharedCamera = flying || s.mission->cinematic || s.mission->phase == MissionPhase::Intro;
+        if (sharedCamera) {
+            p.camera = s.camera;
+            if (flying) {
+                p.camera.yaw += scoutLookYaw;
+                p.camera.pitch = std::clamp(p.camera.pitch + scoutLookPitch, -1.4f, 1.4f);
+            }
+            p.lower = s.lower;
+            p.scope = 0.f;
+        } else {
+            // The intro or a scene transfer can release both views between simulation ticks.
+            if (partnerCameraShared && !p.dead) {
+                p.camera.position = atHeight(p.player.position, p.eyeHeight);
+                p.camera.yaw = p.playerYaw;
+                p.camera.pitch = p.playerPitch;
+            }
+            viewWeapon(*guest, false);
+        }
+        partnerCameraShared = sharedCamera;
+        s.rival = p.player;
+        p.rival = s.player;
+        s.rival.visible = p.rival.visible = !sharedCamera;
+        s.rivalHeightScale = p.dead ? 1.f : p.eyeHeight / standEye;
+        p.rivalHeightScale = s.dead ? 1.f : s.eyeHeight / standEye;
+    }
+
+    void rejoinPartner(double dt) {
+        if (snapshot.mission->phase == MissionPhase::Failed) return;
+        for (int slot = 0; slot < 2; ++slot) {
+            auto& downed = localPlayer(slot);
+            const auto& survivor = localPlayer(1 - slot).view;
+            if (!downed.view.dead || survivor.dead) continue;
+            downed.respawn -= dt;
+            if (downed.respawn > 0 || !survivor.grounded) continue;
+            const Vec3 at = partnerSpawn(survivor.player.position, survivor.playerYaw);
+            if (!world.canStand(at, standEye)) continue;
+            resetPlayer(downed, at, survivor.playerYaw);
+            cancelWeapon(downed);
+            downed.death = {};
+            downed.blockFire = true;
+            emit(EventKind::PlayerRespawn, 0, at, 0, downed.slot);
+        }
+    }
+
+    void advancePartnerClock(double dt, double wallDelta) {
+        auto& p = guest->view;
+        p.tick = localRandom[1].tick = snapshot.tick;
+        p.realTime = snapshot.realTime;
+        p.scaledTime = snapshot.scaledTime;
+        p.scaledDelta = dt;
+        p.muzzle = std::max(0.f, p.muzzle - float(dt * 17));
+        p.hitMarker = std::max(0.f, p.hitMarker - float(wallDelta));
+        p.killConfirm = std::max(0.f, p.killConfirm - float(wallDelta));
+    }
+
+    bool stepCampaignPartner(Input input, double dt) {
+        auto& human = *guest;
+        auto& p = human.view;
+        releaseFire(human, input);
+        moveCampaignPlayer(human, input, dt, false);
+        Shot shot{};
+        weapons(human, localRandom[1], input, dt, false, &shot);
+        if (shot.damage > 0.f) resolveCampaignShot(shot, p);
+        return human.playerFired;
+    }
 
     void publishDuel() {
         for (int slot = 0; slot < 2; ++slot) {
@@ -1611,6 +1807,7 @@ struct Game::Impl {
     }
 
     void startDuel(uint32_t seed) {
+        useGeometry(ArenaScene::Estate);
         player = {};
         if (guest) *guest = {};
         else guest = std::make_unique<Human>();
@@ -1624,9 +1821,9 @@ struct Game::Impl {
             human.view.localDuel = true;
             human.view.alternateRival = slot == 0;
             human.view.match = Match::Playing;
-            duelRandom[slot] = {};
+            localRandom[slot] = {};
             const uint32_t stream = seed ^ (slot == 0 ? 0x6d2b79f5u : 0x82f63b78u);
-            duelRandom[slot].state = stream ? stream : 1u;
+            localRandom[slot].state = stream ? stream : 1u;
             refill(human, true);
             const auto& spawn = assets.spawns[slot];
             resetPlayer(human, spawn.position, spawn.yaw);
@@ -1703,14 +1900,14 @@ struct Game::Impl {
             shooter.tracerEnd = point;
             shooter.tracer = 1.f;
             if (body < hit.distance) {
-                if (!hurtPlayer(victim, duelRandom[1 - slot], shot.damage * zone, shot.origin, slot)) continue;
+                if (!hurtPlayer(victim, localRandom[1 - slot], shot.damage * zone, shot.origin, slot)) continue;
                 shooter.lethalMarker = victim.view.dead;
                 shooter.hitMarker = victim.view.dead ? .33f : .15f;
                 if (!victim.view.dead) continue;
                 ++shooter.playerScore;
                 shooter.headshot = zone >= 2.f;
                 shooter.killConfirm = 1.4f;
-                beginDeath(victim, duelRandom[1 - slot], false);
+                beginDeath(victim, localRandom[1 - slot], false);
                 emit(EventKind::PlayerDeath, int(Cause::Weapon), victim.view.player.position, 0, 1 - slot, slot);
                 sound(shooter.headshot ? Sound::HeadshotConfirm : Sound::KillConfirm, .9f);
             } else if (hit.hit) {
@@ -1731,7 +1928,7 @@ struct Game::Impl {
         for (int slot = 0; slot < 2; ++slot) {
             auto& human = localPlayer(slot);
             auto& s = human.view;
-            duelRandom[slot].tick = ++s.tick;
+            localRandom[slot].tick = ++s.tick;
             s.realTime += tickSeconds;
             s.scaledTime = s.realTime;
             s.scaledDelta = tickSeconds;
@@ -1745,7 +1942,7 @@ struct Game::Impl {
             auto& human = localPlayer(slot);
             releaseFire(human, inputs[slot]);
             moveDuelPlayer(human, inputs[slot]);
-            weapons(human, duelRandom[slot], inputs[slot], tickSeconds, false, &shots[slot]);
+            weapons(human, localRandom[slot], inputs[slot], tickSeconds, false, &shots[slot]);
         }
         resolveDuelShots(shots);
         for (int slot = 0; slot < 2; ++slot) {
@@ -1771,7 +1968,43 @@ struct Game::Impl {
     }
 #endif
 
-    void step(Input input, double wallDelta) {
+    void moveCampaignPlayer(Human& human, Input& input, double dt, bool deviceOut) {
+        auto& s = human.view;
+        s.damage *= float(std::exp(-1.6 * dt));
+        if (s.dead) return;
+        if (s.player.health < 100 && s.scaledTime - human.hurtAt > 4.5) {
+            s.player.health = std::min(100.f, s.player.health + float(28 * dt));
+        }
+        const bool precisionAim = s.mission->chapter == MissionChapter::BriarHouse || timberlineRetreat(*s.mission);
+        if (!deviceOut && !input.down(Signal) && (input.stickX != 0.f || input.stickY != 0.f)) {
+            const float gain = mission->stickGain(s, !precisionAim);
+            input.lookX += input.stickX * (gain - 1.f);
+            input.lookY += input.stickY * (gain - 1.f);
+        }
+        movePlayer(human, input, dt);
+    }
+
+    void campaignDeath(Human& human, Random& rng, double dt, bool slowMotion) {
+        if (!human.view.dead) return;
+        if (human.death.elapsed == 0) {
+            beginDeath(human, rng, slowMotion);
+            if (!slowMotion) human.respawn = campaignRejoinSeconds;
+        }
+        deathCamera(human, dt, slowMotion);
+    }
+
+    void publishMission() {
+#ifdef FOD_LOCAL_DUEL
+        // There is one mission snapshot shared by both cameras.
+        if (snapshot.campaignSeat == 0) guest->view.mission.reset();
+#endif
+        mission->publish(snapshot.mission);
+#ifdef FOD_LOCAL_DUEL
+        if (snapshot.campaignSeat == 0) publishPartner();
+#endif
+    }
+
+    void step(Input input, double wallDelta, [[maybe_unused]] Input partnerInput = {}) {
         eventCount = 0;
         campaignVoice.reset();
         if (input.disconnected) pause();
@@ -1794,19 +2027,34 @@ struct Game::Impl {
         releaseFire(player, input);
         if (mission && mission->active()) {
             HostAdapter host(*this);
+            mission_detail::MissionPartner partner{};
             const bool inIntro = s.mission && s.mission->phase == MissionPhase::Intro;
-            if (s.mission && s.mission->cinematic) {
-                // Exfil cutscene: no player control; the mission drives the camera. The Apache
-                // keeps flying.
+            const bool flying = s.mission && s.mission->operation.stage == OperationStage::ScoutFlight;
+            const bool cinematic = s.mission && (s.mission->cinematic || flying);
+#ifdef FOD_LOCAL_DUEL
+            if (s.campaignSeat == 0) {
+                advancePartnerClock(dt, wallDelta);
+                partner.view = &guest->view;
+                if (inIntro || cinematic) releaseFire(*guest, partnerInput);
+                if (flying) {
+                    scoutLookYaw = std::clamp(scoutLookYaw + partnerInput.lookX, -.85f, .85f);
+                    scoutLookPitch = std::clamp(scoutLookPitch + partnerInput.lookY, -.5f, .5f);
+                }
+                partner.stabilizing = flying && partnerInput.down(Signal);
+                guest->view.stabilizingScout = partner.stabilizing;
+            }
+#endif
+            if (cinematic) {
+                // Cinematics and flying give the operation control of the camera and movement.
                 devices(Input{}, dt);
-                mission->step(s, input, dt, false, host);
+                mission->step(s, input, dt, false, host, partner);
                 const float cutFov = s.camera.fov;
                 viewWeapon(player, true);
                 s.camera.fov = cutFov;
                 viewWorld();
                 s.rival.visible = false;
                 s.lower = 1.f;
-                mission->publish(s.mission);
+                publishMission();
                 return;
             }
             if (inIntro) {
@@ -1816,25 +2064,29 @@ struct Game::Impl {
                     s.playerYaw += float(input.lookX * 0.65);
                     s.playerPitch = std::clamp(s.playerPitch + float(input.lookY * 0.65), float(-75 * deg), float(75 * deg));
                 }
-                mission->step(s, input, dt, false, host);
+                mission->step(s, input, dt, false, host, partner);
                 const float introFov = s.camera.fov;
                 viewWeapon(player, true);
                 s.camera.fov = introFov;
                 viewWorld();
                 s.rival.visible = false;
-                mission->publish(s.mission);
+                publishMission();
                 if (s.mission) {
                     s.lower = std::clamp(1.f - (s.mission->introProgress - 0.35f) * 1.65f, 0.f, 1.f);
+#ifdef FOD_LOCAL_DUEL
+                    if (partner.view && partnerCameraShared) guest->view.lower = s.lower;
+#endif
                 }
                 return;
             }
-            s.damage *= float(std::exp(-1.6 * dt));
-            if (!s.dead) {
-                if (s.player.health < 100 && s.scaledTime - player.hurtAt > 4.5) {
-                    s.player.health = std::min(100.f, s.player.health + float(28 * dt));
-                }
-                movePlayer(player, input, dt);
+#ifdef FOD_LOCAL_DUEL
+            if (partner.view) {
+                rejoinPartner(dt);
+                if (s.mission->phase != MissionPhase::Failed) partner.fired = stepCampaignPartner(partnerInput, dt);
+                else input = {};
             }
+#endif
+            moveCampaignPlayer(player, input, dt, handheld());
             devices(input, dt);
             // Signalling takes the trigger hand: hold Signal and the gun dips and will not fire.
             const bool signalling = input.down(Signal) && !s.dead;
@@ -1844,20 +2096,27 @@ struct Game::Impl {
                 combat.pressed &= ~uint32_t(Fire);
             }
             weapons(player, random, combat, dt, handheld());
-            mission->step(s, input, dt, player.playerFired, host);
-            if (s.dead) {
-                if (player.death.elapsed == 0) beginDeath(player, random, true);
-                deathCamera(player, dt, true);
-            } else {
-                player.death = {};
+            mission->step(s, input, dt, player.playerFired, host, partner);
+            campaignDeath(player, random, dt, !partner.view);
+            if (!s.dead) player.death = {};
+#ifdef FOD_LOCAL_DUEL
+            if (partner.view) {
+                campaignDeath(*guest, localRandom[1], dt, false);
+                for (int slot = 0; slot < 2; ++slot) {
+                    auto& actor = localPlayer(slot).view.player;
+                    const float cycle = actor.speed >= 3.1f ? .62f : .83f;
+                    actor.phase = std::fmod(actor.phase + actor.speed * float(dt) / (4.f * cycle), 1.f);
+                    updateActorFrame(actor);
+                }
             }
+#endif
             viewWeapon(player, handheld());
             const float dip = signalling && s.ads < .5f ? .55f : 0.f;
             signalLower += (dip - signalLower) * float(1.0 - std::exp(-10.0 * dt));
             s.lower = std::max(s.lower, signalLower);
             viewWorld();
             s.rival.visible = false;
-            mission->publish(s.mission);
+            publishMission();
             return;
         }
         playerStep(input, dt);
@@ -1914,8 +2173,14 @@ bool Game::advanceCampaign(uint32_t seed, int difficulty) {
 void Game::startExtractionReplay(uint32_t seed, int difficulty) {
     impl_->startMission(seed, difficulty, mission_detail::MissionStart::ExtractionReplay);
 }
-void Game::startChapterReplay(uint32_t seed, int difficulty, MissionChapter chapter) {
-    impl_->startMission(seed, difficulty, mission_detail::MissionStart::NextChapter, chapter);
+void Game::startChapterReplay(uint32_t seed, int difficulty, MissionChapter chapter, bool noraAlive) {
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::NextChapter, chapter, false, noraAlive);
+}
+void Game::startArrayGroundReplay(uint32_t seed, int difficulty) {
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::ArrayGroundReplay);
+}
+void Game::startScoutReplay(uint32_t seed, int difficulty) {
+    impl_->startMission(seed, difficulty, mission_detail::MissionStart::ScoutReplay);
 }
 void Game::startFinaleReplay(uint32_t seed, int difficulty) {
     impl_->startMission(seed, difficulty, mission_detail::MissionStart::Retry, MissionChapter::Array, true);
@@ -1934,10 +2199,20 @@ void Game::quit() {
         impl_->eventCount = 0;
         impl_->finish();
         impl_->viewWorld();
+#ifdef FOD_LOCAL_DUEL
+        if (impl_->snapshot.campaignSeat == 0) impl_->publishPartner();
+#endif
     } else {
         impl_->snapshot.match = Match::Start;
         impl_->snapshot.mission.reset();
         impl_->mission.reset();
+#ifdef FOD_LOCAL_DUEL
+        if (impl_->snapshot.campaignSeat == 0) {
+            impl_->snapshot.campaignSeat = -1;
+            impl_->snapshot.rival.visible = false;
+            impl_->guest.reset();
+        }
+#endif
     }
 }
 void Game::setDifficulty(int level) { impl_->setDifficulty(level); }
@@ -1975,6 +2250,46 @@ void Game::step(const Input& input, double realDelta) { impl_->step(input, realD
 void Game::startLocalDuel(uint32_t seed) { impl_->startDuel(seed); }
 void Game::stepLocalDuel(std::array<Input, 2> inputs) { impl_->stepDuel(inputs); }
 void Game::resumeLocalDuel() { impl_->resumeDuel(); }
+void Game::startLocalCampaign(uint32_t seed, int difficulty, MissionChapter chapter) {
+    using mission_detail::MissionStart;
+    const auto mode = chapter == MissionChapter::BriarHouse ? MissionStart::Campaign : MissionStart::NextChapter;
+    impl_->startMission(seed, difficulty, mode, chapter, false, true, true);
+}
+void Game::continueLocalCampaign(uint32_t seed, int difficulty) {
+    using mission_detail::MissionStart;
+    const auto& s = state();
+    if (s.campaignSeat != 0 || s.match != Match::Results) return;
+    auto mode = MissionStart::Campaign;
+    if (s.mission->nextMissionReady()) mode = MissionStart::NextChapter;
+    else if (s.mission->phase == MissionPhase::Failed && canRetryCheckpoint()) mode = MissionStart::Retry;
+    impl_->startMission(seed, difficulty, mode, MissionChapter::BriarHouse, false, true, true);
+}
+void Game::stepLocalCampaign(std::array<Input, 2> inputs) {
+    if (state().campaignSeat != 0 || state().match != Match::Playing) return;
+    for (const auto& input : inputs) {
+        if (!input.disconnected && !input.edge(Pause)) continue;
+        impl_->pause();
+        return;
+    }
+    for (size_t seat = 0; seat < inputs.size(); ++seat) {
+        auto& input = inputs[seat];
+        auto& blocked = impl_->campaignBlockedActions[seat];
+        const uint32_t previous = blocked;
+        blocked &= input.held;
+        input.held &= ~previous;
+        input.pressed &= ~previous;
+    }
+    impl_->step(inputs[0], tickSeconds, inputs[1]);
+}
+void Game::resumeLocalCampaign(const std::array<Input, 2>& inputs) {
+    if (state().campaignSeat != 0 || state().match != Match::Paused) return;
+    resume();
+    impl_->guest->view.match = Match::Playing;
+    impl_->guest->blockFire = true;
+    constexpr uint32_t actions = Fire | Reload | Stance | Swap | Streak | Jump | Signal;
+    for (size_t seat = 0; seat < inputs.size(); ++seat)
+        impl_->campaignBlockedActions[seat] = inputs[seat].held & actions;
+}
 const Snapshot& Game::localView(int slot) const { return impl_->localPlayer(slot).view; }
 void Game::setupLocalDuelFixture(const std::array<Fixture, 2>& fixtures) {
     auto& g = *impl_;

@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef ESP_PLATFORM
+#include "npc_motion.hpp"
+#endif
+
 #include "assets.hpp"
 #include "game.hpp"
 
@@ -36,9 +40,22 @@ constexpr bool civilianRescued(CivilianOutcome outcome) {
 
 // Timberline and The Array: the stage of the mission and the ship the player moves with Signal.
 enum class OperationStage : uint8_t {
-    Travel, Call, Fight, Calibrated,     // Timberline
-    Garden, Hall, Door, Steer, Commit, Reunite // The Array
+    Travel, Call, Fight, Pickup,     // Timberline
+    Garden, Hall, Door, Steer, Commit, Reunite, // The Array
+    Relocate, Arrival, Departure, Retreat, // Timberline
+    ScoutApproach, ScoutBoard, ScoutCargo, ScoutTransfer, ScoutBridge, ScoutReclaim, ScoutDescent, ScoutFlight, ScoutRecovery
 };
+
+constexpr bool scoutStage(OperationStage stage) { return stage >= OperationStage::ScoutApproach; }
+constexpr bool scoutDeck(OperationStage stage) {
+    return stage >= OperationStage::ScoutCargo && stage <= OperationStage::ScoutDescent;
+}
+
+constexpr ArenaScene missionScene(MissionChapter chapter, OperationStage stage) {
+    if (chapter == MissionChapter::Timberline) return ArenaScene::Timberline;
+    if (chapter == MissionChapter::Array && scoutDeck(stage)) return ArenaScene::Scout;
+    return ArenaScene::Estate;
+}
 
 struct OperationView {
     OperationStage stage = OperationStage::Travel;
@@ -52,13 +69,37 @@ struct OperationView {
     bool targetSet = false;   // Timberline: a landing spot is marked
     bool pulled = false;      // The ship is being dragged toward Nora or the dish
     int8_t jammer = -1;       // Actor slot of the drone holding the emitter or dish
-    uint8_t calls = 0;        // Timberline: drops landed where they were called
+    int8_t spotted = -1;      // Delta-1 has a visual on this contact.
+    uint8_t retreatLeg = 0;   // Farthest stretch reached during the run to Dustoff.
+    float pursuitRange = -1.f;
+    uint8_t calls = 0;        // Timberline: scout responses logged for calibration
     static constexpr uint8_t callsNeeded = 4;
     Vec3 clearing{}, saddle{};
     float clearingRadius = 0, saddleRadius = 0;
-    float lock = 0;           // The Array: 0..1 hold on the saddle
+    float lock = 0;           // 0..1 progress for the selected landing
     float dishDistance = 0;   // The Array: metres from the beam to the dish
     bool clearingBurned = false;
+};
+
+struct ScoutView {
+    Vec3 cargo{};
+    Vec3 activeChute{};
+    Vec3 beacon{};
+    float capture = 0.f;
+    float response = 0.f;
+    float flightError = 0.f;
+    float flightBank = 0.f;
+#ifndef ESP_PLATFORM
+    float flightYaw = 0.f;
+    float landingGear = 0.f;
+#endif
+    uint8_t beaconIndex = 0;
+    uint8_t beaconCount = 3;
+    bool cargoVisible = false;
+    bool chuteActive = false;
+    bool retrievalCrew = false;
+    bool autoReturn = false;
+    bool groundSecured = false;
 };
 
 constexpr float plasmaRadius = .12f, plasmaShockDuration = .7f;
@@ -89,6 +130,29 @@ inline AlienGunFrame alienGunFrame(Vec3 grip, float yaw, float pitch, uint8_t va
 
 // The critical area sits in front of a ground alien's shoulders.
 constexpr Vec3 alienWeakPoint{0, 1.58f, .37f};
+constexpr Vec3 enforcerGuardCenter{0.f, 1.18f, .71f};
+constexpr float enforcerGuardWidth = .87f, enforcerGuardHeight = 1.05f;
+constexpr Vec3 enforcerGuardEmitter{-.59f, 1.42f, .70f};
+inline Vec3 enforcerGuardOffset(float lift) {
+    return {enforcerGuardEmitter.x * (1.f - lift), enforcerGuardCenter.y, enforcerGuardCenter.z};
+}
+// Normalized contour of the shield plane. A value of one is the outside edge.
+inline float enforcerGuardContour(float u, float v) {
+    const float x = std::abs(u);
+    return std::max({std::abs(v), x - .14f * v, .68f * x + .78f * v, .80f * x - .77f * v});
+}
+constexpr Vec3 droneBodyHalf{.55f, .39f, .64f};
+constexpr Vec3 droneWingCenter{.66f, -.055f, -.13f};
+constexpr Vec3 droneWingHalf{.20f, .20f, .32f};
+constexpr float droneMuzzle = .59f;
+#ifndef ESP_PLATFORM
+constexpr Vec3 jammerPanelCenter{.336f, .485f, .019f};
+constexpr Vec3 jammerPanelHalf{.092f, .255f, .124f};
+constexpr Vec3 jammerCore{0, .375f, .276f};
+#endif
+inline float droneHullPitch(bool alerted, float gunPitch, float speed) {
+    return alerted ? std::clamp(gunPitch * .45f, -.35f, .35f) : speed > .5f ? .10f : 0.f;
+}
 // North Avenue uplink, shared by the renderer and projectile collision.
 constexpr Vec3 uplinkPosition{(450.f - 316.f) * .05f, 0, (212.5f + 227.f) * .05f};
 constexpr Vec3 uplinkEmitter{0, 1.62f, 0};
@@ -128,12 +192,18 @@ struct MissionActor {
     float gunPitch = 0;        // Vertical aim pitch of held ray gun (radians, positive = down)
     float gunCharge = 0;       // 0..1 plasma charge level (spins coils & swells muzzle orb)
     float gunRecoil = 0;       // 0..1 firing kickback (snaps to 1 on shot, decays smoothly)
-    float shield = 0;          // 0..1 remaining phase-shield ratio
+    float guard = 0;           // 0..1 integrity of the frontal guard
+    float guardLift = 0;       // Deployment of the emitter field
     float stagger = 0;         // 0..1 stagger / charge-interrupt flinch
     bool overcharging = false; // True while charging an interruptible heavy shot
-    bool linked = false;       // True while reinforced by a nearby Scout Drone's shield link
-    float arrival = 0.f;       // Fraction of the reinforcement beam still visible
+    float arrival = 0.f;       // Above one during the warning, then 1..0 while the alien lands
+    int8_t carrier = -1;       // Ship projecting a Briar House drop beam.
+    Vec3 dropSite{};
     bool chargedShot = false;  // A charged flash keeps its color through recoil.
+#ifndef ESP_PLATFORM
+    bool jammer = false;
+    NpcMotion motion{};
+#endif
 };
 
 struct MissionTracer {
@@ -151,7 +221,13 @@ struct PlasmaCloud {
 };
 
 struct MissionSnapshot {
-    static constexpr size_t maxActors = 8; // 0: Commander, 1-3: Civilians, 4-7: Active Aliens
+    static constexpr size_t firstAlien = 4; // 0: Commander, 1-3: Civilians
+    static constexpr size_t soloAlienSlots = 4;
+#ifdef FOD_LOCAL_DUEL
+    static constexpr size_t maxActors = firstAlien + 2 * soloAlienSlots;
+#else
+    static constexpr size_t maxActors = firstAlien + soloAlienSlots;
+#endif
     static constexpr size_t maxTracers = 20;
     static constexpr size_t maxPlasma = 24;
 
@@ -179,7 +255,7 @@ struct MissionSnapshot {
     uint16_t tacticalCalloutColor = 0;
     bool warningLock = false; // An Enforcer is charging a plasma shot.
     float plasmaShock = 0;
-    bool shieldHit = false;   // Last player hit struck an alien energy shield
+    float partnerPlasmaShock = 0;
     Vec3 waypoint{};
     bool hasWaypoint = false;
     bool waypointIsRoute = false;
@@ -204,6 +280,7 @@ struct MissionSnapshot {
     bool uplinkVisible = false;
     float uplinkHealth = 0;
     OperationView operation{};
+    ScoutView scout{};
     // Offsets of the mothership, the cruiser and the Timberline saucer from where they were built.
     std::array<Vec3, 3> fleetShift{};
     bool flagshipBeam = true;
@@ -219,5 +296,23 @@ struct MissionSnapshot {
         return campaign && phase == MissionPhase::Victory && chapter != MissionChapter::Array;
     }
 };
+
+inline float playerPlasmaShock(const Snapshot& s) {
+    if (!s.mission) return 0.f;
+#ifdef FOD_LOCAL_DUEL
+    if (s.campaignSeat == 1) return s.mission->partnerPlasmaShock;
+#endif
+    return s.mission->plasmaShock;
+}
+
+inline bool timberlineRetreat(const MissionSnapshot& m) {
+    return m.chapter == MissionChapter::Timberline && m.phase == MissionPhase::Operation &&
+           (m.operation.stage == OperationStage::Retreat || m.operation.stage == OperationStage::Pickup);
+}
+
+inline bool thermalScope(const Snapshot& s) {
+    return s.weapon == Weapon::Sniper && s.scope >= .6f && !s.dead && s.device == Device::None &&
+           s.mission && timberlineRetreat(*s.mission);
+}
 
 } // namespace fod

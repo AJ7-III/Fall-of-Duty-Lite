@@ -46,6 +46,9 @@ struct Input {
     int16_t touchX = -1, touchY = -1; // edge in 800 x 480 landscape coordinates
     bool disconnected = false;
 
+    // Portion of the look delta contributed by the right stick, including its profile sensitivity.
+    float stickX = 0, stickY = 0;
+
     bool down(Button b) const { return (held & b) != 0; }
     bool edge(Button b) const { return (pressed & b) != 0; }
 };

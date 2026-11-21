@@ -20,12 +20,13 @@ struct Options {
     const char *pack = "assets/fall-of-duty.fodp", *trace = nullptr, *journal = nullptr, *image = nullptr;
     int frames = 3000, warmup = 300, imageTick = 0;
     int width = 0;
-    int duelWidth = 0;
+    int splitWidth = 0;
     std::optional<float> stickSensitivity;
     Arena arena = Arena::ShipBox;
     BriarHouseMode briarMode = BriarHouseMode::Standard;
+    MissionChapter chapter = MissionChapter::BriarHouse;
     RenderLook look = RenderLook::Enhanced;
-    bool benchmark = false, inspect = false, both = false, localDuel = false;
+    bool benchmark = false, inspect = false, both = false, localDuel = false, localCampaign = false;
 };
 
 void prepareCampaignVoices(Assets& assets, const char* pack) {
@@ -41,12 +42,12 @@ void prepareCampaignVoices(Assets& assets, const char* pack) {
 }
 
 void help() {
-    std::puts("fod_host [--pack PATH] [--map ship-box|briar-house] [--mission briar-house] [--mode 400|320|both] [--look enhanced|classic]\n"
+    std::puts("fod_host [--pack PATH] [--map ship-box|briar-house] [--mission briar-house|array] [--mode 400|320|both] [--look enhanced|classic]\n"
               "         [--trace PATH [--journal PATH] | --bench PATH [--frames 3000] [--warmup 300]]\n"
               "         [--image PATH [--image-tick TICK]] [--inspect]\n"
 #ifdef FOD_DESKTOP
               "         [--mode 800|1280] for desktop solo\n"
-              "         [--local-duel [--duel-resolution 400|640|800]]\n"
+              "         [--local-duel | --local-campaign] [--split-resolution 400|640|800]\n"
               "         [--stick-sensitivity PERCENT] for desktop gamepad aim (1-200)\n"
 #endif
               "Without headless options, launch an offline duel. Ship Box is the default map.");
@@ -64,6 +65,10 @@ bool options(int argc, char** argv, Options& out) {
             out.localDuel = true;
             continue;
         }
+        if (!std::strcmp(option, "--local-campaign")) {
+            out.localCampaign = true;
+            continue;
+        }
 #endif
         if (i + 1 == argc) return false;
         const char* value = argv[++i];
@@ -73,18 +78,20 @@ bool options(int argc, char** argv, Options& out) {
             else if (!std::strcmp(value, "briar-house")) { out.arena = Arena::BriarHouse; out.briarMode = BriarHouseMode::Standard; }
             else return false;
         } else if (!std::strcmp(option, "--mission")) {
-            if (!std::strcmp(value, "briar-house")) { out.arena = Arena::BriarHouse; out.briarMode = BriarHouseMode::Invasion; }
-            else return false;
+            if (std::strcmp(value, "briar-house") && std::strcmp(value, "array")) return false;
+            out.arena = Arena::BriarHouse;
+            out.briarMode = BriarHouseMode::Invasion;
+            out.chapter = !std::strcmp(value, "array") ? MissionChapter::Array : MissionChapter::BriarHouse;
         }
         else if (!std::strcmp(option, "--trace")) out.trace = value;
         else if (!std::strcmp(option, "--bench")) { out.benchmark = true; out.trace = value; }
         else if (!std::strcmp(option, "--journal")) out.journal = value;
         else if (!std::strcmp(option, "--image")) out.image = value;
 #ifdef FOD_DESKTOP
-        else if (!std::strcmp(option, "--duel-resolution")) {
-            if (!std::strcmp(value, "400")) out.duelWidth = 400;
-            else if (!std::strcmp(value, "640")) out.duelWidth = 640;
-            else if (!std::strcmp(value, "800")) out.duelWidth = 800;
+        else if (!std::strcmp(option, "--split-resolution") || !std::strcmp(option, "--duel-resolution")) {
+            if (!std::strcmp(value, "400")) out.splitWidth = 400;
+            else if (!std::strcmp(value, "640")) out.splitWidth = 640;
+            else if (!std::strcmp(value, "800")) out.splitWidth = 800;
             else return false;
         } else if (!std::strcmp(option, "--stick-sensitivity")) {
             char* end = nullptr;
@@ -115,9 +122,15 @@ bool options(int argc, char** argv, Options& out) {
             else out.imageTick = int(n);
         } else return false;
     }
-    return (!out.duelWidth || out.localDuel) &&
+    if (out.localCampaign) {
+        out.arena = Arena::BriarHouse;
+        out.briarMode = BriarHouseMode::Invasion;
+    }
+    const bool split = out.localDuel || out.localCampaign;
+    return (!out.localDuel || !out.localCampaign) &&
+           (!out.splitWidth || split) &&
            (!out.stickSensitivity || (!out.inspect && !out.trace && !out.image)) &&
-           (!out.localDuel || (!out.inspect && !out.trace && !out.image && (out.width == 0 || out.width == 400))) &&
+           (!split || (!out.inspect && !out.trace && !out.image && (out.width == 0 || out.width == 400))) &&
            (out.width <= 400 || (!out.inspect && !out.trace && !out.image)) &&
            (!out.benchmark || (out.frames && !out.journal)) &&
            (!out.journal || out.trace) && (!out.imageTick || (out.trace && out.image && !out.benchmark)) && (!out.both || (out.benchmark && !out.image));
@@ -186,6 +199,7 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
     std::vector<uint16_t> framebuffer(renderFrames ? 800 * 480 : 0);
     std::array<int16_t, 2 * audioHz / 30> pcm{};
     if (trace) trace->begin(app);
+    else if (out.chapter != MissionChapter::BriarHouse) app.startImmediate(true, out.chapter);
     const int frames = out.benchmark ? out.frames + out.warmup : trace ? int((trace->length() + 1) / 2) : 1;
     Samples timings;
     for (auto& channel : timings) channel.reserve(out.benchmark ? out.frames : 0);
@@ -269,8 +283,12 @@ int headless(const Assets& assets, ReplayTrace* trace, const Options& out, int w
 
 #ifdef FOD_DESKTOP
 std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int width, fod::RenderLook look,
-                                           std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry);
+                                           std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry,
+                                           fod::MissionChapter chapter);
 int runLocalDuel(const fod::Assets& assets, fod::RenderLook look, int width, std::optional<float> stickSensitivity);
+std::optional<bool> runLocalCampaign(const fod::Assets& assets, fod::RenderLook look, int width,
+                                    std::optional<float> stickSensitivity, fod::MissionChapter chapter,
+                                    const fod::MenuState& settings);
 #endif
 
 int main(int argc, char** argv) {
@@ -283,7 +301,11 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s: %s\n", out.pack, error.c_str());
         return 1;
     }
-    if (out.arena == Arena::BriarHouse) buildBriarHouse(assets, out.briarMode);
+    auto art = fod::CampaignArt::Compact;
+#ifdef FOD_DESKTOP
+    if (!out.trace && !out.image && !out.inspect) art = fod::CampaignArt::Desktop;
+#endif
+    if (out.arena == Arena::BriarHouse) buildBriarHouse(assets, out.briarMode, art);
     fod::ReplayTrace trace;
     if (out.trace && !trace.load(out.trace, error, assets.extent)) {
         std::fprintf(stderr, "%s: %s\n", out.trace, error.c_str());
@@ -300,7 +322,8 @@ int main(int argc, char** argv) {
     if (out.inspect) return 0;
 #ifdef FOD_DESKTOP
     fod::optimizeShipBoxWorld(assets);
-    if (out.localDuel) return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);
+    const int splitWidth = out.splitWidth ? out.splitWidth : 640;
+    if (out.localDuel) return runLocalDuel(assets, out.look, splitWidth, out.stickSensitivity);
 #ifdef __APPLE__
     constexpr int soloDefaultWidth = fod::desktopHdWidth;
 #else
@@ -309,13 +332,23 @@ int main(int argc, char** argv) {
     fod::MenuState carry{};
     carry.desktopRenderWidth = out.width ? out.width : soloDefaultWidth;
     carry.selectedArena = out.arena;
-    bool autoStart = false;
+    bool autoStart = out.chapter != MissionChapter::BriarHouse;
+    bool localCampaign = out.localCampaign;
+    auto chapter = out.chapter;
     for (;;) {
-        const auto launch = runDesktop(assets, carry.desktopRenderWidth, out.look, out.stickSensitivity, autoStart, &carry);
+        if (localCampaign) {
+            const auto backToTitle = runLocalCampaign(assets, out.look, splitWidth, out.stickSensitivity, chapter, carry);
+            if (!backToTitle) return 1;
+            if (!*backToTitle) return 0;
+            localCampaign = autoStart = false;
+            chapter = MissionChapter::BriarHouse;
+        }
+        const auto launch = runDesktop(assets, carry.desktopRenderWidth, out.look, out.stickSensitivity, autoStart, &carry, chapter);
         if (!launch) return 1;
         const auto action = *launch;
         if (action == fod::LaunchAction::None) return 0;
-        const bool campaign = action == fod::LaunchAction::Campaign;
+        localCampaign = action == fod::LaunchAction::LocalCampaign;
+        const bool campaign = localCampaign || action == fod::LaunchAction::Campaign;
         const auto arena = campaign ? fod::Arena::BriarHouse : carry.selectedArena;
         if (assets.arena != arena) {
             assets = fod::Assets{};
@@ -325,15 +358,16 @@ int main(int argc, char** argv) {
             }
         }
         if (arena == fod::Arena::BriarHouse) {
-            buildBriarHouse(assets, campaign ? fod::BriarHouseMode::Invasion : fod::BriarHouseMode::Standard);
+            buildBriarHouse(assets, campaign ? fod::BriarHouseMode::Invasion : fod::BriarHouseMode::Standard, art);
         } else {
             fod::optimizeShipBoxWorld(assets);
         }
         prepareCampaignVoices(assets, out.pack);
         if (action == fod::LaunchAction::LocalDuel) {
-            return runLocalDuel(assets, out.look, out.duelWidth ? out.duelWidth : 640, out.stickSensitivity);
+            return runLocalDuel(assets, out.look, splitWidth, out.stickSensitivity);
         }
         autoStart = true;
+        chapter = MissionChapter::BriarHouse;
     }
 #else
     std::fputs("Build with FOD_DESKTOP=ON for the interactive SDL2 host.\n", stderr);

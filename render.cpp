@@ -4,12 +4,14 @@
 #include "game_data.hpp"
 #include "light.hpp"
 #include "mission.hpp"
+#include "scout_data.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstring>
 #include <new>
+#include <type_traits>
 #include <vector>
 
 #ifdef ESP_PLATFORM
@@ -77,8 +79,10 @@ private:
 
 #if defined(__GNUC__) || defined(__clang__)
 #define FOD_NOINLINE __attribute__((noinline))
+#define FOD_FORCEINLINE inline __attribute__((always_inline))
 #else
 #define FOD_NOINLINE
+#define FOD_FORCEINLINE inline
 #endif
 
 inline int fastFloor(float x) {
@@ -135,7 +139,7 @@ struct LitVertex {
     float light;
 };
 
-enum class Fill { Textured, Flat, Sky, Shadow };
+enum class Fill { Textured, Flat, Sky, DesktopSky, Shadow };
 
 struct PosedVertex {
     Vec3 camera;
@@ -345,6 +349,26 @@ Lean movementLean(const Actor& actor, float weight, bool airborne = false) {
             (step - std::clamp(sideways * .035f, -.13f, .13f)) * weight};
 }
 
+#ifndef ESP_PLATFORM
+struct PoseSample {
+    size_t from, to;
+    float fraction;
+
+    Vec3 point(const std::vector<Mesh>& frames, size_t vertex) const {
+        const Vec3 a = frames[from].position(vertex);
+        return a + (frames[to].position(vertex) - a) * fraction;
+    }
+};
+
+PoseSample cyclePose(size_t first, size_t size, float phase) {
+    const float sample = (phase - std::floor(phase)) * float(size);
+    const size_t i = std::min(size_t(sample), size - 1);
+    return {first + i, first + (i + 1) % size, sample - float(i)};
+}
+
+Vec3 poseMix(Vec3 a, Vec3 b, float weight) { return a + (b - a) * weight; }
+#endif
+
 struct SprintKey {
     Vec3 shift, angles; // Pitch, yaw and roll in radians.
 };
@@ -426,21 +450,10 @@ constexpr auto skyPalette = [] {
     return colors;
 }();
 
-// Low west-northwest Colorado Front Range sunset direction (matches dusk sun in light.cpp).
-constexpr Vec3 sunsetSunDir{-0.8780f, 0.1497f, 0.4545f};
-
 uint16_t rgbClamped(float r, float g, float b) {
     return rgb(std::clamp(int(r + 0.5f), 0, 255), std::clamp(int(g + 0.5f), 0, 255),
                std::clamp(int(b + 0.5f), 0, 255));
 }
-
-// Face axes match the panorama conversion in the exporter.
-struct SkyAxes { Vec3 normal, right, vertical; };
-constexpr SkyAxes skyAxes[]{
-    {{0, 0, 1}, {1, 0, 0}, {0, 1, 0}}, {{0, 0, -1}, {-1, 0, 0}, {0, 1, 0}},
-    {{1, 0, 0}, {0, 0, -1}, {0, 1, 0}}, {{-1, 0, 0}, {0, 0, 1}, {0, 1, 0}},
-    {{0, 1, 0}, {1, 0, 0}, {0, 0, -1}}, {{0, -1, 0}, {1, 0, 0}, {0, 0, 1}},
-};
 
 Vec3 duskGradient(float elevation) {
     struct Stop { float elevation; Vec3 color; };
@@ -485,8 +498,18 @@ struct Renderer::Impl {
     const bool enhanced;
     const bool invasionDusk;
     DepthBuffer depth;
-    std::vector<Vec3> culledNormals;
-    std::vector<uint8_t> worldLights;
+    struct TerrainLighting {
+        SceneLight light;
+        std::vector<Vec3> normals;
+        std::vector<uint8_t> levels;
+        uint64_t bytes() const { return light.bytes() + normals.capacity() * sizeof(Vec3) + levels.capacity(); }
+    };
+    const ArenaGeometry* geometry = &assets;
+    TerrainLighting briarLighting, timberLighting, scoutLighting;
+    const TerrainLighting* terrain = &briarLighting;
+    bool timberline = false;
+    bool aboardScout = false;
+    bool thermal = false;
     std::vector<uint16_t> edgeRow;
     std::vector<std::vector<Texture>> mipmaps;
     std::vector<TexInfo> baseTexInfo;
@@ -506,7 +529,6 @@ struct Renderer::Impl {
     bool measure = false;
     View view{};
     uint16_t* color = nullptr;
-    SceneLight light;
     // Haze strength in thirty-seconds for the top ten bits of an encoded depth,
     // and the haze color scaled by each strength.
     std::array<uint8_t, 1024> haze{};
@@ -540,10 +562,13 @@ struct Renderer::Impl {
     };
     struct ShieldGlow {
         Vec3 pos{};
-        float radius = 0, height = 0;
-        uint16_t color = 0;
-        float strength = 0;
+        Vec3 emitter{};
+        float yaw = 0, width = 0, height = 0, integrity = 0, lift = 0;
     };
+    Mesh alienPoseBlend;
+#ifndef ESP_PLATFORM
+    Mesh campaignPoseBlend;
+#endif
     std::array<MuzzleGlow, MissionSnapshot::maxActors> muzzleGlows{};
     size_t muzzleGlowCount = 0;
     std::array<RayGlow, MissionSnapshot::maxActors> rayGlows{};
@@ -601,8 +626,20 @@ struct Renderer::Impl {
         vertices = std::max(vertices, source.playerBody.vertices.size());
         vertices = std::max({vertices, source.alienTrooper.vertices.size(), source.alienEnforcer.vertices.size(),
                              source.alienRayGun.vertices.size(), source.alienRayRings.vertices.size(),
-                             source.alienHeavyRayGun.vertices.size(), source.alienHeavyRayRings.vertices.size()});
+                             source.alienHeavyRayGun.vertices.size(), source.alienHeavyRayRings.vertices.size(),
+                             source.scoutCargoCrate.vertices.size()});
+        alienPoseBlend.posePositions.reserve(std::max(source.alienEnforcer.vertexCount(), source.alienTrooper.vertexCount()));
         vertices = std::max(vertices, source.civilianMesh.vertices.size());
+#ifndef ESP_PLATFORM
+        size_t campaignVertices = 0;
+        for (const auto& person : source.campaignPeople) {
+            vertices = std::max(vertices, person.body.vertexCount());
+            campaignVertices = std::max(campaignVertices, person.body.vertexCount());
+        }
+        campaignPoseBlend.posePositions.reserve(campaignVertices);
+        vertices = std::max({vertices, source.desktopScout.vertexCount(), source.desktopScoutGear.vertexCount(),
+                             source.desktopAttackDrone.vertexCount(), source.desktopJammer.vertexCount()});
+#endif
         vertices = std::max({vertices, source.transportHelo.vertices.size(), source.transportRotor.vertices.size()});
         vertices = std::max(vertices, source.alienDrone.vertices.size());
         vertices = std::max({vertices, source.alienUplink.vertices.size(), source.alienUplinkCore.vertices.size(),
@@ -610,41 +647,45 @@ struct Renderer::Impl {
         for (const auto& craft : source.alienFleet) {
             vertices = std::max(vertices, craft.vertices.size());
         }
-        size_t propAlpha = 0;
-        if (!source.propInstances.empty()) {
+        const auto propAlpha = [&](const ArenaGeometry& map) {
+            if (map.propInstances.empty()) return size_t(0);
             vertices = std::max({vertices, source.shipBoxTruck.vertices.size(), source.shipBoxCar.vertices.size()});
             const size_t truckAlpha = alphaCount(source.shipBoxTruck);
             const size_t carAlpha = alphaCount(source.shipBoxCar);
-            for (const auto& inst : source.propInstances) {
-                propAlpha += inst.kind == PropKind::Truck ? truckAlpha : carAlpha;
-            }
-        }
+            size_t count = 0;
+            for (const auto& inst : map.propInstances) count += inst.kind == PropKind::Truck ? truckAlpha : carAlpha;
+            return count;
+        };
         for (const auto& weapon : source.weapon) {
             maxWeaponAlpha = std::max(maxWeaponAlpha, alphaCount(weapon));
             vertices = std::max(vertices, weapon.vertices.size());
         }
-        const size_t worldAlpha = alphaCount(source.world) + propAlpha + 5 * maxActorAlpha +
-                                  alphaCount(source.apache) + 3 * alphaCount(source.jet);
-        translucent.reserve(2 * std::max(worldAlpha, maxWeaponAlpha)); // One near-plane split per triangle.
-        posedVertices.resize(vertices);
-        visible.reserve(source.world.chunks.size());
-
         const auto& world = source.world;
-        if (!enhanced) worldLights.reserve(world.triangles.size());
-        const bool oneSided = std::any_of(world.triangles.begin(), world.triangles.end(), [&source](const Triangle& triangle) {
-            return !source.materials[triangle.material].doubleSided;
-        });
-        if (oneSided) culledNormals.resize(world.triangles.size());
-        for (size_t i = 0; i < world.triangles.size(); ++i) {
-            const auto& triangle = world.triangles[i];
-            const Vec3 a = world.vertices[triangle.a].position;
-            const Vec3 normal = cross(world.vertices[triangle.b].position - a, world.vertices[triangle.c].position - a);
-            if (!enhanced) worldLights.push_back(lightFor(normal, false));
-            if (oneSided) culledNormals[i] = normal;
+        size_t landscapeAlpha = alphaCount(world) + propAlpha(source);
+        size_t chunks = world.chunks.size();
+        prepareTerrain(source, briarLighting);
+        if (source.timberline) {
+            const auto& remote = *source.timberline;
+            landscapeAlpha = std::max(landscapeAlpha, alphaCount(remote.world) + propAlpha(remote));
+            chunks = std::max(chunks, remote.world.chunks.size());
+            prepareTerrain(remote, timberLighting);
         }
+        if (source.scoutInterior) {
+            const auto& scout = *source.scoutInterior;
+            landscapeAlpha = std::max(landscapeAlpha, alphaCount(scout.world));
+            chunks = std::max(chunks, scout.world.chunks.size());
+            vertices = std::max(vertices, source.shipBoxCrate.vertices.size());
+            prepareTerrain(scout, scoutLighting);
+        }
+        const size_t worldAlpha = landscapeAlpha + 5 * maxActorAlpha + alphaCount(source.apache) + 3 * alphaCount(source.jet);
+        translucent.reserve(2 * std::max(worldAlpha, maxWeaponAlpha));
+        posedVertices.resize(vertices);
+        visible.reserve(chunks);
         if (enhanced) {
-            light.bake(source);
             if (invasionDusk) {
+#ifndef ESP_PLATFORM
+                if (source.desktopDusk[0].empty())
+#endif
                 buildSunsetSky();
                 updateDuskMist(0.72f, sunsetSunDir);
             } else {
@@ -664,11 +705,20 @@ struct Renderer::Impl {
                     }
                 }
             };
-            buildMeshMips(world);
-            for (const auto& inst : source.propInstances) {
-                const auto& mesh = inst.kind == PropKind::Truck ? source.shipBoxTruck : source.shipBoxCar;
-                buildMeshMips(mesh, inst.paintMaterials.empty() ? nullptr : inst.paintMaterials.data());
-            }
+            const auto buildMapMips = [&](const ArenaGeometry& map) {
+                buildMeshMips(map.world);
+                for (const auto& inst : map.propInstances) {
+                    const auto& mesh = inst.kind == PropKind::Truck ? source.shipBoxTruck : source.shipBoxCar;
+                    buildMeshMips(mesh, inst.paintMaterials.empty() ? nullptr : inst.paintMaterials.data());
+                }
+            };
+            buildMapMips(source);
+            if (source.timberline) buildMapMips(*source.timberline);
+            if (source.scoutInterior) buildMapMips(*source.scoutInterior);
+#ifndef ESP_PLATFORM
+            buildMeshMips(source.desktopScout);
+            for (const auto& person : source.campaignPeople) buildMeshMips(person.body);
+#endif
         }
         baseTexInfo.reserve(source.textures.size());
         for (const auto& t : source.textures) baseTexInfo.push_back(makeTexInfo(t));
@@ -727,7 +777,9 @@ struct Renderer::Impl {
         const float warm = sunAlign * sunAlign * 0.45f + sunAlign * 0.55f;
         const float cold = std::clamp((density - .72f) * 3.f, 0.f, .8f);
         const auto shade = rgbClamped(127.f - 35.f * cold, 113.f + 3.f * cold, 133.f + 19.f * cold);
-        const uint16_t tone = blend(shade, rgb(222, 139, 102), unsigned(warm * (248.f - cold * 96.f)));
+        const uint16_t tone = timberline
+            ? blend(rgb(91, 110, 134), rgb(166, 183, 197), unsigned(warm * 156.f))
+            : blend(shade, rgb(222, 139, 102), unsigned(warm * (248.f - cold * 96.f)));
         if (tone != duskMistColor) {
             duskMistColor = tone;
             const uint32_t channels = ((uint32_t(tone) << 16) | tone) & 0x07e0f81f;
@@ -1013,7 +1065,7 @@ struct Renderer::Impl {
             : Transform{view.transform(transform.origin), rotToView(transform.x), rotToView(transform.y), rotToView(transform.z)};
         const Vec3 camSun = space == MeshSpace::View ? sun : rotToView(sun);
         const Vec3 camUp = space == MeshSpace::View ? up : Vec3{view.right.y, view.up.y, view.forward.y};
-        const auto movingLight = light.moving(camSun, camUp);
+        const auto movingLight = terrain->light.moving(camSun, camUp);
         constexpr Vec3 worldClassicLight{-0.28f, 0.86f, 0.43f};
         const Vec3 classicDir = space == MeshSpace::View ? worldClassicLight : rotToView(worldClassicLight);
 
@@ -1120,8 +1172,8 @@ struct Renderer::Impl {
     }
 
     void submitWorld(size_t first, size_t count, const Snapshot& state) {
-        const auto& mesh = assets.world;
-        const bool hasOneSided = !culledNormals.empty();
+        const auto& mesh = geometry->world;
+        const bool hasOneSided = !terrain->normals.empty();
         const bool anyBrokenGlass = state.brokenGlass != 0;
         const auto vertex = [&](uint32_t i) {
             Vertex value = mesh.vertices[i];
@@ -1132,10 +1184,10 @@ struct Renderer::Impl {
             const Triangle& tri = mesh.triangles[i];
             if (anyBrokenGlass && !intact(state, tri.glass)) continue;
             if (hasOneSided && !assets.materials[tri.material].doubleSided &&
-                dot(culledNormals[i], mesh.vertices[tri.a].position - view.position) <= 0) continue;
+                dot(terrain->normals[i], mesh.vertices[tri.a].position - view.position) <= 0) continue;
             submitFace(tri, tri.material, vertex, [&](bool front) {
-                if (!enhanced) return Shade{{worldLights[i], worldLights[i], worldLights[i]}};
-                const FaceLight& face = light.faces[i];
+                if (!enhanced) return Shade{{terrain->levels[i], terrain->levels[i], terrain->levels[i]}};
+                const FaceLight& face = terrain->light.faces[i];
                 if (!face.back) {
                     // The light map covers the top of a ground face. Its underside stays dim.
                     if (front) return Shade{{255, 255, 255}, uint16_t(face.front[0] | face.front[1] << 8)};
@@ -1190,6 +1242,34 @@ struct Renderer::Impl {
         const uint32_t val = ((top * iy + bot * fy + dBias) >> 5) & mask;
         return uint16_t(val | (val >> 16));
     }
+
+#ifndef ESP_PLATFORM
+    static FOD_FORCEINLINE uint16_t sampleDesktopSky(const uint32_t* face, float u, float v, int pixelX, int pixelY) {
+        constexpr int size = desktopSkyFaceSize;
+        constexpr int last = (size - 1) * 256;
+        const int x = int(std::clamp(u, 0.f, 1.f) * last);
+        const int y = int(std::clamp(v, 0.f, 1.f) * last);
+        const int x0 = x >> 8, y0 = y >> 8;
+        const int x1 = std::min(x0 + 1, size - 1), y1 = std::min(y0 + 1, size - 1);
+        const auto mixRgb = [](uint32_t a, uint32_t b, unsigned t) {
+            constexpr uint32_t redBlue = 0xff00ffu;
+            const uint32_t ra = a & redBlue, rb = b & redBlue;
+            const uint32_t ga = a & 0xff00u, gb = b & 0xff00u;
+            const uint32_t color = (((ra << 8) + (rb - ra) * t) >> 8) & redBlue;
+            const uint32_t green = (((ga << 8) + (gb - ga) * t) >> 8) & 0xff00u;
+            return color | green;
+        };
+        const uint32_t upper = mixRgb(face[y0 * size + x0], face[y0 * size + x1], unsigned(x & 255));
+        const uint32_t lower = mixRgb(face[y1 * size + x0], face[y1 * size + x1], unsigned(x & 255));
+        const uint32_t tone = mixRgb(upper, lower, unsigned(y & 255));
+        const int dither = skyDither[(pixelY & 63) * 64 + (pixelX & 63)];
+        return rgb(std::min(255, int(tone >> 16) + 2 * dither),
+                   std::min(255, int((tone >> 8) & 255u) + dither),
+                   std::min(255, int(tone & 255u) + 2 * dither));
+    }
+
+    const DesktopSky& desktopSky() const { return timberline ? assets.desktopTimberlineSky : assets.desktopDusk; }
+#endif
 
     // Faces whose light changes across them, or which reach into the haze, take
     // the detailed fill. Every other face keeps the plain inner loop.
@@ -1259,8 +1339,10 @@ struct Renderer::Impl {
     }
 
     template<Fill fill, bool detail = false, bool countPixels = false>
-    void raster(const Primitive& t, bool opaque, const uint8_t* skyPixels = nullptr, const uint16_t* sunsetPixels = nullptr) {
-        constexpr bool backdrop = fill == Fill::Sky, shadow = fill == Fill::Shadow;
+    void raster(const Primitive& t, bool opaque,
+                const std::conditional_t<fill == Fill::DesktopSky, uint32_t, uint8_t>* skyPixels = nullptr,
+                const uint16_t* sunsetPixels = nullptr) {
+        constexpr bool backdrop = fill == Fill::Sky || fill == Fill::DesktopSky, shadow = fill == Fill::Shadow;
         constexpr bool textured = fill == Fill::Textured, surface = textured || fill == Fill::Flat;
         constexpr bool usesUv = textured || backdrop;
         const auto& [a, b, c] = t.p;
@@ -1284,7 +1366,7 @@ struct Renderer::Impl {
         const uint8_t light0 = t.light[0];
         const uint16_t matColor = material ? material->color : 0;
         const unsigned matAlpha = material ? material->alpha : 255u;
-        const GroundPatch* patch = detail && base && t.patch != SceneLight::noPatch ? &light.patches[t.patch] : nullptr;
+        const GroundPatch* patch = detail && base && t.patch != SceneLight::noPatch ? &terrain->light.patches[t.patch] : nullptr;
         const bool smooth = detail && !patch && (t.light[0] != t.light[1] || t.light[0] != t.light[2]);
         const bool varying = smooth || patch;
         const bool hazy = detail && surface && std::min({a.depth, b.depth, c.depth}) < hazeStart;
@@ -1425,8 +1507,8 @@ struct Renderer::Impl {
         const int cornerStep = smooth ? int(std::clamp(dlitdx, -255.0f, 255.0f) * 65536.f) : 0;
         float rowCells = 0, columnCells = 0;
         if (patch) {
-            rowCells = std::max(std::abs(dzdx), std::abs(dzdy)) / light.cellSize();
-            columnCells = 16.0f * 0.5f / (view.focal * light.cellSize());
+            rowCells = std::max(std::abs(dzdx), std::abs(dzdy)) / terrain->light.cellSize();
+            columnCells = 16.0f * 0.5f / (view.focal * terrain->light.cellSize());
         }
 
         float zRow = (a.depth * eRow[0] + b.depth * eRow[1] + c.depth * eRow[2]) * inverseArea;
@@ -1452,6 +1534,13 @@ struct Renderer::Impl {
             const int rowCount = right - left + 1;
 
             if constexpr (backdrop) {
+                const auto sample = [&](float u, float v, int x, int y) {
+#ifndef ESP_PLATFORM
+                    if constexpr (fill == Fill::DesktopSky) return sampleDesktopSky(skyPixels, u, v, x, y);
+                    else
+#endif
+                        return sunsetPixels ? sampleSunsetSky(sunsetPixels, u, v, x, y) : sampleSky(skyPixels, u, v, x, y);
+                };
                 const uint16_t* rowTiles = hiZBuilt ? (tileMin.data() + (y >> 3) * tilesX) : nullptr;
                 float cachedInvZ = 0.f;
                 int cachedX = -1;
@@ -1470,11 +1559,26 @@ struct Renderer::Impl {
                     const uint16_t* dPtr = depth.data() + at;
                     uint8_t openMask = 0;
                     int first = spanLen, last = -1;
-                    for (int k = 0; k < spanLen; ++k) {
-                        if (!dPtr[k]) {
-                            openMask |= uint8_t(1u << k);
-                            if (first == spanLen) first = k;
-                            last = k;
+                    if constexpr (fill == Fill::DesktopSky) {
+                        // Most open sky spans have eight clear depth samples.
+                        if (spanLen == spanPixels) {
+                            uint64_t front, back;
+                            std::memcpy(&front, dPtr, sizeof(front));
+                            std::memcpy(&back, dPtr + 4, sizeof(back));
+                            if ((front | back) == 0) {
+                                openMask = 0xff;
+                                first = 0;
+                                last = spanPixels - 1;
+                            }
+                        }
+                    }
+                    if (openMask == 0) {
+                        for (int k = 0; k < spanLen; ++k) {
+                            if (!dPtr[k]) {
+                                openMask |= uint8_t(1u << k);
+                                if (first == spanLen) first = k;
+                                last = k;
+                            }
                         }
                     }
                     if (!openMask) {
@@ -1490,8 +1594,7 @@ struct Renderer::Impl {
                     float uCur = (u + dudx * float(first)) * inv0;
                     float vCur = (v + dvdx * float(first)) * inv0;
                     if (first == last) {
-                        color[at + first] = sunsetPixels ? sampleSunsetSky(sunsetPixels, uCur, vCur, px + first, y)
-                                                         : sampleSky(skyPixels, uCur, vCur, px + first, y);
+                        color[at + first] = sample(uCur, vCur, px + first, y);
                         if constexpr (countPixels) ++stats.depthPasses;
                     } else {
                         const bool carry = first == 0 && spanLen == 8 && x + 8 <= right;
@@ -1503,8 +1606,7 @@ struct Renderer::Impl {
                         const float dv = ((v + dvdx * float(endOff)) * inv1 - vCur) * invStep;
                         for (int k = first; k <= last; ++k, uCur += du, vCur += dv) {
                             if (openMask & (1u << k)) {
-                                color[at + k] = sunsetPixels ? sampleSunsetSky(sunsetPixels, uCur, vCur, px + k, y)
-                                                             : sampleSky(skyPixels, uCur, vCur, px + k, y);
+                                color[at + k] = sample(uCur, vCur, px + k, y);
                                 if constexpr (countPixels) ++stats.depthPasses;
                             }
                         }
@@ -1586,9 +1688,9 @@ struct Renderer::Impl {
             int mapLevel = 0;
             const auto mapLight = [&](int pixels) {
                 const int lx = int(cellX + cellStepX * pixels), ly = int(cellY + cellStepY * pixels);
-                const int fine = light.sample(lx, ly, mapLevel);
+                const int fine = terrain->light.sample(lx, ly, mapLevel);
                 if (mapMix <= 0) return fine << 8;
-                return (fine << 8) + int((light.sample(lx, ly, mapLevel + 1) - fine) * mapMix);
+                return (fine << 8) + int((terrain->light.sample(lx, ly, mapLevel + 1) - fine) * mapMix);
             };
 
             float cachedInvZ = 0.f;
@@ -1871,13 +1973,13 @@ struct Renderer::Impl {
 
     void drawWorld(const Snapshot& state) {
         resetProjections();
-        if (assets.world.chunks.empty()) {
-            submitWorld(0, assets.world.triangles.size(), state);
+        if (geometry->world.chunks.empty()) {
+            submitWorld(0, geometry->world.triangles.size(), state);
             return;
         }
         visible.clear();
-        for (uint32_t i = 0; i < assets.world.chunks.size(); ++i) {
-            const auto& chunk = assets.world.chunks[i];
+        for (uint32_t i = 0; i < geometry->world.chunks.size(); ++i) {
+            const auto& chunk = geometry->world.chunks[i];
             const Vec3 center = (chunk.bounds.min + chunk.bounds.max) * 0.5f;
             const Vec3 extent = (chunk.bounds.max - chunk.bounds.min) * 0.5f;
             if (!view.sees(center, extent)) continue;
@@ -1886,7 +1988,7 @@ struct Renderer::Impl {
         }
         std::sort(visible.begin(), visible.end());
         for (const auto& item : visible) {
-            const auto& chunk = assets.world.chunks[item.second];
+            const auto& chunk = geometry->world.chunks[item.second];
             if (countRenderWork && measure) ++stats.visibleChunks;
             submitWorld(chunk.first, chunk.count, state);
         }
@@ -1915,10 +2017,134 @@ struct Renderer::Impl {
                mesh.vertexCount() == next.vertexCount() ? &next : nullptr, actor.frameBlend, legacyMetal, topology, uniform);
     }
 
+#ifndef ESP_PLATFORM
+    bool drawCampaignPerson(const Actor& actor, const Snapshot& state, CampaignHuman person, float heightScale = 1.f,
+                            const NpcMotion* motion = nullptr, bool pinned = false) {
+        const auto& model = assets.campaignPeople[size_t(person)];
+        if (model.poses.empty()) return false;
+        if (!actor.visible) return true;
+        const Bounds bounds{actor.position + Vec3{-1.15f, -.46f, -1.15f}, actor.position + Vec3{1.15f, 2.2f, 1.15f}};
+        if (!view.sees(bounds) || occluded(bounds)) return true;
+
+        const float fall = std::clamp(actor.fall, 0.f, 1.f);
+        const float fallYaw = actor.fallVariant == 2 ? fall * 1.35f : 0.f;
+        const float fallPitch = actor.fallVariant == 1 ? fall * 1.46f : -fall * 1.46f;
+        auto transform = orientation(actor.position + Vec3{0, fall * .22f, 0}, actor.yaw + fallYaw,
+                                     fallPitch, fall * .12f);
+        transform.y *= heightScale;
+
+        NpcMotion fallback;
+        fallback.phase = actor.phase;
+        fallback.speed = actor.speed;
+        fallback.crouch = pinned ? 1.f : 0.f;
+        const auto& m = motion && motion->ready ? *motion : fallback;
+        const bool civilian = person < CampaignHuman::Delta;
+        const float time = float(state.realTime) + float(size_t(person)) * .47f;
+        const float crouch = civilian ? m.crouch : 0.f;
+        const float gait = gaitWeight(m.speed) * (1.f - crouch * .82f);
+        const float kick = m.recoil * m.recoil;
+        const auto idle = cyclePose(0, campaignIdlePoses, time * .31f);
+        float run = 0.f;
+        PoseSample walk{}, sprint{}, cover{};
+        if (gait > .002f) {
+            run = gaitRun(m.speed);
+            walk = cyclePose(campaignWalk, campaignGaitPoses, m.phase);
+            if (run > 0.f) sprint = cyclePose(campaignRun, campaignGaitPoses, m.phase);
+        }
+        if (crouch > .002f) {
+            const float peek = (.51f + .46f * std::sin(time * 1.20f)) * (campaignCoverPoses - 1);
+            const auto frame = size_t(peek);
+            cover = {campaignCover + frame, campaignCover + frame + 1, peek - float(frame)};
+        }
+        const auto& frames = model.poses;
+        const auto sample = [&](const auto& point) {
+            const Vec3 standing = point(idle);
+            Vec3 p = standing;
+            if (gait > .002f) {
+                Vec3 stride = point(walk);
+                if (run > 0.f) stride = poseMix(stride, point(sprint), run);
+                p = poseMix(p, stride, gait);
+            }
+            if (crouch > .002f) {
+                // Keep the stride as the actor lowers; taking cover must not pin a moving foot.
+                p += (point(cover) - standing) * crouch;
+            }
+            return p;
+        };
+        const auto& regions = model.regions;
+        const auto& head = regions[size_t(CampaignPart::Head)];
+        auto& points = campaignPoseBlend.posePositions;
+        points.resize(model.body.vertexCount());
+        for (size_t i = 0; i < points.size(); ++i) {
+            const auto point = [&](PoseSample p) {
+                return poseMix(frames[p.from].posePositions[i], frames[p.to].posePositions[i], p.fraction);
+            };
+            points[i] = sample(point);
+        }
+        Vec3 neck = sample([&](PoseSample p) { return poseMix(model.neck[p.from], model.neck[p.to], p.fraction); });
+        const auto tilt = orientation({}, m.turn * .19f, m.lean, -m.turn * .46f);
+        const Vec3 hip{0, .83f - .41f * crouch, 0};
+        const auto torso = [&](Vec3 p) {
+            const float upper = motionEase((p.y - hip.y) * 2.2f);
+            return p + (hip + tilt(p - hip) - p + Vec3{0, .016f * kick, -.063f * kick}) * upper;
+        };
+        const float aim = person == CampaignHuman::Delta ? motionEase(m.aim) * (1.f - gait * .55f) : 0.f;
+        const float flinch = civilian ? m.flinch * (1.f - crouch) : 0.f;
+        const Vec3* aimPose = aim > .002f ? frames[campaignAim].posePositions.data() : nullptr;
+        const Vec3* flinchPose = flinch > .002f ? frames[campaignFlinch].posePositions.data() : nullptr;
+        const auto bendBody = [&](size_t first, size_t end) {
+            for (size_t i = first; i < end; ++i) {
+                Vec3 p = points[i];
+                if (aimPose || flinchPose) {
+                    const float upper = motionEase((p.y - hip.y) * 2.4f);
+                    if (aimPose) p = poseMix(p, aimPose[i], aim * upper);
+                    if (flinchPose) p = poseMix(p, flinchPose[i], flinch * upper);
+                }
+                points[i] = torso(p);
+            }
+        };
+        const auto& left = regions[size_t(CampaignPart::LeftLeg)];
+        const auto& right = regions[size_t(CampaignPart::RightLeg)];
+        bendBody(0, left.first);
+        bendBody(left.end(), right.first);
+        bendBody(right.end(), points.size());
+        if (aimPose) neck = poseMix(neck, model.neck[campaignAim], aim);
+        if (flinchPose) neck = poseMix(neck, model.neck[campaignFlinch], flinch);
+        neck = torso(neck);
+        const auto look = orientation({}, m.lookYaw, m.lookPitch, -m.turn * .16f);
+        for (size_t i = head.first; i < head.end(); ++i)
+            points[i] = neck + look(points[i] - neck);
+        const auto footTurn = orientation({}, m.travelYaw * .78f, 0, 0);
+        const float footDepth = std::max(.25f, hip.y - .12f);
+        for (size_t leg = 0; leg < m.footRise.size(); ++leg) {
+            const auto& region = regions[size_t(CampaignPart::LeftLeg) + leg];
+            for (size_t i = region.first; i < region.end(); ++i) {
+                Vec3& p = points[i];
+                const float foot = motionEase((hip.y - p.y) / footDepth);
+                p = poseMix(p, footTurn(p), foot * gait);
+                p.y += m.footRise[leg] * foot;
+            }
+        }
+
+        meshLight = standing(actor.position);
+        submit(campaignPoseBlend, state, transform, MeshSpace::World, nullptr, 0.f, false, &model.body, nullptr, nullptr, enhanced);
+        return true;
+    }
+#endif
+
     void drawMissionActor(const MissionActor& ma, const Snapshot& state) {
         if (!ma.active || !ma.actor.visible) return;
         const auto& actor = ma.actor;
-        const Vec3 extent = ma.role == MissionRole::AlienDrone ? Vec3{1.f, .6f, 1.f}
+#ifndef ESP_PLATFORM
+        if (ma.role == MissionRole::Civilian && drawCampaignPerson(actor, state, CampaignHuman(ma.variant % 3), 1.f,
+                                                                  &ma.motion, ma.civilian == CivilianOutcome::Pinned)) return;
+        if (ma.role == MissionRole::Commander && drawCampaignPerson(actor, state, CampaignHuman::Delta, 1.f, &ma.motion)) return;
+#endif
+        float droneHeight = .6f;
+#ifndef ESP_PLATFORM
+        if (ma.jammer && !assets.desktopJammer.triangles.empty()) droneHeight = .94f;
+#endif
+        const Vec3 extent = ma.role == MissionRole::AlienDrone ? Vec3{1.f, droneHeight, 1.f}
                           : ma.role == MissionRole::AlienTrooper ? Vec3{1.9f, 2.9f, 1.9f} : Vec3{2.f, 2.2f, 2.f};
         const Bounds bounds{actor.position - Vec3{extent.x, .6f, extent.z}, actor.position + extent};
         if (!view.sees(bounds) || occluded(bounds)) return;
@@ -1978,12 +2204,50 @@ struct Renderer::Impl {
                 transform.y *= s;
                 transform.z *= s;
             }
-            const uint16_t* uniform = (ma.variant > 0 && !assets.enforcerUniform.empty())
-                ? assets.enforcerUniform.data() : nullptr;
+            const uint16_t* uniform = thermal && !ma.dead ? assets.thermalUniform.data()
+                : (ma.variant > 0 && !assets.enforcerUniform.empty()) ? assets.enforcerUniform.data() : nullptr;
+            const float lift = ma.dead ? 0.f : ma.guardLift;
             if (posed) {
-                const auto& pose = poses[std::min<size_t>(actor.frame, poses.size() - 1)];
-                const auto& next = poses[std::min<size_t>(actor.nextFrame, poses.size() - 1)];
-                submit(pose, state, transform, MeshSpace::World, &next, actor.frameBlend, false, &body, uniform);
+                const auto from = std::min<size_t>(actor.frame, poses.size() - 1);
+                const auto to = std::min<size_t>(actor.nextFrame, poses.size() - 1);
+                const auto& guard = assets.alienGuardArm;
+                const bool drawGuard = armored && !guard.empty() && lift > 0.f;
+#ifndef ESP_PLATFORM
+                const auto legs = assets.alienLegs[armored ? 1 : 0];
+                const bool plant = ma.motion.ready && ma.motion.grounded && !ma.dead && legs.count > 0;
+#else
+                constexpr bool plant = false;
+#endif
+                if (drawGuard || plant) {
+                    auto& points = alienPoseBlend.posePositions;
+                    points.resize(body.vertexCount());
+                    for (size_t i = 0; i < points.size(); ++i) {
+                        const Vec3 base = poses[from].position(i) + (poses[to].position(i) - poses[from].position(i)) * actor.frameBlend;
+                        points[i] = base;
+                    }
+                    for (size_t i = 0; drawGuard && i < guard.size(); ++i) {
+                        Vec3& arm = points[assets.alienGuardArmFirst + i];
+                        arm += (guard[i] - arm) * lift;
+                    }
+#ifndef ESP_PLATFORM
+                    if (plant) {
+                        const auto& motion = ma.motion;
+                        const auto stride = cyclePose(alienIdlePoses, alienStridePoses, motion.phase);
+                        const float strideAmount = gaitWeight(motion.speed);
+                        const auto steer = orientation({}, motion.travelYaw * .72f, 0.f, 0.f);
+                        for (size_t i = legs.first; i < legs.first + legs.count; ++i) {
+                            // Keep the hip seam with the firing pose and let the stance carry the legs below it.
+                            const Vec3 walking = stride.point(poses, i);
+                            const Vec3 planted = poseMix(poses.front().position(i), steer(walking), strideAmount);
+                            const float weight = motionEase((1.06f - points[i].y) / .59f);
+                            points[i] = poseMix(points[i], planted, weight);
+                        }
+                    }
+#endif
+                    submit(alienPoseBlend, state, transform, MeshSpace::World, nullptr, 0, false, &body, uniform);
+                } else {
+                    submit(poses[from], state, transform, MeshSpace::World, &poses[to], actor.frameBlend, false, &body, uniform);
+                }
             } else {
                 submit(assets.alienTrooper, state, transform, MeshSpace::World, nullptr, 0, false, nullptr, uniform);
             }
@@ -2018,32 +2282,47 @@ struct Renderer::Impl {
                     };
                 }
             }
-            if (!ma.dead && ma.shield > 0.01f && shieldGlowCount < shieldGlows.size()) {
-                const uint16_t shieldColor = ma.linked ? rgb(72, 238, 255) : rgb(255, 86, 128);
+            if (lift > .08f && shieldGlowCount < shieldGlows.size()) {
+                const auto brace = orientation(actor.position, actor.yaw, 0.f, 0.f);
                 shieldGlows[shieldGlowCount++] = {
-                    actor.position + Vec3{0, 1.15f * s, 0},
-                    0.78f * s, 1.05f * s, shieldColor,
-                    std::clamp(0.45f + 0.55f * ma.shield, 0.35f, 1.f)
+                    brace(enforcerGuardOffset(lift) * s), transform(enforcerGuardEmitter),
+                    actor.yaw, enforcerGuardWidth * s * lift, enforcerGuardHeight * s * lift, ma.guard, lift
                 };
             }
             return;
         }
         if (ma.role == MissionRole::AlienDrone) {
-            if (assets.alienDrone.triangles.empty()) return;
-            const float pitch = ma.dead ? .55f : ma.alerted ? ma.gunPitch : actor.speed > .5f ? .14f : 0.f;
+            const Mesh* drone = &assets.alienDrone;
+#ifndef ESP_PLATFORM
+            if (!assets.desktopAttackDrone.triangles.empty())
+                drone = ma.jammer ? &assets.desktopJammer : &assets.desktopAttackDrone;
+#endif
+            if (drone->triangles.empty()) return;
+            const float pitch = ma.dead ? .55f : droneHullPitch(ma.alerted, ma.gunPitch, actor.speed);
             auto transform = orientation(actor.position, ma.alerted && !ma.dead ? ma.gunYaw : actor.yaw,
-                                         pitch + lean.pitch, (ma.dead ? .45f : 0.f) + lean.roll);
-            submit(assets.alienDrone, state, transform, MeshSpace::World);
+                                         pitch, ma.dead ? .45f : 0.f);
+            const auto* uniform = thermal && !ma.dead ? assets.thermalUniform.data() : nullptr;
+            submit(*drone, state, transform, MeshSpace::World, nullptr, 0, false, nullptr, uniform);
+#ifndef ESP_PLATFORM
+            if (drone == &assets.desktopJammer && !ma.dead && !thermal && muzzleGlowCount < muzzleGlows.size()) {
+                const int slot = int(&ma - state.mission->actors.data());
+                const bool transmitting = slot == state.mission->operation.jammer;
+                const float pulse = .68f + .22f * std::sin(float(state.realTime) * 7.3f + actor.position.x);
+                muzzleGlows[muzzleGlowCount++] = {transform(jammerCore + Vec3{0, 0, .18f}), .24f,
+                    tractorJammed.core, tractorJammed.halo, pulse * (transmitting ? .99f : .51f), false};
+            }
+#endif
             if (ma.alerted && !ma.dead && (ma.gunCharge > .04f || ma.gunRecoil > .08f) &&
                 rayGlowCount < rayGlows.size()) {
-                rayGlows[rayGlowCount++] = {transform({0, 0, .52f}), transform.z, transform.x, transform.y,
+                const auto beam = alienGunFrame(actor.position, ma.gunYaw, ma.gunPitch, 0);
+                rayGlows[rayGlowCount++] = {actor.position + beam.axis * droneMuzzle, beam.axis, beam.right, beam.up,
                                             ma.gunCharge, ma.gunRecoil, .75f, false};
             }
         }
     }
 
     void drawUplink(const Snapshot& state) {
-        if (!state.mission->uplinkVisible || assets.alienUplink.triangles.empty()) return;
+        if (state.mission->chapter != MissionChapter::BriarHouse || assets.alienUplink.triangles.empty()) return;
         const auto bounds = assets.alienUplink.chunks.front().bounds;
         if (!view.sees({bounds.min + uplinkPosition, bounds.max + uplinkPosition})) return;
         meshLight = standing(uplinkPosition);
@@ -2070,14 +2349,14 @@ struct Renderer::Impl {
         submit(assets.relayTerminal, state, orientation(base, 0, 0, 0), MeshSpace::World);
         if (muzzleGlowCount >= muzzleGlows.size()) return;
         const float time = float(state.realTime);
-        const bool jammed = op.jammer >= 0;
+        const bool jammed = op.jammer >= 0 || m.scout.autoReturn;
         const float pulse = .65f + .25f * std::sin(time * (jammed ? 18.f : op.painting ? 9.f : 4.8f));
         muzzleGlows[muzzleGlowCount++] = {base + Vec3{0, 1.19f, 0}, .42f, rgb(246, 250, 237),
                                           jammed ? rgb(255, 57, 185) : rgb(57, 220, 255), pulse, jammed};
     }
 
     // A figure in shade dims with the ground under it, yet stays easy to pick out.
-    unsigned standing(Vec3 position) const { return 128 + light.at(position.x, position.z) / 2; }
+    unsigned standing(Vec3 position) const { return 128 + terrain->light.at(position.x, position.z) / 2; }
 
     // Darken the ground under a figure. The disc fades from a dark core to nothing at its rim.
     void contactShadow(Vec3 feet, float radius) {
@@ -2223,7 +2502,7 @@ struct Renderer::Impl {
 
     void sky(const Camera& camera) {
         const float horizon = view.height * 0.5f - std::tan(camera.pitch) * view.focal;
-        if (invasionDusk) {
+        if (invasionDusk && !timberline) {
             for (int y = 0; y < view.height; ++y) {
                 const float elevation = std::clamp((horizon - float(y)) / float(view.height), -1.f, 1.f);
                 const Vec3 tone = duskGradient(elevation);
@@ -2240,8 +2519,14 @@ struct Renderer::Impl {
 
     void drawSkyCube() {
         if (!enhanced) return;
-        const bool useSunset = invasionDusk && !sunsetSky[0].empty();
-        if (!useSunset && assets.sky[0].empty()) return;
+        const bool useSunset = invasionDusk && !timberline && !sunsetSky[0].empty();
+#ifndef ESP_PLATFORM
+        const auto& detailed = desktopSky();
+        const bool useDesktop = !detailed[0].empty();
+#else
+        constexpr bool useDesktop = false;
+#endif
+        if (!useDesktop && !useSunset && assets.sky[0].empty()) return;
         const auto start = timestamp();
         if (hiZBuilt && !hiZAnyOpen) {
             recordRasterTime(start);
@@ -2265,6 +2550,14 @@ struct Renderer::Impl {
             const auto submit = [&](Vertex a, Vertex b, Vertex c) {
                 Primitive primitive{};
                 if (!project(primitive, a, b, c)) return;
+#ifndef ESP_PLATFORM
+                if (useDesktop) {
+                    const auto* pixels = detailed[face].data();
+                    if (countRenderWork && measure) raster<Fill::DesktopSky, false, true>(primitive, false, pixels);
+                    else raster<Fill::DesktopSky>(primitive, false, pixels);
+                    return;
+                }
+#endif
                 const auto* luma = useSunset ? nullptr : assets.sky[face].data();
                 const auto* sunset = useSunset ? sunsetSky[face].data() : nullptr;
                 if (countRenderWork && measure) raster<Fill::Sky, false, true>(primitive, false, luma, sunset);
@@ -2522,68 +2815,91 @@ struct Renderer::Impl {
 
     }
 
-    void drawArrival(const MissionActor& actor, float time) {
-        const float life = actor.arrival, age = 1.f - life;
-        const Vec3 feet = actor.actor.position + Vec3{0, .10f, 0};
+    void drawArrival(const MissionSnapshot& mission, const MissionActor& actor, float time) {
+        const float life = std::min(actor.arrival, 1.f), age = 1.f - life;
+        const Vec3 feet = (actor.carrier >= 0 ? Vec3{actor.dropSite.x, 0, actor.dropSite.z} : actor.actor.position) + Vec3{0, .10f, 0};
         const auto p = view.transform(feet);
-        if (p.z < view.near || p.z > 70.f || std::abs(p.x) > view.xSlope * p.z + 2.5f) return;
+        if (actor.carrier < 0 && (p.z < view.near || p.z > 70.f || std::abs(p.x) > view.xSlope * p.z + 2.5f)) return;
         const EnergyColors palette = actor.variant > 0 ? tractorJammed : tractorCyan;
-        const float strength = life * (.90f + .10f * std::sin(age * 24.f));
-        drawTractorBeam({feet + Vec3{0, 21.f, 0}, feet, .22f, .85f + age * .30f, palette, strength}, time);
-        if (p.z < 34.f) {
+        const float strength = life * (.90f + .10f * std::sin(time * 14.f));
+        const Vec3 source = actor.carrier < 0 ? feet + Vec3{0, 21.f, 0} :
+            fleetTransform(mission, size_t(actor.carrier), time)(fleetHulls[size_t(actor.carrier)].emitter());
+        drawTractorBeam({source, feet, .22f, .85f + age * .30f, palette, strength}, time);
+        if (p.z > view.near && p.z < 34.f) {
             drawObjectiveRing(feet, .41f + age * 1.5f, palette.core, unsigned(life * 171.f), false);
             drawObjectiveRing(feet, .24f + age * 1.0f, palette.halo, unsigned(life * 132.f), true);
         }
     }
 
     void drawShieldGlows(float time) {
-        constexpr float hexHeight = 1.73205f;
         for (size_t i = 0; i < shieldGlowCount; ++i) {
             const auto& shield = shieldGlows[i];
             const Vec3 center = view.transform(shield.pos);
-            if (center.z < view.near + .4f) continue;
-            const auto p = view.project({center, 0, 0});
-            const float rx = std::min(view.width * .20f, shield.radius * view.focal * p.depth);
-            const float ry = std::min(view.height * .30f, shield.height * view.focal * p.depth);
-            if (rx < 3.f || ry < 4.f || p.x + rx < 0 || p.x - rx >= view.width ||
-                p.y + ry < 0 || p.y - ry >= view.height) continue;
-            const int x0 = std::max(0, fastFloor(p.x - rx)), x1 = std::min(view.width - 1, fastCeil(p.x + rx));
-            const int y0 = std::max(0, fastFloor(p.y - ry)), y1 = std::min(view.height - 1, fastCeil(p.y + ry));
-            const float invX = 1.f / rx, invY = 1.f / ry;
-            const float scanY = 1.f - 2.f * unitCycle(time * .82f + float(i) * .31f);
-            const float shimmer = shield.strength * (.90f + .10f * std::sin(time * 10.f + float(i) * 2.1f));
-            const uint16_t white = blend(shield.color, rgb(226, 249, 255), 175);
-            for (int y = y0; y <= y1; ++y) {
-                const float v = (float(y) + .5f - p.y) * invY;
-                const float scan = std::max(0.f, 1.f - std::abs(v - scanY) * 12.f);
-                for (int x = x0; x <= x1; ++x) {
-                    const float u = (float(x) + .5f - p.x) * invX;
-                    const float sphere = 1.f - u * u - v * v;
-                    if (sphere <= 0.f) continue;
-                    const float front = std::sqrt(sphere);
-                    const float inverseZ = 1.f / std::max(view.near, center.z - shield.radius * front);
-                    const uint16_t z = enhanced ? encodedDepth(inverseZ) : uint16_t(inverseZ * view.near * 65534.f);
+            const Vec3 normal = forward(shield.yaw, 0.f);
+            const Vec3 right{normal.z, 0.f, -normal.x};
+            const auto toView = [&](Vec3 axis) { return Vec3{dot(view.right, axis), dot(view.up, axis), dot(view.forward, axis)}; };
+            const Vec3 n = toView(normal), uAxis = toView(right), vAxis{view.right.y, view.up.y, view.forward.y};
+            const float plane = dot(n, center);
+            const EnergyColors palette{
+                blend(rgb(251, 111, 53), rgb(38, 187, 209), unsigned(shield.integrity * 255.f)),
+                blend(rgb(255, 210, 150), rgb(205, 255, 248), unsigned(shield.integrity * 255.f))
+            };
+            if (shield.lift > .55f)
+                drawEnergyOrb(shield.emitter + normal * .045f, .18f, .62f * shield.lift, palette);
+            if (std::abs(plane) < center.z * .10f) {
+                const Vec3 span = vAxis * (shield.height * .96f);
+                drawViewTracer(center - span, center + span, palette.halo, unsigned(154.f * shield.lift));
+            }
+            if (std::abs(plane) < .03f || center.z + shield.width + shield.height <= view.near) continue;
+
+            float left = float(view.width), top = float(view.height), rightEdge = 0.f, bottom = 0.f;
+            for (const float y : {-1.f, 1.f}) for (const float x : {-1.06f, 1.06f}) {
+                Vec3 corner = center + uAxis * (x * shield.width) + vAxis * (y * shield.height);
+                corner.z = std::max(corner.z, view.near);
+                const auto p = view.project({corner, 0, 0});
+                left = std::min(left, p.x);
+                rightEdge = std::max(rightEdge, p.x);
+                top = std::min(top, p.y);
+                bottom = std::max(bottom, p.y);
+            }
+            const int x0 = fastFloor(std::clamp(left, 0.f, float(view.width)));
+            const int x1 = fastCeil(std::clamp(rightEdge, 0.f, float(view.width)));
+            const int y0 = fastFloor(std::clamp(top, 0.f, float(view.height)));
+            const int y1 = fastCeil(std::clamp(bottom, 0.f, float(view.height)));
+            const float invFocal = 1.f / view.focal;
+            const float scanY = 1.f - 2.f * unitCycle(time * .71f + float(i) * .37f);
+            const float front = plane < 0.f ? 1.f : .65f;
+            for (int y = y0; y < y1; ++y) {
+                const float rayY = (view.height * .5f - (y + .5f)) * invFocal;
+                for (int x = x0; x < x1; ++x) {
+                    const Vec3 ray{(x + .5f - view.width * .5f) * invFocal, rayY, 1.f};
+                    const float invZ = dot(n, ray) / plane;
+                    if (invZ <= 0.f || invZ * view.near > 1.f) continue;
+                    const Vec3 rel = ray / invZ - center;
+                    const float u = dot(rel, uAxis) / shield.width, v = dot(rel, vAxis) / shield.height;
+                    const float edge = enforcerGuardContour(u, v);
+                    if (edge > 1.f) continue;
+                    const uint16_t z = enhanced ? encodedDepth(invZ) : uint16_t(invZ * view.near * 65534.f);
                     const int at = y * view.width + x;
                     if (z + 2 < depth[at]) continue;
-
-                    const float edge = 1.f - front;
-                    const float coverage = std::min(1.f, sphere * rx * .65f);
-                    float cells = 0.f;
-                    if (rx >= 13.f) {
-                        // Two offset lattices give the nearest center of the hexagonal cells.
-                        const float tx = u * 4.6f + 5.f, ty = v * 5.1f + 6.f + .37f * front;
-                        const float ax = unitCycle(tx + .5f) - .5f;
-                        const float ay = (unitCycle(ty / hexHeight + .5f) - .5f) * hexHeight;
-                        const float bx = unitCycle(tx) - .5f;
-                        const float by = (unitCycle(ty / hexHeight) - .5f) * hexHeight;
-                        const bool first = ax * ax + ay * ay < bx * bx + by * by;
-                        const float hx = std::abs(first ? ax : bx), hy = std::abs(first ? ay : by);
-                        const float side = std::max(hx, .5f * hx + .866025f * hy);
-                        cells = std::max(0.f, (side - .435f) * 15.f) * (16.f + 25.f * scan);
+                    const float scan = std::max(0.f, 1.f - 20.f * std::abs(v - scanY));
+                    const float facet = v > .2f + u * .28f ? 13.f : v < -.42f - u * .20f ? 3.f : 0.f;
+                    const float fracture = std::abs(v - (u < -.08f ? u * .7f + .21f : .15f - u * .48f));
+                    const bool cracked = shield.integrity < .54f && (fracture < .029f ||
+                        (v > .12f && std::abs(u - v * .73f + .20f) < .023f));
+                    // The projector feeds two shallow ribs in the field, leaving the middle transparent.
+                    const float fromEmitter = u + .67f;
+                    const float feed = std::abs(v - .23f);
+                    const bool rib = fromEmitter > 0.f && fromEmitter < .88f &&
+                                     std::abs(feed - fromEmitter * .24f) < .027f;
+                    const float border = std::clamp((edge - .82f) * 6.f, 0.f, 1.f);
+                    color[at] = addLight(color[at], palette.halo,
+                                         unsigned((12.f + facet + border * 70.f + 24.f * scan + (rib ? 45.f : 0.f)) * front));
+                    if (edge > .921f || cracked) {
+                        const bool segment = std::abs(v) > .96f || (std::abs(u) > .92f && std::abs(v) > .20f);
+                        const float alpha = cracked ? 181.f : segment ? 222.f : 158.f;
+                        color[at] = blend(color[at], palette.core, unsigned(alpha * front));
                     }
-                    const unsigned halo = unsigned((8.f + 128.f * edge * edge + cells + 23.f * scan) * shimmer * coverage);
-                    const unsigned rim = unsigned(109.f * edge * edge * edge * shimmer * coverage);
-                    color[at] = addLight(addLight(color[at], shield.color, halo), white, rim);
                 }
             }
         }
@@ -2653,10 +2969,11 @@ struct Renderer::Impl {
 
     void valleyMist(float time, float density, float gust) {
         const float baseAlpha = 61.f + density * 100.f;
-        for (size_t b = 0; b < assets.mist.size(); ++b) {
-            const auto& bank = assets.mist[b];
+        for (size_t b = 0; b < geometry->mist.size(); ++b) {
+            const auto& bank = geometry->mist[b];
             const float sun = std::max(0.f, dot(normalized(bank.base - view.position), sunsetSunDir));
-            const auto tint = blend(rgb(111, 128, 157), rgb(219, 162, 132), unsigned(sun * 203.f));
+            const auto tint = blend(rgb(111, 128, 157), timberline ? rgb(183, 198, 210) : rgb(219, 162, 132),
+                                    unsigned(sun * 203.f));
             for (size_t i = 0; i < mistLayers; ++i) {
                 const float life = unitCycle(time * bank.rate + float(b) * .29f + float(i) / mistLayers);
                 const float fade = 4.f * life * (1.f - life);
@@ -2709,14 +3026,29 @@ struct Renderer::Impl {
 
     Transform fleetTransform(const MissionSnapshot& mission, size_t i, float time) const {
         const float phase = time * (.45f + float(i) * .13f) + float(i) * 1.7f;
-        const Vec3 drift{0, std::sin(phase) * (i == 0 ? .55f : .36f), 0};
+        const bool landed = i == 2 && mission.operation.stage == OperationStage::ScoutRecovery;
+        const Vec3 drift{0, landed ? 0.f : std::sin(phase) * (i == 0 ? .55f : .36f), 0};
+        const float bank = i == 2 && mission.operation.stage == OperationStage::ScoutFlight ? mission.scout.flightBank : 0.f;
+        float yaw = .085f * std::sin(phase * .53f);
+#ifndef ESP_PLATFORM
+        if (i == 2 && !assets.desktopScout.triangles.empty() &&
+            (mission.operation.stage == OperationStage::ScoutFlight || landed)) yaw += mission.scout.flightYaw;
+#endif
         return orientation(fleetHulls[i].center + mission.fleetShift[i] + drift,
-                           .085f * std::sin(phase * .53f), .024f * std::cos(phase), .030f * std::sin(phase));
+                           yaw, .024f * std::cos(phase), .030f * std::sin(phase) + bank);
+    }
+
+    const Mesh& fleetMesh(size_t i) const {
+#ifndef ESP_PLATFORM
+        if (i == 2 && !assets.desktopScout.triangles.empty()) return assets.desktopScout;
+#endif
+        return assets.alienFleet[i];
     }
 
     void drawFleetLights(const MissionSnapshot& mission, float time) {
         for (size_t i = 0; i < fleetHulls.size(); ++i) {
-            const Mesh& mesh = assets.alienFleet[i];
+            if (aboardScout && i != 0) continue;
+            const Mesh& mesh = fleetMesh(i);
             if (mesh.chunks.empty()) continue;
             const auto pose = fleetTransform(mission, i, time);
             const auto& ship = fleetHulls[i];
@@ -2724,6 +3056,21 @@ struct Renderer::Impl {
             if (!view.sees({pose.origin - span, pose.origin + span})) continue;
             const EnergyColors palette = i == 2 ? tractorViolet : i == 1 ? tractorPulled : tractorCyan;
             const float pulse = .74f + .22f * std::sin(time * 3.4f + float(i) * 1.3f);
+#ifndef ESP_PLATFORM
+            if (&mesh == &assets.desktopScout) {
+                const bool flying = mission.operation.stage == OperationStage::ScoutFlight;
+                const bool landed = mission.operation.stage == OperationStage::ScoutRecovery;
+                drawEnergyOrb(pose(ship.emitter()), .79f, landed ? .28f : pulse, tractorCyan);
+                for (const float side : {-1.f, 1.f}) {
+                    Vec3 drive = mission_detail::scout::scoutDrive;
+                    drive.x *= side;
+                    drawEnergyOrb(pose(drive - Vec3{0, 0, .14f}), .49f, flying ? pulse * .92f : .29f, tractorCyan);
+                    if (flying)
+                        drawEnergyOrb(pose(drive - Vec3{0, 0, .77f + pulse * .20f}), .27f, pulse * .33f, tractorCyan);
+                }
+                continue;
+            }
+#endif
             drawEnergyOrb(pose(ship.emitter()), ship.radius * .23f, pulse, palette);
             for (int k = 0; k < 6; ++k) {
                 const float angle = k * (pi / 3.f) + pi / 14.f;
@@ -2920,9 +3267,100 @@ struct Renderer::Impl {
         const float time = float(state.realTime);
         const Vec3 flagshipEmitter = fleetTransform(m, 0, time)(fleetHulls[0].emitter());
         const bool operation = m.phase == MissionPhase::Operation;
+        if (operation && scoutStage(op.stage)) {
+            using namespace mission_detail::scout;
+            if ((op.stage == OperationStage::ScoutApproach && m.holdRadius > 0.f) ||
+                op.stage == OperationStage::ScoutBoard) {
+                const Vec3 source = fleetTransform(m, 2, time)(fleetHulls[2].emitter());
+                const Vec3 foot = m.holdCenter;
+                drawTractorBeam({source, foot, .72f, 2.3f, tractorViolet, .81f}, time);
+                drawObjectiveRing(foot, 2.25f, tractorViolet.core, 182, true);
+            }
+            if (op.stage == OperationStage::ScoutCargo || op.stage == OperationStage::ScoutTransfer) {
+                const auto chute = [&](Vec3 at, EnergyColors palette) {
+                    const Vec3 lens = at + Vec3{0, chuteCanopy - .13f, 0};
+                    const bool engaged = m.scout.chuteActive && length(m.scout.activeChute - at) < .1f;
+                    const float pulse = .68f + .19f * std::sin(time * 3.f);
+                    drawEnergyOrb(lens, engaged ? .32f : .22f, pulse, palette);
+                    drawObjectiveRing(at + Vec3{0, .082f, 0}, chuteRadius * .76f, palette.core, 125, true);
+                    if (!engaged) return;
+
+                    drawTractorBeam({lens, at + Vec3{0, .08f, 0}, .14f, 1.10f, palette, .49f}, time);
+                    for (int i = 0; i < 3; ++i) {
+                        const float phase = unitCycle(time * .84f + float(i) / 3.f);
+                        const Vec3 band = at + Vec3{0, .18f + phase * 3.29f, 0};
+                        const float alpha = 4.f * phase * (1.f - phase);
+                        drawObjectiveRing(band, 1.18f - phase * .56f, palette.core, unsigned(alpha * 162.f), true);
+                    }
+                };
+                if (op.stage == OperationStage::ScoutCargo) chute(cargoChute, tractorCyan);
+                else {
+                    chute(portChute, tractorCyan);
+                    chute(starboardChute, tractorViolet);
+                }
+                if (m.scout.cargoVisible && !m.scout.retrievalCrew) {
+                    const Vec3 cargo = m.scout.cargo;
+                    const float lift = std::clamp(cargo.y / 2.25f, 0.f, 1.f);
+                    drawEnergyOrb(cargo + Vec3{0, .94f, 0}, .23f, .36f + lift * .54f, tractorCyan);
+                    if (lift > .17f) {
+                        const float radius = .83f + .12f * std::sin(time * 12.f);
+                        drawObjectiveRing(cargo + Vec3{0, .085f, 0}, radius, tractorCyan.halo,
+                                          unsigned(163.f * lift), true);
+                    }
+                }
+            }
+            if (m.flagshipBeam && aboardScout) {
+                const auto colors = op.pulled ? tractorPulled : tractorCyan;
+                drawTractorBeam({flagshipEmitter, op.ship, 1.4f, 3.45f, colors, .93f}, time);
+                drawObjectiveRing(op.clearing, op.clearingRadius, rgb(252, 109, 85), op.clearingBurned ? 70 : 170, true);
+                drawObjectiveRing(op.saddle, op.saddleRadius, rgb(127, 234, 177), 200, true);
+                if (op.painting && op.aimValid)
+                    drawObjectiveRing(op.aim, 1.25f, tractorCyan.core, 220, false);
+                if (op.clearingBurned) {
+                    const Vec3 ground = op.clearing + Vec3{0, .22f, 0};
+                    for (int i = 0; i < 5; ++i) {
+                        const float phase = time * (1.3f + .13f * i) + float(i) * 1.23f;
+                        const Vec3 flame = ground + Vec3{std::cos(i * 2.4f) * 2.65f, 1.2f + .42f * std::sin(phase),
+                                                        std::sin(i * 2.4f) * 2.65f};
+                        drawEnergyOrb(flame, .69f + .17f * std::cos(phase * 1.4f), .55f, tractorPulled);
+                    }
+                }
+            }
+            if (aboardScout && m.scout.response > 0.f && (m.flagshipBeam || m.scout.autoReturn)) {
+                drawTractorBeam({flagshipEmitter, {0, 4.7f, 22.f}, .65f, 2.3f,
+                                 tractorJammed, m.scout.response * .76f}, time);
+            }
+            if (op.stage == OperationStage::ScoutFlight) {
+                const Vec3 mark = m.scout.beacon;
+                const Vec3 course = normalized(mark - state.player.position);
+                const Vec3 right = normalized(Vec3{course.z, 0, -course.x});
+                const Vec3 vertical{0, 1, 0};
+                const uint16_t tint = std::abs(m.scout.flightError) < 2.7f ? tractorCyan.core : tractorPulled.core;
+                const auto point = [&](int i) {
+                    const float angle = (i % 20) * pi * .1f;
+                    return view.transform(mark + (right * std::cos(angle) + vertical * std::sin(angle)) * 4.0f);
+                };
+                for (int i = 0; i < 20; ++i) drawViewTracer(point(i), point(i + 1), tint, 202);
+                drawEnergyOrb(mark + vertical * 4.2f, .35f, .8f + std::sin(time * 6.f) * .16f, tractorCyan);
+            }
+            if (op.stage == OperationStage::ScoutRecovery) {
+                const Vec3 core = fleetTransform(m, 2, time).origin;
+                drawGlowDisc(core, 2.15f, rgb(228, 247, 255), rgb(78, 158, 255), .62f, false);
+            }
+            if (m.scout.groundSecured && op.clearingBurned && !aboardScout) {
+                constexpr Vec3 burnedPad{-5.3f, 0, 21.625f};
+                for (int i = 0; i < 4; ++i) {
+                    const float angle = float(i) * 2.4f;
+                    const Vec3 ember = burnedPad + Vec3{std::cos(angle) * 2.6f, .45f, std::sin(angle) * 2.6f};
+                    const float heat = .55f + .26f * std::sin(time * (4.2f + .5f * i) + angle);
+                    drawEnergyOrb(ember + Vec3{0, heat * .8f, 0}, .66f, heat, tractorPulled);
+                }
+            }
+        }
         const bool steering = operation && m.chapter == MissionChapter::Array &&
-                              (op.stage == OperationStage::Steer || op.stage == OperationStage::Commit);
-        if (m.flagshipBeam) {
+                              (op.stage == OperationStage::Steer || op.stage == OperationStage::Commit ||
+                               (op.stage == OperationStage::Door && op.targetSet));
+        if (m.flagshipBeam && !aboardScout) {
             const EnergyColors palette = steering && op.jammer >= 0 ? tractorJammed :
                                          steering && op.pulled ? tractorPulled : tractorCyan;
             const Vec3 foot = steering ? Vec3{op.ship.x, .06f, op.ship.z} :
@@ -2933,7 +3371,7 @@ struct Renderer::Impl {
             if (steering) drawObjectiveRing(foot, 3.2f, palette.halo, unsigned(163.f * power), false);
         }
         // Nora's dish: a flash on each pulse, and a live link to the mothership while it is steered.
-        if (m.dishPulse > 0.f || m.dishLink) {
+        if (!aboardScout && (m.dishPulse > 0.f || m.dishLink)) {
             const Vec3 focus = dishFocus();
             const float glow = m.dishLink ? .72f + .2f * std::sin(time * 11.f) : m.dishPulse;
             drawGlowDisc(focus, .55f + .5f * m.dishPulse, rgb(255, 250, 236), rgb(255, 214, 150), glow, true);
@@ -2970,8 +3408,8 @@ struct Renderer::Impl {
             const float curl = time * .52f + j * 1.7f;
             curls[j] = {std::sin(curl), 0, std::cos(curl)};
         }
-        for (size_t i = 0; i < assets.smoke.size(); ++i) {
-            const auto& src = assets.smoke[i];
+        for (size_t i = 0; i < geometry->smoke.size(); ++i) {
+            const auto& src = geometry->smoke[i];
             for (size_t j = 0; j < smokePuffs; ++j) {
                 const float life = unitCycle(time * src.rate + float(j) / smokePuffs + float(i) * .37f);
                 const float rise = life * (.47f + .53f * life);
@@ -2990,8 +3428,8 @@ struct Renderer::Impl {
 
     void firePlumes(float time, float gust) {
         constexpr uint16_t orange = rgb(255, 76, 10), yellow = rgb(255, 208, 88), hot = rgb(255, 247, 180);
-        for (size_t i = 0; i < assets.fires.size(); ++i) {
-            const auto& src = assets.fires[i];
+        for (size_t i = 0; i < geometry->fires.size(); ++i) {
+            const auto& src = geometry->fires[i];
             for (size_t j = 0; j < fireParticles; ++j) {
                 const auto& pattern = firePatterns[i].flames[j];
                 const float life = unitCycle(time * (.84f + .10f * (j % 4)) + pattern.phase * .55f);
@@ -3007,8 +3445,8 @@ struct Renderer::Impl {
     }
 
     void fireSparks(float time, float gust) {
-        for (size_t i = 0; i < assets.fires.size(); ++i) {
-            const auto& src = assets.fires[i];
+        for (size_t i = 0; i < geometry->fires.size(); ++i) {
+            const auto& src = geometry->fires[i];
             if (view.transform(src.base).z > 42.f) continue;
             for (size_t j = 0; j < fireParticles; ++j) {
                 const auto& pattern = firePatterns[i].sparks[j];
@@ -3023,8 +3461,8 @@ struct Renderer::Impl {
     }
 
     void flareSmoke(float time, float gust) {
-        for (size_t i = 0; i < assets.roadFlares.size(); ++i) {
-            const Vec3 tip = assets.roadFlares[i];
+        for (size_t i = 0; i < geometry->roadFlares.size(); ++i) {
+            const Vec3 tip = geometry->roadFlares[i];
             for (size_t j = 0; j < flarePuffs; ++j) {
                 const float age = unitCycle(time * .44f + i * .23f + float(j) / flarePuffs);
                 const Vec3 drift{age * age * (.76f + .38f * gust), .13f + age * .94f, -.24f * age};
@@ -3073,9 +3511,9 @@ struct Renderer::Impl {
                   [](const AirSprite& a, const AirSprite& b) { return a.back < b.back; });
         for (const auto& sprite : airSprites) drawAir(sprite);
         fireSparks(time, gust);
-        for (size_t i = 0; i < assets.roadFlares.size(); ++i) {
+        for (size_t i = 0; i < geometry->roadFlares.size(); ++i) {
             const float glow = .72f + .20f * std::sin(time * 9.3f + i);
-            drawGlowDisc(assets.roadFlares[i] + Vec3{0, .025f, 0}, .25f, rgb(255, 235, 197),
+            drawGlowDisc(geometry->roadFlares[i] + Vec3{0, .025f, 0}, .25f, rgb(255, 235, 197),
                          rgb(255, 56, 45), glow, false);
         }
         if (state.mission && !state.mission->cinematic) {
@@ -3169,6 +3607,44 @@ struct Renderer::Impl {
         recordRasterTime(start);
     }
 
+    void colorThermalLens(int width, int height) {
+        // Hot actors are tagged by their visible, depth-tested mesh pixels. No separate
+        // outline pass can reveal an actor through a wall or cover.
+        const auto start = timestamp();
+        // Include the source pixels just beyond the rim for filtered upscaling.
+        const int halfWidth = std::min((width - 1) / 2, thermalLensHalfWidth * width / 800 + 2);
+        const int halfHeight = std::min((height - 1) / 2, thermalLensHalfHeight * height / 450 + 2);
+        for (int y = -halfHeight; y <= halfHeight; ++y) {
+            uint16_t* row = color + (height / 2 + y) * width + width / 2;
+            for (int x = -halfWidth; x <= halfWidth; ++x) {
+                const unsigned r = row[x] >> 11, g = (row[x] >> 5) & 63, b = row[x] & 31;
+                if (r >= 29 && b >= 29 && g <= 2) {
+                    row[x] = rgb(247, 255, 248);
+                } else {
+                    const int tone = int(3 * r + 5 * g + 2 * b) / 4;
+                    row[x] = rgb(11 + tone, 16 + tone, 20 + tone);
+                }
+            }
+        }
+        recordRasterTime(start);
+    }
+
+    void prepareTerrain(const ArenaGeometry& map, TerrainLighting& data) {
+        const auto& world = map.world;
+        if (!enhanced) data.levels.reserve(world.triangles.size());
+        const bool oneSided = std::any_of(world.triangles.begin(), world.triangles.end(), [&](const Triangle& t) {
+            return !assets.materials[t.material].doubleSided;
+        });
+        if (oneSided) data.normals.reserve(world.triangles.size());
+        for (const auto& t : world.triangles) {
+            const auto a = world.vertices[t.a].position;
+            const auto normal = cross(world.vertices[t.b].position - a, world.vertices[t.c].position - a);
+            if (!enhanced) data.levels.push_back(lightFor(normal, false));
+            if (oneSided) data.normals.push_back(normal);
+        }
+        if (enhanced) data.light.bake(assets, map);
+    }
+
     void render(const Snapshot& state, int width, int height, uint16_t* target, bool collectStats) {
         if (!target || width < 5 || height < 10 || int64_t(width) * height > int64_t(depth.size())) return;
         measure = collectStats;
@@ -3181,7 +3657,14 @@ struct Renderer::Impl {
         const bool title = state.match == Match::Start;
         const auto& camera = title ? overview : state.camera;
         view = makeView(camera, width, height, 0.10f);
-        sun = light.sun;
+        thermal = !assets.thermalUniform.empty() && thermalScope(state);
+        const auto scene = !title && state.mission ? missionScene(state.mission->chapter, state.mission->operation.stage)
+                                                  : ArenaScene::Estate;
+        timberline = scene == ArenaScene::Timberline && bool(assets.timberline);
+        aboardScout = scene == ArenaScene::Scout && bool(assets.scoutInterior);
+        geometry = &assets.geometry(scene);
+        terrain = aboardScout ? &scoutLighting : timberline ? &timberLighting : &briarLighting;
+        sun = terrain->light.sun;
         up = {0, 1, 0};
         muzzleGlowCount = 0;
         rayGlowCount = 0;
@@ -3193,15 +3676,19 @@ struct Renderer::Impl {
         std::fill_n(depth.data(), width * height, 0);
         hiZBuilt = false;
         hiZAnyOpen = true;
-        const bool hasSkyCube = enhanced && ((invasionDusk && !sunsetSky[0].empty()) || !assets.sky[0].empty());
+        const bool hasSkyCube = enhanced && (
+#ifndef ESP_PLATFORM
+            !desktopSky()[0].empty() ||
+#endif
+            (invasionDusk && !timberline && !sunsetSky[0].empty()) || !assets.sky[0].empty());
         if (!hasSkyCube) sky(camera);
         drawWorld(state);
-        const bool needPostWorldHiZ = !assets.propInstances.empty() || !title || hasSkyCube;
+        const bool needPostWorldHiZ = !geometry->propInstances.empty() || !title || hasSkyCube;
         if (needPostWorldHiZ) {
             if (!solid.empty()) draw(solid, true);
             buildHiZ();
         }
-        for (const auto& inst : assets.propInstances) {
+        for (const auto& inst : geometry->propInstances) {
             const Mesh& propMesh = inst.kind == PropKind::Truck ? assets.shipBoxTruck : assets.shipBoxCar;
             if (propMesh.triangles.empty() || !view.sees(inst.bounds) || occluded(inst.bounds)) continue;
             auto transform = orientation(inst.position, inst.yaw, 0, 0);
@@ -3221,8 +3708,27 @@ struct Renderer::Impl {
         if (!title) {
             if (missionActive) {
                 for (const auto& ma : state.mission->actors) drawMissionActor(ma, state);
+#ifdef FOD_LOCAL_DUEL
+                if (state.campaignSeat >= 0 &&
+                    !drawCampaignPerson(state.rival, state, state.campaignSeat == 0 ? CampaignHuman::Partner
+                                                                                     : CampaignHuman::Lead, rivalHeightScale))
+                    drawActor(state.rival, state, false, state.campaignSeat == 0, rivalHeightScale);
+#endif
                 drawUplink(state);
                 drawOperationEquipment(state);
+                if (state.mission->scout.cargoVisible) {
+                    const auto& scout = state.mission->scout;
+                    const auto& mesh = scout.retrievalCrew ? assets.alienTrooper
+                                       : aboardScout ? assets.scoutCargoCrate : assets.shipBoxCrate;
+                    const float time = float(state.realTime);
+                    const float lift = std::clamp((scout.cargo.y - .2f) / 2.05f, 0.f, 1.f);
+                    const auto cargo = orientation(scout.cargo, scout.retrievalCrew || !aboardScout ? time * .17f
+                                                                                                 : .52f * lift,
+                                                   scout.retrievalCrew ? -.78f : 0.f,
+                                                   scout.retrievalCrew ? .24f : .15f * lift);
+                    meshLight = standing(cargo.origin);
+                    if (!mesh.triangles.empty()) submit(mesh, state, cargo, MeshSpace::World);
+                }
             } else {
                 drawActor(state.rival, state, false, state.alternateRival, rivalHeightScale);
                 if (state.freeForAll) drawActor(state.secondRival, state, false, true);
@@ -3231,6 +3737,10 @@ struct Renderer::Impl {
         if (state.dead) {
 #ifdef FOD_LOCAL_DUEL
             if (state.localDuel) drawActor(state.player, state, false, !state.alternateRival);
+            else if (state.campaignSeat >= 0) {
+                if (!drawCampaignPerson(state.player, state, state.campaignSeat == 0 ? CampaignHuman::Lead : CampaignHuman::Partner))
+                    drawActor(state.player, state, false, state.campaignSeat == 1);
+            }
             else
 #endif
                 drawActor(state.player, state, true);
@@ -3238,12 +3748,21 @@ struct Renderer::Impl {
         meshLight = 255;
         if (!title && missionActive) {
             for (size_t i = 0; i < assets.alienFleet.size(); ++i) {
-                const Mesh& craft = assets.alienFleet[i];
+                if (aboardScout && i != 0) continue;
+                const Mesh& craft = fleetMesh(i);
                 if (craft.chunks.empty()) continue;
                 const auto pose = fleetTransform(*state.mission, i, float(state.realTime));
                 const Vec3 span = fleetHulls[i].boundsExtent();
                 if (view.sees({pose.origin - span, pose.origin + span})) {
-                    submit(craft, state, pose, MeshSpace::World);
+                    submit(craft, state, pose, MeshSpace::World, nullptr, 0.f, false, nullptr, nullptr, nullptr, enhanced);
+#ifndef ESP_PLATFORM
+                    const float gear = state.mission->scout.landingGear;
+                    if (&craft == &assets.desktopScout && gear > .01f) {
+                        auto gearPose = pose;
+                        gearPose.origin += gearPose.y * ((1.f - gear) * .93f);
+                        submit(assets.desktopScoutGear, state, gearPose, MeshSpace::World);
+                    }
+#endif
                 }
             }
         }
@@ -3285,6 +3804,9 @@ struct Renderer::Impl {
                     contactShadow(ground, ma.role == MissionRole::AlienDrone ? 0.48f
                                           : ma.role == MissionRole::AlienTrooper ? 0.78f : 0.62f);
                 }
+#ifdef FOD_LOCAL_DUEL
+                if (state.campaignSeat >= 0 && state.rival.visible) contactShadow(state.rival.position, 0.62f);
+#endif
             } else {
                 if (!title && state.rival.visible && !assets.rivalFrames.empty()) contactShadow(state.rival.position, 0.62f);
                 if (!title && state.freeForAll && state.secondRival.visible && !assets.rivalFrames.empty()) {
@@ -3296,7 +3818,7 @@ struct Renderer::Impl {
         }
         drawSkyCube();
         draw(translucent, false);
-        if (invasionDusk) campaignAtmosphere(state);
+        if (invasionDusk && !aboardScout && !thermal) campaignAtmosphere(state);
         if (missionActive) {
             const auto effects = timestamp();
             const float time = float(state.realTime);
@@ -3304,7 +3826,8 @@ struct Renderer::Impl {
             drawFleetLights(*state.mission, time);
             drawShieldGlows(time);
             for (const auto& actor : state.mission->actors) {
-                if (actor.active && !actor.dead && actor.arrival > 0.f) drawArrival(actor, time);
+                if (!actor.dead && (actor.active || actor.carrier >= 0) && actor.arrival > 0.f)
+                    drawArrival(*state.mission, actor, time);
             }
             for (size_t i = 0; i < muzzleGlowCount; ++i) {
                 const auto& mg = muzzleGlows[i];
@@ -3330,13 +3853,14 @@ struct Renderer::Impl {
             }
         }
         if (assets.arena == Arena::ShipBox) weather(state);
-        const bool introWeaponHidden = missionActive && state.lower >= 0.99f &&
-                                       (state.mission->phase == MissionPhase::Intro || state.mission->cinematic);
-        if (!title && !state.dead && !introWeaponHidden && state.device == Device::None && state.scope < 0.6f &&
+        const bool weaponHidden = missionActive &&
+            (state.mission->operation.stage == OperationStage::ScoutFlight ||
+             (state.lower >= 0.99f && (state.mission->phase == MissionPhase::Intro || state.mission->cinematic)));
+        if (!title && !state.dead && !weaponHidden && state.device == Device::None && state.scope < 0.6f &&
             !assets.weapon[size_t(state.weapon)].triangles.empty()) {
             hiZBuilt = false;
             // The weapon is posed in view space, so bring the daylight into that space with it.
-            sun = {dot(light.sun, view.right), dot(light.sun, view.up), dot(light.sun, view.forward)};
+            sun = {dot(terrain->light.sun, view.right), dot(terrain->light.sun, view.up), dot(terrain->light.sun, view.forward)};
             up = {view.right.y, view.up.y, view.forward.y};
             meshLight = standing(camera.position);
             const Vec3 travel{dot(state.player.motion, view.right), state.player.motion.y,
@@ -3347,7 +3871,8 @@ struct Renderer::Impl {
             draw(solid, true);
             draw(translucent, false);
         }
-        if (enhanced) smoothDiagonals();
+        if (thermal) colorThermalLens(width, height);
+        else if (enhanced) smoothDiagonals();
         if (measure) {
             const auto elapsed = microseconds(start, Clock::now());
             stats.setupUs = elapsed - std::min(elapsed, stats.rasterUs);
@@ -3376,12 +3901,16 @@ uint64_t Renderer::workingBytes() const {
     for (const auto& levels : impl_->mipTexInfo) mips += levels.capacity() * sizeof(TexInfo);
     uint64_t duskSky = 0;
     for (const auto& face : impl_->sunsetSky) duskSky += face.capacity() * sizeof(uint16_t);
-    return sizeof(Impl) + mips + duskSky + impl_->light.bytes() +
+    return sizeof(Impl) + mips + duskSky + impl_->briarLighting.bytes() + impl_->timberLighting.bytes() +
+           impl_->scoutLighting.bytes() +
            (impl_->depth.capacity() + impl_->edgeRow.capacity() + impl_->tileMin.capacity()) * sizeof(uint16_t) +
            impl_->airSprites.capacity() * sizeof(Impl::AirSprite) +
            impl_->firePatterns.capacity() * sizeof(Impl::FirePattern) +
-           impl_->culledNormals.capacity() * sizeof(Vec3) + impl_->worldLights.capacity() +
            impl_->posedVertices.capacity() * sizeof(PosedVertex) +
+           impl_->alienPoseBlend.posePositions.capacity() * sizeof(Vec3) +
+#ifndef ESP_PLATFORM
+           impl_->campaignPoseBlend.posePositions.capacity() * sizeof(Vec3) +
+#endif
            (impl_->solid.capacity() + impl_->translucent.capacity()) * sizeof(Primitive) +
            impl_->visible.capacity() * sizeof(std::pair<float, uint32_t>);
 }

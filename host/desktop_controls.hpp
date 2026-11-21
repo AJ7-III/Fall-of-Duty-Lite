@@ -116,8 +116,10 @@ inline void samplePad(SDL_GameController* controller, MenuControls controls, std
     input.moveX += mx;
     input.moveY += my;
     const float sensitivity = stickSensitivity.value_or(controls == MenuControls::Nintendo ? 0.8f : 1.0f);
-    input.lookX += lx * 0.056f * sensitivity;
-    input.lookY += ly * 0.045f * sensitivity;
+    input.stickX = lx * 0.056f * sensitivity;
+    input.stickY = ly * 0.045f * sensitivity;
+    input.lookX += input.stickX;
+    input.lookY += input.stickY;
     transition(held, edges, Aim, SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > triggerThreshold);
     transition(held, edges, Fire, SDL_GameControllerGetAxis(controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > triggerThreshold);
 }

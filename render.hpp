@@ -46,6 +46,10 @@ private:
     int width_ = 0, height_ = 0, difficulty_ = 0;
 };
 
+// Thermal aperture dimensions in the logical 800x480 HUD.
+constexpr int thermalLensHalfWidth = 244;
+constexpr int thermalLensHalfHeight = 150;
+
 // The logical world viewport occupies rows 15 through 464. On the target the
 // baseline PPA fills these pixels; the CPU only adds the logical overlays.
 void drawHud(const Assets& assets, const Snapshot& snapshot, const MenuState& menu, uint16_t* framebuffer, bool rotated,

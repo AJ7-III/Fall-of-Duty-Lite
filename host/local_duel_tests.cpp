@@ -1,6 +1,8 @@
 #include "assets.hpp"
+#include "briar_house.hpp"
 #include "game.hpp"
 #include "game_data.hpp"
+#include "npc_motion.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -18,6 +20,7 @@ void require(bool condition, const char* expression, int line) {
 #define CHECK(condition) require(bool(condition), #condition, __LINE__)
 
 void testLocalDuelDesktop(const Assets& assets, bool live, int width);
+void testLocalCampaignDesktop(const Assets& assets);
 
 namespace {
 Input buttons(uint32_t held, uint32_t pressed = 0) {
@@ -205,4 +208,49 @@ int main(int argc, char** argv) {
     completeMatch(emptyMap);
     sharedGlass();
     testLocalDuelDesktop(assets, argc >= 3, width);
+    if (argc == 2) {
+        buildBriarHouse(assets, BriarHouseMode::Invasion);
+        const auto compactMaterials = assets.materials.size(), compactTextures = assets.textures.size();
+        const auto compactSounds = assets.audio.size();
+        buildBriarHouse(assets, BriarHouseMode::Invasion, CampaignArt::Desktop);
+        CHECK(!assets.desktopScout.triangles.empty());
+        CHECK(!assets.desktopAttackDrone.triangles.empty() && !assets.desktopJammer.triangles.empty());
+        for (const auto* sky : {&assets.desktopDusk, &assets.desktopTimberlineSky}) {
+            constexpr size_t side = desktopSkyFaceSize;
+            for (const auto& face : *sky) CHECK(face.size() == side * side);
+            for (size_t y = 0; y < side; ++y)
+                CHECK((*sky)[0][(y + 1) * side - 1] == (*sky)[2][y * side]);
+        }
+        for (size_t i = 0; i < assets.campaignPeople.size(); ++i) {
+            const auto& person = assets.campaignPeople[i];
+            const auto role = CampaignHuman(i);
+            CHECK(!person.body.triangles.empty());
+            CHECK(person.poses.size() == (role < CampaignHuman::Delta ? campaignPoseCount
+                                       : role == CampaignHuman::Delta ? campaignAim + 1 : campaignCover));
+            for (const auto& pose : person.poses) CHECK(pose.posePositions.size() == person.body.vertexCount());
+            size_t previousEnd = 0;
+            for (const auto part : {CampaignPart::LeftLeg, CampaignPart::RightLeg, CampaignPart::Head}) {
+                const auto region = person.regions[size_t(part)];
+                CHECK(region.count > 0 && region.first >= previousEnd && region.end() <= person.body.vertexCount());
+                previousEnd = region.end();
+                for (const auto& pose : person.poses) {
+                    for (size_t v = region.first; v < region.end(); ++v) {
+                        const Vec3 p = pose.posePositions[v];
+                        CHECK(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z));
+                    }
+                }
+            }
+        }
+        for (const float run : {0.f, 1.f}) {
+            const auto foot = gaitFoot(.12f, run), next = gaitFoot(.22f, run), swing = gaitFoot(.81f, run);
+            CHECK(foot.lift == 0.f && next.lift == 0.f && swing.lift > 0.f);
+            CHECK(std::abs((foot.z - next.z) - .10f * gaitDistance(run)) < .0001f);
+            CHECK(std::abs(gaitFoot(1.12f, run).z - foot.z) < .0001f);
+        }
+        testLocalCampaignDesktop(assets);
+        buildBriarHouse(assets, BriarHouseMode::Invasion);
+        CHECK(!assets.hasDesktopCampaignArt() && assets.desktopDusk.front().empty() && assets.desktopScout.triangles.empty());
+        CHECK(assets.materials.size() == compactMaterials && assets.textures.size() == compactTextures &&
+              assets.audio.size() == compactSounds);
+    }
 }

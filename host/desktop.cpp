@@ -65,7 +65,7 @@ struct Sdl {
     bool surface(int initialWidth, Arena arena, BriarHouseMode briarMode = BriarHouseMode::Standard) {
         const int width = std::max(800, initialWidth);
         const char* title = arena == Arena::BriarHouse
-            ? (briarMode == BriarHouseMode::Invasion ? "Fall of Duty Lite | Mission 1: Briar House"
+            ? (briarMode == BriarHouseMode::Invasion ? "Fall of Duty Lite | Operation Briar"
                                                      : "Fall of Duty Lite | Briar House")
             : "Fall of Duty Lite | Ship Box";
         window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
@@ -103,7 +103,8 @@ struct Sdl {
 } // namespace
 
 std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int initialWidth, fod::RenderLook look,
-                                           std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry) {
+                                           std::optional<float> stickSensitivity, bool autoStart, fod::MenuState* carry,
+                                           fod::MissionChapter chapter) {
     using namespace fod;
     App app(assets, std::random_device{}());
     if (carry) {
@@ -123,7 +124,7 @@ std::optional<fod::LaunchAction> runDesktop(const fod::Assets& assets, int initi
     }
     if (autoStart) {
         const bool isCampaign = assets.arena == Arena::BriarHouse && assets.briarHouseMode == BriarHouseMode::Invasion;
-        app.startImmediate(isCampaign);
+        app.startImmediate(isCampaign, chapter);
     }
     constexpr int maxWorldPixels = desktopHdWidth * (desktopHdWidth * 9 / 16);
     constexpr int maxCanvasPixels = desktopHdWidth * (desktopHdWidth * 3 / 5);

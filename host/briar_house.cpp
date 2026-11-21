@@ -1,4 +1,7 @@
 #include "briar_house.hpp"
+#include "briar_mission_data.hpp"
+#include "timberline_data.hpp"
+#include "scout_data.hpp"
 
 #include "assets.hpp"
 #include "game_world.hpp"
@@ -52,7 +55,9 @@ enum Surface {
     CivTrim, CivFabric, CivFeatures, CivGlasses, CivCap, CivCapBand,
     PineNeedles, PineShade, ScorchEdge, CabinLit, HeloPanel, HeloGlass, WreckSkin, WreckGlass, PodSkin,
     FirTips, PineBark, AspenBark, AspenBarkShade, AspenGold, AspenOchre, AspenAmber,
-    AlpineScree, SurfaceCount
+    AlpineScree, ScoutDeck, ScoutPanel, ScoutCopper, ScoutPearl, ScoutPurple, ScoutWindow,
+    CargoDeck, CargoInset, CargoFrame, CargoCeramic, CargoAmber, CargoTeal,
+    TimberDuff, TimberTrack, TimberGranite, TimberBark, TimberNeedles, TimberTips, TimberShade, SurfaceCount
 };
 
 constexpr std::array<uint16_t, SurfaceCount> colors{
@@ -78,7 +83,12 @@ constexpr std::array<uint16_t, SurfaceCount> colors{
     rgb(117, 126, 95), rgb(100, 133, 142), rgb(76, 85, 68), rgb(106, 135, 143), rgb(67, 81, 100),
     rgb(81, 111, 78), rgb(104, 74, 59), rgb(169, 157, 138), rgb(94, 81, 77),
     rgb(196, 150, 65), rgb(150, 101, 40), rgb(213, 172, 78),
-    rgb(113, 105, 98),
+    rgb(113, 105, 98), rgb(51, 69, 81), rgb(59, 69, 91), rgb(144, 94, 76), rgb(142, 169, 173),
+    rgb(172, 96, 251), rgb(82, 173, 207),
+    rgb(78, 103, 107), rgb(54, 93, 104), rgb(168, 111, 70), rgb(208, 207, 173),
+    rgb(255, 191, 95), rgb(83, 204, 196),
+    rgb(103, 99, 70), rgb(149, 128, 100), rgb(119, 120, 113), rgb(107, 83, 61),
+    rgb(65, 95, 73), rgb(104, 130, 91), rgb(44, 68, 57),
 };
 
 // Warm Colorado dusk alpenglow tinting applied to exterior materials in Invasion mode.
@@ -197,11 +207,18 @@ std::vector<uint32_t> weld(std::vector<V>& vertices, Key key) {
 
 class Builder {
 public:
-    explicit Builder(Assets& data, bool invasionDusk = false)
-        : assets(data), firstMaterial(uint16_t(data.materials.size())), dusk(invasionDusk) {
+    explicit Builder(Assets& data, bool invasionDusk = false, bool desktopDetail = false)
+        : assets(data), map(&data), firstMaterial(uint16_t(data.materials.size())), dusk(invasionDusk), detailed(desktopDetail) {
         repeats.fill(.5f);
         buildMaterials();
         buildTextures();
+    }
+
+    void beginMap(ArenaGeometry& geometry) {
+        map = &geometry;
+        shotVertexCount = 0;
+        backdropVertexFirst = 0;
+        shotTriangleCount = 0;
     }
 
     void shiftX(float x) { xOffset = x; }
@@ -237,7 +254,8 @@ public:
         cuboid(tilt(corners(r, bottom)), tilt(corners(r, top)), material, Side::None);
     }
 
-    void axle(float left, float right, float y, float height, float radius, Surface material) {
+    void axle(float left, float right, float y, float height, float radius, Surface material, Surface cap = SurfaceCount) {
+        const auto endMaterial = cap == SurfaceCount ? material : cap;
         constexpr int sides = 10;
         const auto a = position(left, y, height), b = position(right, y, height);
         for (int i = 0; i < sides; ++i) {
@@ -245,14 +263,14 @@ public:
             const Vec3 p{0, std::cos(angle) * radius, std::sin(angle) * radius};
             const Vec3 q{0, std::cos(next) * radius, std::sin(next) * radius};
             quad({a + p, a + q, b + q, b + p}, material);
-            face({a, a + q, a + p}, material);
-            face({b, b + p, b + q}, material);
+            face({a, a + q, a + p}, endMaterial);
+            face({b, b + p, b + q}, endMaterial);
         }
     }
 
     void collision(Rect r, float bottom, float top, bool blocksSight = true) {
         const auto center = position((r.left + r.right) * .5f, (r.top + r.bottom) * .5f);
-        assets.obstacles.push_back({center.x, center.z, (r.right - r.left) * scale * .5f,
+        map->obstacles.push_back({center.x, center.z, (r.right - r.left) * scale * .5f,
                                     (r.bottom - r.top) * scale * .5f, bottom, top, 0, 1, 0, blocksSight});
     }
 
@@ -261,20 +279,22 @@ public:
                            bool blocksSight = true) {
         const Vec3 a = normalized({along.x, 0.f, along.z});
         const float cs = a.x, sn = -a.z;
-        assets.obstacles.push_back({center.x, center.z, halfAlong, halfOut, bottom, top,
+        map->obstacles.push_back({center.x, center.z, halfAlong, halfOut, bottom, top,
                                     std::atan2(sn, cs), cs, sn, blocksSight});
     }
 
     bool isDusk() const { return dusk; }
+    bool desktopDetail() const { return detailed; }
+    const ArenaGeometry& geometry() const { return *map; }
     const Assets& data() const { return assets; }
     uint16_t surfaceMat(Surface s) const { return uint16_t(firstMaterial + s); }
 
     // Stamp a cached static Ship Box prop (crate, pallet, barrel, lamp pole, container) directly
-    // into assets.world with full UVs, original high-res textures, and baked dusk shadows.
+    // into map->world with full UVs, original high-res textures, and baked dusk shadows.
     void stampMesh(const Mesh& src, Vec3 at, float yaw, float s = 1.f, int16_t swapNonTexMat = -1) {
         if (src.triangles.empty()) return;
         const float cs = std::cos(yaw), sn = std::sin(yaw);
-        auto& world = assets.world;
+        auto& world = map->world;
         const uint32_t baseVert = uint32_t(world.vertices.size());
         for (const auto& v : src.vertices) {
             const Vec3 p{v.position.x * s, v.position.y * s, v.position.z * s};
@@ -304,7 +324,7 @@ public:
                 const float y = (iy ? lb.max.y : lb.min.y) * s;
                 for (int iz = 0; iz < 2; ++iz) {
                     const float z = (iz ? lb.max.z : lb.min.z) * s;
-                    expand(wb, {at.x + cs * x + sn * z, at.y + y, at.z - sn * x + cs * z});
+                    wb.include({at.x + cs * x + sn * z, at.y + y, at.z - sn * x + cs * z});
                 }
             }
         }
@@ -320,7 +340,7 @@ public:
             paintVehicle(prop, src, 26, 23, paint);
             paintVehicle(prop, src, 38, 30, cargoPaint);
         }
-        assets.propInstances.push_back(std::move(prop));
+        map->propInstances.push_back(std::move(prop));
         const Vec3 along{cs, 0.f, -sn};
         // Trim slightly inward from side mirrors so collision hugs the metal body cleanly.
         orientedCollision(at, along, std::max(0.5f, halfLen - 0.12f), std::max(0.5f, halfWidth - 0.16f),
@@ -378,8 +398,8 @@ public:
         const auto a = position(section.x, section.y, sill);
         const auto b = position(section.endX, section.endY, sill);
         const Vec3 up{0, lintel - sill, 0};
-        const auto id = int16_t(assets.glassHits.size());
-        assets.glassHits.push_back(1);
+        const auto id = int16_t(map->glassHits.size());
+        map->glassHits.push_back(1);
         quad({a, b, b + up, a + up}, Glass, id);
         // The fixed sill and frame keep the opening out of the movement routes.
         // Visibility passes through the pane, and player bullets use its shot triangles.
@@ -398,7 +418,7 @@ public:
     }
 
     void lamp(float x, float y, float height, float radius, float strength) {
-        assets.lamps.push_back({position(x, y, height), radius, strength});
+        map->lamps.push_back({position(x, y, height), radius, strength});
     }
 
     void round(float x, float y, float bottom, float top, float base, float rim, Surface material) {
@@ -442,16 +462,16 @@ public:
     }
 
     void beginDecoration() {
-        shotVertexCount = uint32_t(assets.world.vertices.size());
-        shotTriangleCount = assets.world.triangles.size();
+        shotVertexCount = uint32_t(map->world.vertices.size());
+        shotTriangleCount = map->world.triangles.size();
     }
-    void beginBackdrop() { backdropVertexFirst = uint32_t(assets.world.vertices.size()); }
+    void beginBackdrop() { backdropVertexFirst = uint32_t(map->world.vertices.size()); }
 
     void finish() {
-        auto& mesh = assets.world;
-        assets.shotVertices.reserve(shotVertexCount);
-        for (uint32_t i = 0; i < shotVertexCount; ++i) assets.shotVertices.push_back(mesh.position(i));
-        const auto shotRemap = weld(assets.shotVertices, [](Vec3 p) { return std::array{p.x, p.y, p.z, 0.f, 0.f}; });
+        auto& mesh = map->world;
+        map->shotVertices.reserve(shotVertexCount);
+        for (uint32_t i = 0; i < shotVertexCount; ++i) map->shotVertices.push_back(mesh.position(i));
+        const auto shotRemap = weld(map->shotVertices, [](Vec3 p) { return std::array{p.x, p.y, p.z, 0.f, 0.f}; });
         const auto vertexRemap = weld(mesh.vertices, [](const Vertex& v) {
             return std::array{v.position.x, v.position.y, v.position.z, v.u, v.v};
         });
@@ -465,8 +485,8 @@ public:
             const auto b = mesh.position(vertexRemap[t.b]);
             const auto c = mesh.position(vertexRemap[t.c]);
             Bounds bounds{a, a};
-            expand(bounds, b);
-            expand(bounds, c);
+            bounds.include(b);
+            bounds.include(c);
             const auto center = (a + b + c) * (1.f / 3);
             const auto span = bounds.max - bounds.min;
             // Long walls, roofs and the distant landscape must not inflate the bounds of nearby props.
@@ -477,48 +497,55 @@ public:
             ordered.push_back({t, cell});
         }
         std::stable_sort(ordered.begin(), ordered.end(), [](const OrderedFace& a, const OrderedFace& b) { return a.cell < b.cell; });
-        assets.shotSurfaces.reserve(shotTriangleCount);
-        assets.shotIndices.reserve(shotTriangleCount);
+        map->shotSurfaces.reserve(shotTriangleCount);
+        map->shotIndices.reserve(shotTriangleCount);
         for (uint32_t first = 0; first < ordered.size();) {
             const auto p = mesh.position(vertexRemap[ordered[first].triangle.a]);
             Chunk visual{{p, p}, first, 0};
-            Chunk shot{{}, uint32_t(assets.shotSurfaces.size()), 0};
+            Chunk shot{{}, uint32_t(map->shotSurfaces.size()), 0};
             uint32_t i = first;
             for (; i < ordered.size() && ordered[i].cell == ordered[first].cell; ++i) {
                 const auto& t = ordered[i].triangle;
                 const Triangle render{vertexRemap[t.a], vertexRemap[t.b], vertexRemap[t.c], t.material, t.glass};
                 mesh.triangles[i] = render;
-                for (const auto index : {render.a, render.b, render.c}) expand(visual.bounds, mesh.position(index));
+                for (const auto index : {render.a, render.b, render.c}) visual.bounds.include(mesh.position(index));
                 if (t.a < shotVertexCount) {
                     const std::array indices{shotRemap[t.a], shotRemap[t.b], shotRemap[t.c]};
-                    if (!shot.count) shot.bounds = {assets.shotVertices[indices[0]], assets.shotVertices[indices[0]]};
-                    for (const auto index : indices) expand(shot.bounds, assets.shotVertices[index]);
-                    assets.shotSurfaces.push_back({t.material, t.glass});
-                    assets.shotIndices.push_back(indices);
+                    if (!shot.count) shot.bounds = {map->shotVertices[indices[0]], map->shotVertices[indices[0]]};
+                    for (const auto index : indices) shot.bounds.include(map->shotVertices[index]);
+                    map->shotSurfaces.push_back({t.material, t.glass});
+                    map->shotIndices.push_back(indices);
                     ++shot.count;
                 }
             }
             visual.count = i - first;
             mesh.chunks.push_back(visual);
-            if (shot.count) assets.shotChunks.push_back(shot);
+            if (shot.count) map->shotChunks.push_back(shot);
             first = i;
         }
+        // Scene builders are finished with these arrays before navigation and lighting take over.
+        mesh.chunks.shrink_to_fit();
+        map->shotChunks.shrink_to_fit();
+        map->obstacles.shrink_to_fit();
+        map->lamps.shrink_to_fit();
     }
 
     // Valley homes, recorded so the invasion can set some of them alight.
     std::vector<Vec3> homes;
 
-    void fire(Vec3 base, float width, float height) { assets.fires.push_back({base, width, height}); }
-    void flare(Vec3 tip) { assets.roadFlares.push_back(tip); }
-    void smoke(Vec3 base, float height, Vec3 drift, float size) { assets.smoke.push_back({base, height, drift, size, .07f}); }
+    void fire(Vec3 base, float width, float height) { map->fires.push_back({base, width, height}); }
+    void flare(Vec3 tip) { map->roadFlares.push_back(tip); }
+    void smoke(Vec3 base, float height, Vec3 drift, float size) { map->smoke.push_back({base, height, drift, size, .07f}); }
     void mist(Vec3 base, float width, float height, Vec3 drift, float rate) {
-        assets.mist.push_back({base, width, height, drift, rate});
+        map->mist.push_back({base, width, height, drift, rate});
     }
 
 private:
     Assets& assets;
+    ArenaGeometry* map;
     uint16_t firstMaterial;
     bool dusk = false;
+    bool detailed = false;
     uint32_t shotVertexCount = 0;
     size_t shotTriangleCount = 0;
     uint32_t backdropVertexFirst = 0;
@@ -583,12 +610,14 @@ private:
     }
 
     void buildMaterials() {
-        for (size_t i = 0; i < colors.size(); ++i) {
+        const size_t count = detailed ? colors.size() : size_t(TimberDuff);
+        for (size_t i = 0; i < count; ++i) {
             const bool twoSided = i == Glass || i == Ceiling || i == AlienTooth || i == AlienMaw ||
                                   i == ScorchEdge || i == PineBark ||
-                                  i == GrassBladeDark || i == GrassBladeMid || i == GrassBladeGold;
+                                  i == GrassBladeDark || i == GrassBladeMid || i == GrassBladeGold || i == ScoutWindow ||
+                                  i == TimberNeedles || i == TimberTips || i == TimberShade;
             const bool glow = i == Amber || i == AlienGlow || i == AlienCore || i == CabinLit ||
-                              i == RayCore || i == RayOvercharge;
+                              i == RayCore || i == RayOvercharge || i == ScoutPurple || i == CargoAmber || i == CargoTeal;
             uint16_t baseColor = colors[i];
             if (dusk) {
                 if (i == MountainRock) baseColor = rgb(126, 86, 76);  // Sunset-lit granite faces
@@ -607,12 +636,75 @@ private:
                     baseColor = duskTint(baseColor, 18, -4, -18, 92);
                 }
             }
-            assets.materials.push_back({baseColor, -1, uint8_t(i == Glass ? 82 : i == ScorchEdge ? 104 : 255),
+            assets.materials.push_back({baseColor, -1, uint8_t(i == ScoutWindow ? 27 : i == Glass ? 82 : i == ScorchEdge ? 104 : 255),
                                         twoSided, glow});
         }
     }
 
     void buildTextures() {
+#ifndef ESP_PLATFORM
+        if (detailed) {
+            constexpr int size = 256;
+            texture(TimberDuff, size, .22f, [](int x, int y) {
+                const int soil = 5 * tileNoise(x, y, size, 64) + 3 * tileNoise(x, y, size, 16);
+                const int leaf = (x + 3 * y) % 17 < 2 && grain(x / 8, y / 8) > 8 ? 13 : 0;
+                const int dark = (tileNoise(x, y, size, 8) + grain(x, y)) / 2;
+                return rgb(65 + soil * 2 / 3 + leaf - dark, 73 + soil / 2 + leaf - dark,
+                           46 + soil / 3 + leaf * 2 / 3 - dark / 2);
+            });
+            texture(TimberTrack, size, .37f, [](int x, int y) {
+                const int grade = 3 * tileNoise(x, y, size, 32) + tileNoise(x, y, size, 8);
+                const int stones = grain(x, y) + 2 * tileNoise(x, y, size, 4);
+                const int grit = stones < 13 ? -15 : stones > 34 ? 15 : 0;
+                return rgb(96 + grade * 2 / 3 + grit, 84 + grade / 2 + grit, 64 + grade / 2 + grit);
+            });
+            texture(TimberGranite, size, .27f, [](int x, int y) {
+                const int drift = tileNoise(x, y, size, 32);
+                const int veined = (x * 3 + y * 7 + drift * 3) & 31;
+                const int seam = veined < 3 ? 14 : veined < 5 ? -12 : 0;
+                const int shade = drift * 2 + tileNoise(x, y, size, 8) + int(grain(x, y)) - 27 + seam;
+                const int lichen = std::max(0, tileNoise(x, y, size, 16) + tileNoise(x, y, size, 64) - 20);
+                return rgb(122 + shade, 115 + shade + lichen, 103 + shade - lichen);
+            });
+            texture(TimberBark, 64, .73f, [](int x, int y) {
+                const int grainLine = (x + tileNoise(x, y, 64, 16) / 4) & 15;
+                const int rift = grainLine < 2 ? -20 : grainLine < 5 ? 12 : 0;
+                const int shade = int(grain(x, y)) + tileNoise(x, y, 64, 8) + rift;
+                return rgb(78 + shade, 59 + shade, 45 + shade * 2 / 3);
+            });
+            for (const auto foliage : {TimberNeedles, TimberTips, TimberShade}) {
+                texture(foliage, 128, .68f, [foliage](int x, int y) {
+                    const int drift = tileNoise(x, y, 128, 32);
+                    const int needles = int(grain(x, y)) - 8 + 2 * (tileNoise(x, y, 128, 8) - 7);
+                    const int shoot = (x + 3 * y + drift * 2) % 19 < 3 ? 13 : 0;
+                    const int relief = (drift - 6) + needles + shoot;
+                    return duskTint(colors[foliage], relief, relief + 5, relief / 2);
+                });
+            }
+        }
+#endif
+        if (dusk) {
+            texture(CargoDeck, 32, .50f, [](int x, int y) {
+                if (x == 0 || y == 0) return rgb(36, 54, 59);
+                const unsigned wear = grain(x, y) / 2;
+                const unsigned seam = x == 1 || y == 1 ? 16 : 0;
+                const unsigned tread = ((x + y / 4 * 2) % 8 < 4 && y % 4 == 2) ? 9 : 0;
+                return rgb(70 + wear + seam + tread, 86 + wear + seam + tread, 90 + wear + seam + tread);
+            });
+            texture(ScoutDeck, 32, .45f, [](int x, int y) {
+                const unsigned grainValue = grain(x, y) / 3;
+                if (x == 0 || y == 0) return rgb(21, 30, 40);
+                const unsigned lip = x == 1 || y == 1 ? 12 : 0;
+                const unsigned tread = ((x / 4 + y / 4) % 2 == 0 && y % 4 == 0) ? 6 : 0;
+                return rgb(42 + grainValue + lip, 57 + grainValue + lip + tread, 69 + grainValue + lip + tread);
+            });
+            texture(ScoutPanel, 64, .28f, [](int x, int y) {
+                const unsigned brushed = grain(x / 6, y) / 2 + grain(x, y) / 3;
+                if (x <= 1 || y <= 1) return rgb(22, 27, 43);
+                const unsigned lip = x == 2 || y == 2 ? 9 : 0;
+                return rgb(42 + brushed + lip, 48 + brushed + lip, 64 + brushed + lip);
+            });
+        }
         texture(Tile, 32, .5f, [](int x, int y) {
             if (x % 8 == 0 || y % 8 == 0) return rgb(118, 120, 111);
             const auto surface = grain(x, y) / 3;
@@ -842,7 +934,7 @@ private:
 
     template<size_t N>
     uint32_t vertices(const std::array<Vec3, N>& points, Surface surface, bool fit = false) {
-        auto& mesh = assets.world;
+        auto& mesh = map->world;
         const auto first = uint32_t(mesh.vertices.size());
         if (assets.materials[firstMaterial + surface].texture < 0) {
             for (const auto p : points) mesh.vertices.push_back({p, 0, 0});
@@ -872,8 +964,13 @@ public:
         return {material, uint16_t(material + 1)};
     }
 
+    void hillsideQuad(const std::array<Vec3, 4>& p) {
+        map->hillside.push_back({p[0], p[2], p[1]});
+        map->hillside.push_back({p[0], p[3], p[2]});
+    }
+
     void backdropQuad(const std::array<Vertex, 4>& vertices, uint16_t material) {
-        auto& world = assets.world;
+        auto& world = map->world;
         const auto first = uint32_t(world.vertices.size());
         world.vertices.insert(world.vertices.end(), vertices.begin(), vertices.end());
         world.triangles.push_back({first, first + 2, first + 1, material, -1});
@@ -884,20 +981,16 @@ public:
         const auto first = vertices(points, surface, fit);
         const auto material = uint16_t(firstMaterial + surface);
         // The software renderer lights the front on the side facing away from the winding.
-        assets.world.triangles.push_back({first, first + 2, first + 1, material, glass});
-        assets.world.triangles.push_back({first, first + 3, first + 2, material, glass});
+        map->world.triangles.push_back({first, first + 2, first + 1, material, glass});
+        map->world.triangles.push_back({first, first + 3, first + 2, material, glass});
     }
 
     void face(const std::array<Vec3, 3>& points, Surface surface) {
         const auto first = vertices(points, surface);
-        assets.world.triangles.push_back({first, first + 2, first + 1, uint16_t(firstMaterial + surface)});
+        map->world.triangles.push_back({first, first + 2, first + 1, uint16_t(firstMaterial + surface)});
     }
 
 private:
-    static void expand(Bounds& bounds, Vec3 p) {
-        bounds.min = {std::min(bounds.min.x, p.x), std::min(bounds.min.y, p.y), std::min(bounds.min.z, p.z)};
-        bounds.max = {std::max(bounds.max.x, p.x), std::max(bounds.max.y, p.y), std::max(bounds.max.z, p.z)};
-    }
 };
 
 struct RailingRun {
@@ -1389,6 +1482,71 @@ void aspen(Builder& b, Vec3 base, float height) {
     }
 }
 
+#ifndef ESP_PLATFORM
+// Irregular boughs break up the outline of each trail-side conifer. Keep the simpler crowns for distant groves.
+void timberConifer(Builder& b, Vec3 base, float height) {
+    const int seed = int(base.x * 81.f + base.z * 147.f);
+    const bool spruce = grain(seed, 71) < 8;
+    const bool snag = grain(seed, 72) == 0;
+    const float turn = float(grain(seed, 82)) * .42f;
+    const Vec3 lean = radial(turn + 1.4f) * (height * (.012f + .0039f * grain(seed, 83)));
+    const auto stem = [&](float lift) { return base + lean * lift * lift + Vec3{0, height * lift, 0}; };
+    const float width = height * (spruce ? .020f : .026f);
+    treeTrunk(b, base, stem(.52f), width, turn, TimberBark, TimberBark);
+    treeTrunk(b, stem(.52f), stem(snag ? .87f : .97f), width * .51f, turn, TimberBark, TimberBark);
+    const int layers = spruce ? 8 : 6;
+    for (int tier = 0; tier < layers; ++tier) {
+        const float t = float(tier) / (layers - 1);
+        const float level = .24f + t * .66f;
+        const float radius = height * (spruce ? .199f : .255f) * (1.f - .79f * t);
+        const int arms = (spruce ? 5 : 6) - (tier > layers - 3);
+        for (int i = 0; i < arms; ++i) {
+            const int salt = seed + 11 * i + tier * 97;
+            const float angle = turn + tier * 2.39996f + (2.f * pi / arms) * i + (float(grain(salt, 2)) - 7.f) * .028f;
+            const Vec3 branch = radial(angle), side{branch.z, 0, -branch.x}, up{0, 1, 0};
+            const Vec3 root = stem(level + .0036f * grain(salt, 25));
+            const float span = radius * (.67f + .04f * grain(salt, 35));
+            const float droop = span * (spruce ? .21f : .10f);
+            const Vec3 elbow = root + branch * (span * .43f) - up * (droop * .41f);
+            const Vec3 tip = root + branch * span - up * (droop * (.69f + .035f * grain(salt, 16)));
+            if (tier < 3 || snag) {
+                const Vec3 thickness{0, width * .16f, 0};
+                b.face({root + thickness, root - thickness, elbow + branch * (span * .34f)}, TimberBark);
+                b.face({root + side * (width * .13f), root - side * (width * .13f), elbow + branch * (span * .34f)}, TimberBark);
+            }
+            if (snag && grain(salt, 44) > 7) continue;
+            const Vec3 bridge = elbow + up * (span * (spruce ? .20f : .24f));
+            const float spread = span * (.20f + .006f * grain(salt, 37));
+            const Vec3 left = elbow - side * spread + branch * (span * .14f) - up * (.20f * droop);
+            const Vec3 right = elbow + side * (spread * .91f) + branch * (span * .20f);
+            b.face({left, bridge, tip}, grain(salt, 33) > 8 ? TimberTips : TimberNeedles);
+            b.face({right, tip, bridge}, TimberNeedles);
+            b.face({root - up * (width * .16f), left, tip}, TimberShade);
+            b.face({root - up * (width * .16f), tip, right}, TimberShade);
+            const Vec3 inner = root + up * (span * .12f);
+            b.face({inner, bridge, left}, TimberNeedles);
+            b.face({inner, right, bridge}, TimberNeedles);
+            // The two side shoots have gaps below them, so nearby branches read against the sky.
+            for (const float wing : {-1.f, 1.f}) {
+                const Vec3 bud = elbow + side * (wing * spread * 1.32f) + branch * (span * .33f);
+                const Vec3 notch = elbow + side * (wing * spread * .58f) + up * (span * .114f);
+                b.face({root + branch * (span * .24f), notch, bud - up * (droop * .48f)}, TimberNeedles);
+                b.face({bud - up * (droop * .48f), notch, elbow + branch * (span * .32f)},
+                       grain(salt, 54) > 7 ? TimberTips : TimberNeedles);
+            }
+        }
+    }
+    if (!snag) {
+        const Vec3 foot = stem(.82f), crown = stem(1.028f);
+        for (int i = 0; i < 5; ++i) {
+            const Vec3 a = radial(turn + i * 2.f * pi / 5.f), c = radial(turn + (i + 1) * 2.f * pi / 5.f);
+            b.face({foot + a * (height * .053f), crown, foot + c * (height * .053f)},
+                   i % 3 ? TimberNeedles : TimberTips);
+        }
+    }
+}
+#endif
+
 enum class HomeStyle { Cottage, AFrame, SplitLevel };
 
 struct Homesite {
@@ -1647,8 +1805,8 @@ void boulder(Builder& b, Vec3 center, float width, float height) {
     }
     for (int i = 0; i < sides; ++i) {
         const int next = (i + 1) % sides;
-        b.quad({base[next], base[i], ledge[i], ledge[next]}, AlpineScree);
-        b.face({ledge[next], ledge[i], crown}, i % 3 ? MountainRock : AlpineScree);
+        b.quad({base[next], base[i], ledge[i], ledge[next]}, b.desktopDetail() ? TimberGranite : AlpineScree);
+        b.face({ledge[next], ledge[i], crown}, b.desktopDetail() ? TimberGranite : i % 3 ? MountainRock : AlpineScree);
     }
 }
 
@@ -1750,7 +1908,12 @@ uint16_t mountainColor(Vec3 p, float distance, bool dusk) {
 void mountainSlope(Builder& b, const RoadSection& start, const RoadSection& end, size_t sector, bool lane) {
     enum Layer { LotEdge, MeadowEdge, Foothill, TreeLine, Crags, RidgeLine, SnowLine, Summit, Basin,
                  Buttress, HighPass, SkyRidge, LayerCount };
-    constexpr int slices = 7;
+#ifndef ESP_PLATFORM
+    constexpr int maxSlices = 16;
+#else
+    constexpr int maxSlices = 7;
+#endif
+    const int slices = b.desktopDetail() ? maxSlices : 7;
     constexpr float skyline[]{40, 36, 48, 43, 39, 38, 43, 54, 47, 36, 46, 52, 43, 45, 38, 42, 49, 40, 39};
     static_assert(std::size(skyline) == std::size(street));
     using Profile = std::array<Vec3, LayerCount>;
@@ -1767,9 +1930,9 @@ void mountainSlope(Builder& b, const RoadSection& start, const RoadSection& end,
                 mix(road[Ridge], summit, .52f), summit, basin, buttress, highPass, peak};
     };
 
-    std::array<Profile, slices + 1> slope{};
+    std::array<Profile, maxSlices + 1> slope{};
     slope.front() = profile(start, sector);
-    slope.back() = profile(end, (sector + 1) % std::size(skyline));
+    slope[slices] = profile(end, (sector + 1) % std::size(skyline));
     const Vec3 outward = acrossStreet(start[Lots], end[Lots]);
     constexpr float roughness[]{0.f, .54f, 1.12f, 2.10f, 2.90f, 4.f, 5.1f, 5.9f, 3.f, 5.6f, 6.5f, 8.f};
     const int seed = int(sector) * 23;
@@ -1783,11 +1946,17 @@ void mountainSlope(Builder& b, const RoadSection& start, const RoadSection& end,
         const float fold = (crown * 1.7f - .67f) * envelope * crestMass;
         const float rearFold = envelope * (.65f - 2.5f * std::abs(along - (1.f - crestAt)));
         for (size_t row = 0; row < LayerCount; ++row) {
-            const float variation = float(grain(seed + col, int(row) + 9)) / 7.5f - 1.f;
+            const float sample = float(col) * 7.f / slices;
+            const float variation = b.desktopDetail()
+                ? 2.f * slopeNoise(float(seed) + sample * 1.36f, float(row) * .87f + 9.f) - 1.f
+                : float(grain(seed + col, int(row) + 9)) / 7.5f - 1.f;
             const float relief = lane && row == Foothill ? 0.f : roughness[row];
             const float ridge = row >= Basin ? rearFold : fold;
-            slope[col][row] = mix(slope.front()[row], slope.back()[row], along)
-                            + Vec3{0, relief * (.39f * variation + ridge), 0}
+            const float notch = b.desktopDetail() && row >= RidgeLine
+                ? envelope * (std::sin(along * (sector % 2 ? 9.f : 13.f) + sector * .64f) * .45f +
+                              std::sin(along * 22.f + sector * 1.1f) * .20f) : 0.f;
+            slope[col][row] = mix(slope.front()[row], slope[slices][row], along)
+                            + Vec3{0, relief * (.39f * variation + ridge + notch), 0}
                             - outward * (relief * (.39f * variation + .63f * ridge));
         }
     }
@@ -1804,7 +1973,8 @@ void mountainSlope(Builder& b, const RoadSection& start, const RoadSection& end,
 
     // Bake each slope in its mesh coordinates. Neighboring slopes use the same
     // world-space color fields, so timber and snow cross the sector boundaries.
-    constexpr int width = 64, height = 128;
+    const int width = b.desktopDetail() ? 256 : 64;
+    const int height = b.desktopDetail() ? 256 : 128;
     Texture texture{width, height, {}};
     texture.pixels.reserve(size_t(width * height));
     for (int y = 0; y < height; ++y) {
@@ -2158,69 +2328,69 @@ void hallDetails(Builder& b) {
     b.lamp(401, 235, 3.12f, 5.6f, .57f);
 }
 
-void navigation(Assets& assets) {
+struct NavGrid {
+    int columns, rows, stride;
+    float originX, originY;
+};
+
+void navigation(ArenaGeometry& geometry, NavGrid spec, Vec3 spawn) {
     using namespace game_detail;
-    const World world(assets);
-    const bool town = assets.briarHouseMode == BriarHouseMode::Invasion;
-    const int columns = town ? 79 : 62;
-    const int rows = town ? 53 : 49;
-    const int stride = town ? 20 : 12;
-    const float originX = town ? -440.f : -54.f;
-    const float originY = town ? -330.f : -79.f;
+    const World world(geometry);
+    const auto [columns, rows, stride, originX, originY] = spec;
     std::vector<int> grid(size_t(columns * rows), -1);
     for (int x = 0; x < columns; ++x) {
         for (int y = 0; y < rows; ++y) {
-            const auto p = position(originX + float(x * stride), originY + float(y * stride));
-            if (std::abs(p.x) > assets.extent.x - .6f || std::abs(p.z) > assets.extent.z - .6f) continue;
+            auto p = position(originX + float(x * stride), originY + float(y * stride));
+            p.y = world.groundHeight(p);
+            if (std::abs(p.x) > geometry.extent.x - .6f || std::abs(p.z) > geometry.extent.z - .6f) continue;
             if (world.walkBlocked(p, p)) continue;
             const auto eye = atHeight(p, 1.45f);
             const bool cover = world.blocked(eye, eye + Vec3{.8f, 0, 0}) ||
                                world.blocked(eye, eye + Vec3{-.8f, 0, 0}) ||
                                world.blocked(eye, eye + Vec3{0, 0, .8f}) ||
                                world.blocked(eye, eye + Vec3{0, 0, -.8f});
-            grid[size_t(x * rows + y)] = int(assets.navNodes.size());
-            assets.navNodes.push_back({p, 0, 0, cover, true});
+            grid[size_t(x * rows + y)] = int(geometry.navNodes.size());
+            geometry.navNodes.push_back({p, 0, 0, cover, true});
         }
     }
     for (int x = 0; x < columns; ++x) {
         for (int y = 0; y < rows; ++y) {
             const int source = grid[size_t(x * rows + y)];
             if (source < 0) continue;
-            auto& from = assets.navNodes[source];
-            from.first = uint32_t(assets.navEdges.size());
+            auto& from = geometry.navNodes[source];
+            from.first = uint32_t(geometry.navEdges.size());
             for (int dx = -1; dx <= 1; ++dx) {
                 for (int dy = -1; dy <= 1; ++dy) {
                     if ((!dx && !dy) || x + dx < 0 || x + dx >= columns || y + dy < 0 || y + dy >= rows) continue;
                     const int destination = grid[size_t((x + dx) * rows + y + dy)];
                     if (destination < 0) continue;
-                    const auto to = assets.navNodes[destination].position;
+                    const auto to = geometry.navNodes[destination].position;
                     if (world.walkBlocked(from.position, to)) continue;
-                    assets.navEdges.push_back({uint32_t(destination), planar(to - from.position)});
+                    geometry.navEdges.push_back({uint32_t(destination), planar(to - from.position)});
                 }
             }
-            from.count = uint32_t(assets.navEdges.size()) - from.first;
+            from.count = uint32_t(geometry.navEdges.size()) - from.first;
         }
     }
 
     // Drop isolated grid samples in the tiny gaps between furniture or outside the valley ring.
     int start = 0;
-    const Vec3 spawn = town ? position(368, 305) : assets.spawns[0].position;
-    for (int i = 1; i < int(assets.navNodes.size()); ++i)
-        if (planarSquared(assets.navNodes[i].position - spawn) < planarSquared(assets.navNodes[start].position - spawn))
+    for (int i = 1; i < int(geometry.navNodes.size()); ++i)
+        if (planarSquared(geometry.navNodes[i].position - spawn) < planarSquared(geometry.navNodes[start].position - spawn))
             start = i;
     std::vector<uint32_t> reachable{uint32_t(start)};
-    std::vector<uint8_t> visited(assets.navNodes.size());
+    std::vector<uint8_t> visited(geometry.navNodes.size());
     visited[start] = 1;
     for (size_t i = 0; i < reachable.size(); ++i) {
-        const auto& node = assets.navNodes[reachable[i]];
+        const auto& node = geometry.navNodes[reachable[i]];
         for (uint32_t j = node.first; j < node.first + node.count; ++j) {
-            const auto to = assets.navEdges[j].to;
+            const auto to = geometry.navEdges[j].to;
             if (visited[to]) continue;
             visited[to] = 1;
             reachable.push_back(to);
         }
     }
-    for (size_t i = 0; i < assets.navNodes.size(); ++i) assets.navNodes[i].walkable = visited[i];
+    for (size_t i = 0; i < geometry.navNodes.size(); ++i) geometry.navNodes[i].walkable = visited[i];
 }
 
 template<typename T>
@@ -2230,22 +2400,40 @@ uint64_t meshBytes(const Mesh& mesh) {
     return allocated(mesh.vertices) + allocated(mesh.triangles) + allocated(mesh.chunks) + allocated(mesh.posePositions);
 }
 
+uint64_t geometryBytes(const ArenaGeometry& g) {
+    uint64_t bytes = meshBytes(g.world) + allocated(g.shotVertices) + allocated(g.shotIndices) +
+                     allocated(g.shotSurfaces) + allocated(g.shotChunks) + allocated(g.obstacles) +
+                     allocated(g.navNodes) + allocated(g.navEdges) + allocated(g.lamps) + allocated(g.glassHits) +
+                     allocated(g.fires) + allocated(g.roadFlares) + allocated(g.smoke) + allocated(g.mist) +
+                     allocated(g.hillside) + allocated(g.propInstances);
+    for (const auto& prop : g.propInstances) bytes += allocated(prop.paintMaterials);
+    return bytes;
+}
+
 uint64_t arenaBytes(const Assets& a) {
-    uint64_t bytes = allocated(a.shotVertices) + allocated(a.shotIndices) + allocated(a.shotSurfaces) +
-                     allocated(a.shotChunks) + allocated(a.obstacles) + allocated(a.navNodes) + allocated(a.navEdges) +
-                     allocated(a.lamps) + allocated(a.glassHits) + allocated(a.materials) + allocated(a.textures) +
-                     allocated(a.audio) + allocated(a.fires) + allocated(a.roadFlares) + allocated(a.smoke) +
-                     allocated(a.mist) + allocated(a.propInstances) +
-                     allocated(a.commanderUniform) + allocated(a.enforcerUniform);
-    for (const auto* mesh : {&a.world, &a.alienTrooper, &a.alienEnforcer, &a.alienDrone, &a.alienRayGun, &a.alienRayRings,
+    uint64_t bytes = geometryBytes(a) + allocated(a.materials) + allocated(a.textures) + allocated(a.audio) +
+                     allocated(a.commanderUniform) + allocated(a.enforcerUniform) + allocated(a.thermalUniform) +
+                     allocated(a.alienGuardArm);
+    if (a.timberline) bytes += sizeof(ArenaGeometry) + geometryBytes(*a.timberline);
+    if (a.scoutInterior) bytes += sizeof(ArenaGeometry) + geometryBytes(*a.scoutInterior);
+    for (const auto* mesh : {&a.alienTrooper, &a.alienEnforcer, &a.alienDrone, &a.alienRayGun, &a.alienRayRings,
                              &a.alienHeavyRayGun, &a.alienHeavyRayRings, &a.alienUplink, &a.alienUplinkCore, &a.civilianMesh,
-                             &a.relayTerminal,
+                             &a.relayTerminal, &a.scoutCargoCrate,
                              &a.transportHelo, &a.transportRotor, &a.shipBoxTruck, &a.shipBoxCar, &a.shipBoxCrate,
                              &a.shipBoxPallet, &a.shipBoxBarrel, &a.shipBoxLamp, &a.shipBoxContainer}) {
         bytes += meshBytes(*mesh);
     }
     for (const auto& craft : a.alienFleet) bytes += meshBytes(craft);
-    for (const auto& prop : a.propInstances) bytes += allocated(prop.paintMaterials);
+#ifndef ESP_PLATFORM
+    bytes += meshBytes(a.desktopScout) + meshBytes(a.desktopScoutGear) +
+             meshBytes(a.desktopAttackDrone) + meshBytes(a.desktopJammer);
+    for (const auto* sky : {&a.desktopDusk, &a.desktopTimberlineSky})
+        for (const auto& face : *sky) bytes += allocated(face);
+    for (const auto& person : a.campaignPeople) {
+        bytes += meshBytes(person.body) + allocated(person.poses);
+        for (const auto& pose : person.poses) bytes += allocated(pose.posePositions);
+    }
+#endif
     for (const auto* poses : {&a.alienTrooperPoses, &a.alienEnforcerPoses, &a.civilianPoses}) {
         bytes += allocated(*poses);
         for (const auto& pose : *poses) bytes += meshBytes(pose);
@@ -2254,6 +2442,579 @@ uint64_t arenaBytes(const Assets& a) {
     for (const auto& clip : a.audio) bytes += allocated(clip.samples);
     for (const auto& uniform : a.civilianUniforms) bytes += allocated(uniform);
     return bytes;
+}
+
+void scoutInterior(Builder& b) {
+    using namespace mission_detail::scout;
+    const auto plan = [](float left, float near, float right, float far) {
+        return Rect{316 + left / scale, 212.5f - far / scale, 316 + right / scale, 212.5f - near / scale};
+    };
+    const auto solid = [&](float left, float near, float right, float far, float low, float high, Surface material) {
+        b.solid(plan(left, near, right, far), low, high, material);
+    };
+    const auto trim = [&](float left, float near, float right, float far, float low, float high, Surface material) {
+        b.box(plan(left, near, right, far), low, high, material);
+    };
+    const auto southPanel = [&](float left, float right, float z, float low, float high, Surface material) {
+        b.quad({Vec3{left, low, z}, Vec3{left, high, z}, Vec3{right, high, z}, Vec3{right, low, z}}, material);
+    };
+    const auto sidePanel = [&](float x, float near, float far, float low, float high, float outward, Surface material) {
+        if (outward < 0.f) std::swap(near, far);
+        b.quad({Vec3{x, low, near}, Vec3{x, low, far}, Vec3{x, high, far}, Vec3{x, high, near}}, material);
+    };
+    const auto lamp = [&](float x, float z, float height, float radius, float strength) {
+        b.lamp(316 + x / scale, 212.5f - z / scale, height, radius, strength);
+    };
+    const auto chute = [&](Vec3 center, float outward, Surface light) {
+        const auto at = [&](float radius, int side, float y) {
+            const float theta = (float(side % 8) + .5f) * pi / 4.f;
+            return center + Vec3{radius * std::cos(theta), y, radius * std::sin(theta)};
+        };
+        const auto collar = [&](float inner, float outer, float bottom, float top, Surface body) {
+            for (int i = 0; i < 8; ++i) {
+                const Vec3 a = at(outer, i, bottom), c = at(outer, i + 1, bottom);
+                const Vec3 e = at(inner, i, bottom), f = at(inner, i + 1, bottom);
+                const Vec3 up{0, top - bottom, 0};
+                const Surface rim = i % 2 == 0 ? body : CargoInset;
+                b.quad({a + up, e + up, f + up, c + up}, rim);
+                b.quad({c, f, e, a}, rim);
+                b.quad({a, a + up, c + up, c}, body);
+                b.quad({e, f, f + up, e + up}, body);
+            }
+        };
+        collar(.88f, chuteRadius, .012f, .064f, CargoFrame);
+        collar(.89f, .99f, .064f, .076f, light);
+        collar(.68f, 1.78f, chuteCanopy, chuteCanopy + .39f, CargoFrame);
+        collar(1.49f, 1.79f, chuteCanopy - .105f, chuteCanopy + .025f, CargoCeramic);
+        collar(.69f, .94f, chuteCanopy - .07f, chuteCanopy, CargoCeramic);
+        collar(.61f, .70f, chuteCanopy - .09f, chuteCanopy + .005f, light);
+        for (int i = 0; i < 8; i += 2) {
+            const Vec3 corner = at(1.58f, i, chuteCanopy);
+            const Vec3 next = at(1.58f, i + 1, chuteCanopy);
+            const Vec3 inward = (center - (corner + next) * .5f);
+            const Vec3 tip = (corner + next) * .5f + Vec3{inward.x * .32f, -.27f, inward.z * .32f};
+            b.face({corner, next, tip}, CargoCeramic);
+            b.face({next, corner, tip}, CargoCeramic);
+        }
+        // The bearing tower sits behind the pad and holds the collar above the crate's flight path.
+        const float towerX = center.x + 2.68f * outward;
+        trim(towerX - .51f, center.z - .94f, towerX + .51f, center.z + .94f, .07f, 4.76f, CargoInset);
+        trim(towerX - .56f, center.z - 1.08f, towerX + .56f, center.z + 1.08f, .10f, .37f, CargoFrame);
+        const float railX = towerX - .58f * outward;
+        for (const float dz : {-.67f, .67f}) {
+            trim(railX - .105f, center.z + dz - .13f, railX + .105f, center.z + dz + .13f,
+                 .45f, 3.91f, CargoCeramic);
+            sidePanel(railX - outward * .11f, center.z + dz - .055f, center.z + dz + .055f, 1.12f, 3.01f,
+                      outward, light);
+        }
+        trim(std::min(towerX, center.x), center.z - .33f, std::max(towerX, center.x), center.z + .33f,
+             4.30f, 4.75f, CargoCeramic);
+        b.collision(plan(towerX - .51f, center.z - .94f, towerX + .51f, center.z + .94f), 0, 4.76f);
+        lamp(center.x, center.z, chuteCanopy - .22f, 8.2f, .98f);
+    };
+    const auto rail = [&](float left, float right, float z, Surface light) {
+        trim(left, z - .09f, right, z + .09f, 0.01f, .035f, light);
+    };
+    const auto rib = [&](float z, float half, float shoulder, float roof, Surface light) {
+        const std::array<Vec3, 8> ring{{
+            {-half, 0, z}, {-half, shoulder, z}, {-half * .72f, roof - .45f, z}, {-half * .43f, roof, z},
+            {half * .43f, roof, z}, {half * .72f, roof - .45f, z}, {half, shoulder, z}, {half, 0, z}
+        }};
+        for (size_t i = 1; i < ring.size(); ++i) {
+            const Vec3 a = ring[i - 1], d = ring[i];
+            const Vec3 inward = normalized(Vec3{-a.x - d.x, roof - a.y - d.y, 0}) * .15f;
+            const Vec3 span{0, 0, .28f};
+            b.quad({a, d, d + span, a + span}, ScoutPearl);
+            b.quad({a + span, d + span, d + span + inward, a + span + inward}, ScoutPanel);
+            b.quad({d + span + inward, d + inward, a + inward, a + span + inward}, AlienTrim);
+        }
+        trim(-half * .4f, z + .31f, half * .4f, z + .38f, roof - .16f, roof - .09f, light);
+    };
+
+    // Empty exterior strips are solid so generated navigation stays inside the hull.
+    solid(-19, -31, 19, -28, 0, 6, ScoutPanel);
+    solid(-19, -28, -12.8f, -10, 0, 5, ScoutPanel);
+    solid(12.8f, -28, 19, -10, 0, 5, ScoutPanel);
+    solid(-19, -10, -17, 15.5f, 0, 5.6f, ScoutPanel);
+    solid(17, -10, 19, 15.5f, 0, 5.6f, ScoutPanel);
+    solid(-19, 15.5f, -11.8f, 30, 0, 5, ScoutPanel);
+    solid(11.8f, 15.5f, 19, 30, 0, 5, ScoutPanel);
+    b.floor(plan(-12.8f, -28, 12.8f, -10.24f), CargoDeck);
+    b.floor(plan(-17, -10.24f, 17, 30), ScoutDeck);
+    trim(-17, -28, 17, -10, 5.18f, 5.44f, ScoutPanel);
+    trim(-17, -10, 17, 15.5f, 6.0f, 6.2f, ScoutPanel);
+    trim(-12, 15.5f, 12, 29.8f, 5.5f, 5.7f, ScoutPanel);
+    for (const float z : {-26.f, -21.f, -15.f, -10.f}) {
+        rib(z, 12.7f, 2.65f, 4.97f, CargoAmber);
+        for (const float side : {-1.f, 1.f}) {
+            const float x = side * 4.7f;
+            trim(x - 2.2f, z + .31f, x + 2.2f, z + .78f, 4.79f, 5.06f, CargoFrame);
+            for (const float bank : {-1.13f, 1.13f}) {
+                const float left = x + bank - .99f, right = x + bank + .99f;
+                b.quad({Vec3{left, 4.78f, z + .35f}, Vec3{right, 4.78f, z + .35f},
+                        Vec3{right, 4.78f, z + .72f}, Vec3{left, 4.78f, z + .72f}}, Amber);
+            }
+        }
+    }
+    for (const float z : {-7.f, -1.f, 5.f, 11.f}) rib(z, 16.9f, 3.2f, 5.92f, ScoutPurple);
+    for (const float z : {16.f, 21.5f, 28.8f}) rib(z, 11.7f, 2.65f, 5.4f, Amber);
+
+    // Stamped cargo guides lead from the retrieval iris to the port machinery.
+    constexpr float railHeight = .034f;
+    for (const float x : {-2.35f, 2.35f}) {
+        trim(x - .24f, -27.2f, x + .24f, -11.f, .007f, .024f, CargoInset);
+        for (const float z : {-27.f, -24.f, -21.f, -18.f, -15.f, -12.f}) {
+            b.floor(plan(x - .045f, z - .55f, x + .045f, z + .55f), CargoTeal, railHeight);
+        }
+    }
+    for (const float z : {-20.9f, -19.38f}) rail(-7.15f, -.93f, z, CargoFrame);
+    for (int i = 0; i < 4; ++i) {
+        const float x = -1.55f - float(i) * 1.42f;
+        const Vec3 tip{x - .33f, .026f, -20.14f};
+        b.quad({tip, tip + Vec3{.26f, 0, 0}, tip + Vec3{.68f, 0, -.44f},
+                tip + Vec3{.38f, 0, -.44f}}, CargoCeramic);
+        b.quad({tip, tip + Vec3{.38f, 0, .44f}, tip + Vec3{.68f, 0, .44f},
+                tip + Vec3{.26f, 0, 0}}, CargoCeramic);
+    }
+    chute(cargoChute, -1.f, CargoTeal);
+    for (const float side : {-1.f, 1.f}) {
+        for (const float z : {-23.f, -17.5f, -12.f}) {
+            const float x = side * 7.35f;
+            const auto body = plan(x - 1.65f, z - 1.1f, x + 1.65f, z + 1.1f);
+            const auto lid = plan(x - 1.45f, z - .9f, x + 1.45f, z + .9f);
+            b.collision(body, 0, 1.38f);
+            b.box(body, .11f, 1.06f, CargoInset);
+            b.taperedBox(body, lid, 1.06f, 1.38f, CargoCeramic);
+            for (const float dx : {-1.27f, 1.27f}) {
+                trim(x + dx - .19f, z - 1.12f, x + dx + .19f, z + 1.12f, .10f, 1.10f, CargoFrame);
+                trim(x + dx - .27f, z - 1.05f, x + dx + .27f, z + 1.05f, .02f, .17f, CargoFrame);
+            }
+            for (int vent = 0; vent < 3; ++vent) {
+                const float y = .42f + .12f * vent;
+                southPanel(x - .91f, x + .91f, z - 1.105f, y, y + .048f, AlienHull);
+            }
+        }
+        for (const float z : {-24.f, -15.2f}) {
+            const float x = side * 12.8f;
+            const float inner = x - side * .35f;
+            trim(std::min(x, inner), z - 1.70f, std::max(x, inner), z + 1.70f, .66f, 3.87f, CargoInset);
+            const float casing = inner - side * .12f;
+            for (int vent = -2; vent <= 2; ++vent) {
+                const float slot = z + float(vent) * .52f;
+                sidePanel(casing, slot - .13f, slot + .13f, 1.02f, 3.51f, side, CargoCeramic);
+            }
+            sidePanel(casing, z - 1.69f, z + 1.69f, 3.63f, 3.77f, side, CargoAmber);
+        }
+    }
+    solid(-12.8f, -10.65f, -2.6f, -9.8f, 0, 4.1f, ScoutPanel);
+    solid(2.6f, -10.65f, 12.8f, -9.8f, 0, 4.1f, ScoutPanel);
+    trim(-2.92f, -10.77f, 2.92f, -9.68f, 3.65f, 4.22f, CargoFrame);
+    for (const float x : {-2.80f, 2.80f}) {
+        trim(x - .17f, -10.87f, x + .17f, -9.66f, .08f, 3.94f, CargoCeramic);
+        southPanel(x - .09f, x + .09f, -10.88f, .43f, 3.38f, CargoAmber);
+    }
+    southPanel(-2.18f, 2.18f, -10.80f, 3.79f, 3.92f, CargoTeal);
+
+    // The central machinery blocks the straight route. Port and starboard meet at the transponder.
+    solid(-4.65f, -6.5f, 4.65f, 7.5f, 0, 3.9f, AlienHull);
+    trim(-4.68f, -6.59f, 4.68f, 7.59f, 3.50f, 3.89f, CargoCeramic);
+    trim(-4.73f, -6.64f, 4.73f, 7.64f, .12f, .32f, CargoFrame);
+    for (const float x : {-3.38f, 0.f, 3.38f}) {
+        b.taperedBox(plan(x - 1.13f, -6.62f, x + 1.13f, -6.48f),
+                     plan(x - .84f, -6.92f, x + .84f, -6.48f), .55f, 3.42f, CargoInset);
+        southPanel(x - .78f, x + .78f, -6.94f, 2.90f, 3.30f, CargoCeramic);
+        for (int vent = 0; vent < 5; ++vent) {
+            const float y = 1.08f + float(vent) * .33f;
+            trim(x - .68f, -6.94f, x + .68f, -6.57f, y, y + .095f, vent == 1 ? CargoAmber : CargoFrame);
+        }
+    }
+    chute(portChute, -1.f, CargoTeal);
+    chute(starboardChute, 1.f, ScoutPurple);
+    for (const float side : {-1.f, 1.f}) {
+        const float x = side * 11.8f;
+        for (const float z : {-5.f, 5.f, 9.3f}) {
+            solid(x - 1.6f, z - .75f, x + 1.6f, z + .75f, 0, z < 0 ? 1.85f : 1.15f, ScoutPanel);
+            trim(x - 1.65f, z - .82f, x + 1.65f, z + .82f, .2f, .3f, ScoutCopper);
+        }
+        for (const float z : {-6.75f, -3.5f, -.25f, 3.f, 6.25f, 9.5f})
+            b.floor(plan(side * 6.7f - .075f, z - .87f, side * 6.7f + .075f, z + .87f),
+                    side < 0 ? CargoTeal : ScoutPurple, railHeight);
+        lamp(side * 9.5f, 2, 2.6f, 9.f, .48f);
+    }
+    solid(-11.8f, 14.4f, -2.45f, 15.5f, 0, 4.65f, ScoutPanel);
+    solid(2.45f, 14.4f, 11.8f, 15.5f, 0, 4.65f, ScoutPanel);
+    rail(-2.4f, 2.4f, 14.95f, Amber);
+
+    // Bridge armor consoles flank a clear axis to the valley.
+    for (const float side : {-1.f, 1.f}) {
+        for (const float z : {18.5f, 23.f}) {
+            const float x = side * (z < 20 ? 4.7f : 7.7f);
+            solid(x - 1.9f, z - .85f, x + 1.9f, z + .85f, 0, 1.17f, AlienHull);
+            trim(x - 1.65f, z - .62f, x + 1.65f, z + .62f, 1.16f, 1.27f, ScoutCopper);
+            trim(x - 1.5f, z - .47f, x + 1.5f, z + .47f, 1.26f, 1.29f, AlienGlow);
+        }
+    }
+    solid(-11.8f, 29.4f, 11.8f, 30.2f, 0, .23f, AlienTrim);
+    trim(-11.8f, 29.35f, 11.8f, 30.25f, 4.8f, 5.48f, ScoutPanel);
+    for (const float x : {-10.5f, -4.9f, 4.9f, 10.5f})
+        trim(x - .095f, 29.43f, x + .095f, 29.67f, .21f, 4.96f, ScoutPearl);
+    b.quad({Vec3{-11.8f, .21f, 29.76f}, Vec3{11.8f, .21f, 29.76f},
+            Vec3{11.8f, 4.87f, 29.76f}, Vec3{-11.8f, 4.87f, 29.76f}}, ScoutWindow);
+    b.collision(plan(-11.8f, 29.5f, 11.8f, 30.7f), .23f, 4.8f, false);
+    lamp(0, -24.1f, 3.85f, 11.6f, .91f);
+    lamp(-5.8f, -14, 3.58f, 10, .78f);
+    lamp(6.4f, -17, 3.62f, 10, .88f);
+    lamp(0, -9.8f, 3.2f, 8, .74f);
+    lamp(0, 11.5f, 2.9f, 8, .47f);
+    lamp(0, 25, 3.6f, 11, .7f);
+
+    // A low-poly valley unrolls behind the glass. It is scenery only, outside the walkable hull.
+    b.beginBackdrop();
+    b.quad({Vec3{-125, -8.f, 33}, Vec3{-125, -8.f, 152}, Vec3{125, -8.f, 152},
+            Vec3{125, -8.f, 33}}, ForestSlope);
+    for (int band = 0; band < 3; ++band) {
+        const float depth = 143.f - band * 25.f;
+        const Surface palette[]{AlpineScree, MountainRock, RidgePine};
+        const bool detail = b.desktopDetail();
+        const int span = detail ? 32 : 15;
+        const auto crest = [&](int i) {
+            const float sample = detail ? i * .49f : float(i);
+            const float x = sample * 10.f + band * 6.8f;
+            const float broad = std::sin(sample * .49f + band * 1.31f) * 5.8f + std::cos(sample * .92f) * 2.3f;
+            if (detail) {
+                const float spur = slopeNoise(sample * 1.35f, band * 2.8f);
+                const float tooth = std::sin(sample * 3.23f + .91f * band);
+                const float mass = (3 - band) * 2.5f;
+                return Vec3{x, 7.1f - band * 3.8f + broad * 1.06f + mass * spur + tooth * (1.5f - band * .48f),
+                            depth + (spur - .5f) * 9.f};
+            }
+            const float height = 4.4f + broad + float(grain(i + 20, band * 27)) * .37f - band * 4.1f;
+            return Vec3{x, height, depth + float(grain(i + 13, band * 9)) * .85f};
+        };
+        for (int i = -span; i < span; ++i) {
+            const Vec3 a = crest(i), d = crest(i + 1);
+            const Vec3 footA{a.x - 6.f, -7.96f, depth - 14.f};
+            const Vec3 footD{d.x - 6.f, -7.96f, depth - 14.f};
+            const Surface rock = detail && band == 1 ? TimberGranite : palette[band];
+            b.face({footA, a, d}, rock);
+            b.face({footA, d, footD}, i % 3 && band == 0 ? MountainRock : rock);
+        }
+    }
+    // A handful of warm roofs and the avenue give the beam a familiar scale.
+    for (const float z : {50.f, 61.f, 73.f, 85.f}) {
+        const float x = (z - 50) * .58f + 2.2f;
+        trim(x - 2.f, z - 1.f, x + 2.f, z + 1.f, -8.f, -6.65f, ScoutCopper);
+        trim(x - 2.15f, z - .96f, x + 2.15f, z - .69f, -7.45f, -7.27f, Amber);
+    }
+    for (int i = 0; i < 8; ++i)
+        trim(5.f + i * 1.41f, 44.f + i * 4.f, 5.18f + i * 1.41f, 44.5f + i * 4.f, -7.98f, -7.68f, Amber);
+}
+
+void timberlineBasin(Builder& b) {
+    using namespace mission_detail::timberline;
+    // Timberline uses the same scale as Briar House, with its own coordinate space.
+    const auto rect = [](float left, float south, float right, float north) {
+        return Rect{316 + left / scale, 212.5f - north / scale, 316 + right / scale, 212.5f - south / scale};
+    };
+    const auto floor = [&](float l, float s, float r, float n, Surface material, float h = 0.f) {
+        b.floor(rect(l, s, r, n), material, h);
+    };
+    const auto road = [&](Vec3 a, Vec3 end, float width) {
+        const Vec3 d = normalized(end - a);
+        const Vec3 side{d.z * width, 0, -d.x * width};
+        a.y = end.y = .025f;
+#ifndef ESP_PLATFORM
+        if (b.desktopDetail()) {
+            const int segments = std::max(1, int(length(end - a) / 2.8f));
+            const auto edge = [&](int i, int sign) {
+                const float spread = i == 0 || i == segments ? 1.f
+                    : .88f + .016f * grain(int(a.z) * 53 + i, sign);
+                return mix(a, end, float(i) / segments) + side * (spread * sign);
+            };
+            for (int i = 0; i < segments; ++i) {
+                b.quad({edge(i, -1), edge(i + 1, -1), edge(i + 1, 1), edge(i, 1)}, TimberTrack);
+            }
+            return;
+        }
+#endif
+        b.quad({a - side, end - side, end + side, a + side}, Gravel);
+    };
+    const auto shed = [&](float l, float s, float r, float n, float eave, float peak, Surface siding) {
+        const auto plan = rect(l, s, r, n);
+        b.box(plan, 0, .28f, Concrete);
+        b.box(plan, .28f, eave, siding);
+        b.gabledRoof(plan, eave, peak);
+        b.collision(plan, 0, peak);
+        const float center = (s + n) * .5f;
+        b.box(rect(l - .06f, center - .85f, l, center + .85f), .28f, 2.35f, DarkWood);
+        for (const float z : {s + 1.4f, n - 1.4f}) {
+            b.box(rect(l - .07f, z - .65f, l, z + .65f), 1.45f, 2.25f, CabinLit);
+            b.lamp(316 + l / scale, 212.5f - z / scale, 2.f, 4.f, .35f);
+        }
+    };
+
+    for (int x = -45; x < 45; x += 9) {
+        for (int z = -63; z < 117; z += 9) {
+            const Surface ground = b.desktopDetail() ? TimberDuff : grain(x, z) > 8 ? Meadow : ForestSlope;
+            floor(float(x), float(z), float(x + 9), float(z + 9), ground);
+        }
+    }
+    road({-14, 0, -45}, yardKit, 3.5f);
+    road(yardKit, {-6, 0, -2}, 2.8f);
+    road({-6, 0, -2}, quarryKit, 2.8f);
+    road(quarryKit, northRoad, 3.1f);
+    road(northRoad, {16, 0, 40}, 2.9f);
+    b.orientedCollision({0, 0, -47}, {1, 0, 0}, 29.5f, 1.f, 0.f, 4.5f, false);
+    floor(-22, -19, -9, -5, Soil, .016f);
+    floor(-1, 6, 14, 20, b.desktopDetail() ? TimberGranite : AlpineScree, .014f);
+    for (const auto pad : {southPad, northPad}) {
+        floor(pad.x - 6.3f, pad.z - 6.3f, pad.x + 6.3f, pad.z + 6.3f, Concrete, pad.y - .084f);
+        floor(pad.x - 2.2f, pad.z - .17f, pad.x + 2.2f, pad.z + .17f, RoadLine, pad.y - .08f);
+        for (float side : {-1.f, 1.f}) {
+            const float x = pad.x + side * 2.2f;
+            floor(x - .17f, pad.z - 2.25f, x + .17f, pad.z + 2.25f, RoadLine, pad.y - .08f);
+            for (float end : {-1.f, 1.f}) {
+                const Vec3 light{pad.x + side * 5.8f, pad.y - .04f, pad.z + end * 5.8f};
+                b.flare(light);
+                b.lamp(316 + light.x / scale, 212.5f - light.z / scale, pad.y + .14f, 4.4f, .55f);
+            }
+        }
+    }
+
+    shed(-3, -29, 8, -22, 3.2f, 4.5f, CabinCedar);
+    b.box(rect(6.75f, -25.28f, 7.25f, -24.72f), 3.5f, 5.0f, Steel);
+    // A timber hoist marks the loading end of the yard.
+    for (float x : {-21.7f, -12.7f}) {
+        b.solid(rect(x, -7.5f, x + .42f, -7.08f), 0, 4.9f, Timber);
+        b.box(rect(x - .15f, -7.66f, x + .58f, -6.92f), 0, .38f, Concrete);
+    }
+    b.box(rect(-22.1f, -7.57f, -12.2f, -7.f), 4.48f, 4.92f, Timber);
+    b.box(rect(-16.8f, -7.61f, -16.2f, -6.95f), 4.05f, 4.58f, Steel);
+    shed(-24, -4, -13, 2, 3.8f, 5.45f, CabinSlate);
+    shed(15.5f, 3, 23.5f, 12, 4.3f, 6.0f, CabinSlate);
+    shed(-9, 20, -2, 27, 3.5f, 4.9f, CabinGreen);
+    // The bunkhouse log stacks and quarry walls provide real cover between the landing lanes.
+    for (Vec3 p : {Vec3{-23, 0, -18}, Vec3{-7, 0, -12}, Vec3{-6, 0, 3}}) {
+        const float start = 316 + (p.x - 2.6f) / scale;
+        const float end = 316 + (p.x + 2.6f) / scale;
+        for (int tier = 0; tier < 3; ++tier) {
+            for (int log = tier; log < 5; ++log) {
+                const float z = p.z + (log - 2.f) * .4f - tier * .12f;
+                b.axle(start, end, 212.5f - z / scale, .23f + tier * .38f, .22f, PineBark, Timber);
+            }
+        }
+        b.collision(rect(p.x - 2.6f, p.z - 1.07f, p.x + 2.6f, p.z + 1.07f), 0, 1.1f);
+    }
+    b.solid(rect(0, 10, 3.8f, 10.65f), 0, 1.1f, AlpineScree);
+    b.solid(rect(7, 17.5f, 13, 18.15f), 0, 1.12f, GardenWall);
+    b.solid(rect(6, 29, 10, 29.7f), 0, .93f, Concrete);
+    b.placeVehicle(PropKind::Truck, {-8, 0, -21}, 0, b.surfaceMat(CabinCedar));
+    b.placeVehicle(PropKind::Truck, {16, 0, 17}, -.45f, b.surfaceMat(CabinSlate));
+    b.placeVehicle(PropKind::Car, {23, 0, 26}, pi / 2, b.surfaceMat(CabinGreen));
+
+    // The ridge climbs from the quarry to the north saddle. The mesh also supplies the walking surface.
+    constexpr Vec3 toe[]{
+        {22, 0, 12}, {22, 0, 16}, {22, 0, 24}, {22, 0, 33}, {22, 0, 42},
+        {18, 0, 51}, {12, 0, 60}, {11, 0, 72}, {13, 0, 82}, {8, 0, 89}, {8, 0, 102},
+    };
+    constexpr Vec3 bench[]{
+        {25.2f, 0, 12}, {25.2f, 2.f, 16}, {25.2f, 3.1f, 24}, {25.2f, 3.6f, 33}, {25, 3.7f, 42},
+        {24, 4.f, 51}, {18, 4.2f, 60}, {18, 4.2f, 72}, {19, 4.2f, 82}, {14, 4.2f, 89}, {14, 4.2f, 102},
+    };
+    const auto crest = [&](size_t i) {
+        return Vec3{29.f, std::min(4.2f, bench[i].y * 1.16f), bench[i].z};
+    };
+    for (size_t i = 1; i < std::size(toe); ++i) {
+        const std::array slope{toe[i - 1], toe[i], bench[i], bench[i - 1]};
+        const std::array path{bench[i - 1], bench[i], crest(i), crest(i - 1)};
+        b.quad(slope, b.desktopDetail() ? TimberGranite : AlpineScree);
+        b.quad(path, b.desktopDetail() ? TimberDuff : i >= 6 ? Gravel : ForestSlope);
+        b.hillsideQuad(slope);
+        b.hillsideQuad(path);
+    }
+    for (int step : {2, 3, 4, 5, 6, 7, 8}) {
+        const Vec3 stone = bench[step] + Vec3{-1.5f, -.65f, -.6f};
+        boulder(b, stone, 2.05f, 1.45f);
+        b.orientedCollision(stone, {1, 0, 0}, .62f, .62f, stone.y - .15f, stone.y + 1.1f);
+        const Vec3 stand = crest(step) - Vec3{.6f, .15f, .1f};
+#ifndef ESP_PLATFORM
+        if (b.desktopDetail()) timberConifer(b, stand, 7.f + .3f * step);
+        else
+#endif
+            pine(b, stand, 7.f + .3f * step, RidgePine);
+        b.orientedCollision(stand, {1, 0, 0}, .25f, .25f, stand.y, stand.y + 4.f);
+    }
+    // Broken retaining walls break up the approach, with a lane between each pair.
+    b.solid(rect(18.7f, 64, 23.3f, 64.6f), 4.15f, 5.32f, GardenWall);
+    b.solid(rect(23.8f, 73.2f, 28.7f, 73.8f), 4.15f, 5.35f, GardenWall);
+    b.solid(rect(14.1f, 82, 18.5f, 82.58f), 3.5f, 5.25f, Concrete);
+    b.solid(rect(11.5f, 89, 14.5f, 90), 3.5f, 5.35f, GardenWall);
+    b.solid(rect(12, 95.8f, 13.2f, 98.8f), 3.5f, 5.24f, GardenWall);
+    // The pickup's knee wall faces the ridge and leaves the east side open to the cabin.
+    b.solid(rect(14.8f, 90.f, 18.25f, 90.6f), 4.16f, 5.38f, Concrete);
+    b.solid(rect(14.8f, 90.6f, 15.4f, 93.2f), 4.16f, 5.38f, Concrete);
+
+    // The abandoned logging relay gives the far patrol a landmark opposite the thermal ridge.
+    b.solid(rect(-20.5f, 35.4f, -18.5f, 37.4f), 0, .85f, Concrete);
+    b.box(rect(-19.65f, 36.23f, -19.35f, 36.57f), .85f, 6.6f, Steel);
+    for (const float height : {3.8f, 5.15f, 6.45f}) {
+        b.box(rect(-20.34f, 36.32f, -18.66f, 36.48f), height, height + .09f, Steel);
+    }
+    b.box(rect(-19.62f, 36.29f, -19.38f, 36.51f), 6.6f, 6.82f, AlienGlow);
+
+    b.beginDecoration();
+#ifndef ESP_PLATFORM
+    if (b.desktopDetail()) {
+        const game_detail::World ground(b.geometry());
+        const auto follow = [&](Vec3 p, float raise) {
+            p.y = ground.groundHeight(p) + raise;
+            return p;
+        };
+        // A foot-worn path bends along the existing bench. Sample the same ground used by movement.
+        const auto trail = [&](size_t i) {
+            const auto shoulder = crest(i);
+            return mix(bench[i], shoulder, .39f + .013f * grain(int(i), 77));
+        };
+        Vec3 previous = trail(0);
+        float previousWidth = .91f;
+        for (size_t i = 1; i < std::size(bench); ++i) {
+            const Vec3 next = trail(i);
+            const int steps = std::max(1, int(length(next - previous) / 1.30f));
+            const Vec3 origin = previous;
+            for (int j = 1; j <= steps; ++j) {
+                const int seed = int(i) * 41 + j;
+                const float width = .77f + .023f * grain(seed, 101);
+                const Vec3 p = mix(origin, next, float(j) / steps);
+                const Vec3 left{previous.x - previousWidth, 0, previous.z};
+                const Vec3 right{previous.x + previousWidth, 0, previous.z};
+                b.quad({follow(left, .036f), follow(p - Vec3{width, 0, 0}, .036f),
+                        follow(p + Vec3{width, 0, 0}, .036f), follow(right, .036f)}, TimberTrack);
+                if (i > 2 && j % 2 == 0 && p.z < 89.f) {
+                    for (const float sign : {-1.f, 1.f}) {
+                        const Vec3 at = follow(p + Vec3{sign * (width + .34f + .056f * grain(seed, int(sign))), 0, .12f}, .027f);
+                        b.grassTuft(at, uint32_t(seed) * 1031u + (sign < 0 ? 1u : 2u));
+                        if (grain(seed, int(sign * 8)) > 6) {
+                            const float span = .08f + float(grain(seed, 17)) * .012f;
+                            const Vec3 side{span, 0, 0}, along{0, 0, span * .73f};
+                            const Vec3 crown = at + Vec3{.31f * span, .12f, -.36f * span};
+                            b.face({at - side - along, at - side + along, crown}, TimberGranite);
+                            b.face({at - side + along, at + side + along, crown}, TimberGranite);
+                            b.face({at + side + along, at + side - along, crown}, TimberGranite);
+                            b.face({at + side - along, at - side - along, crown}, TimberGranite);
+                        }
+                    }
+                }
+                previous = p;
+                previousWidth = width;
+            }
+        }
+    }
+#endif
+    for (int i = 0; i < 54; ++i) {
+        const float x = (i % 2 ? 1.f : -1.f) * (21.f + .58f * grain(i, 51));
+        const float z = -45.f + 3.46f * (i / 2) + .18f * grain(i, 38);
+        if (x > 21.f && z > 12.f && x < 29.f) continue;
+        const float h = 4.3f + .36f * grain(i, 71);
+#ifndef ESP_PLATFORM
+        if (b.desktopDetail() && std::abs(x) < extent.x + 1.f) {
+            if (i % 13 == 2 && z < 21.f) aspen(b, {x, -.13f, z}, h * .80f);
+            else timberConifer(b, {x, -.13f, z}, h);
+        } else
+#endif
+            pine(b, {x, -.13f, z}, h, RidgePine, i % 3 != 0);
+        if (std::abs(x) < extent.x)
+            b.orientedCollision({x, 0, z}, {1, 0, 0}, .21f, .21f, 0.f, h * .54f);
+    }
+
+    b.mist({-14, .8f, -31}, 13.f, 2.8f, {4, 0, 1}, .10f);
+    b.mist({-9, 1.f, -3}, 16.f, 2.7f, {5, 0, 2}, .071f);
+    b.mist({10, .4f, 22}, 15.f, 2.4f, {4, 0, -2}, .08f);
+    b.mist({14, .8f, 39}, 17.f, 3.0f, {6, 0, 2}, .09f);
+    b.mist({20, 3.65f, 54}, 14.f, 2.6f, {6, 0, 2}, .066f);
+    b.mist({17, 4.5f, 71}, 17.f, 2.8f, {6, 0, 2}, .081f);
+    b.mist({21, 4.7f, 93}, 16.f, 2.9f, {4, 0, 1}, .092f);
+    for (int i = 0; i < 10; ++i) {
+        const Vec3 tree{-19.f + float(grain(i, 47)) * .85f, -.11f, 48.f + i * 4.4f};
+        const float height = 4.3f + .28f * grain(i, 53);
+#ifndef ESP_PLATFORM
+        if (b.desktopDetail()) timberConifer(b, tree, height);
+        else
+#endif
+            pine(b, tree, height, RidgePine);
+        b.orientedCollision(tree, {1, 0, 0}, .22f, .22f, 0, height * .52f);
+    }
+    b.smoke({7, 5.f, -25}, 7.5f, {3, 0, 1}, .6f);
+
+    b.beginBackdrop();
+    // Each pass across the basin has its own silhouette of tree-lined scree and alpine peaks.
+#ifndef ESP_PLATFORM
+    constexpr int maxSlices = 64;
+#else
+    constexpr int maxSlices = 24;
+#endif
+    const int slices = b.desktopDetail() ? maxSlices : 24;
+    using Ridge = std::array<Vec3, 5>;
+    std::array<Ridge, maxSlices> profile{};
+    for (int i = 0; i < slices; ++i) {
+        const float angle = 2.f * pi * i / slices;
+        const float x = std::cos(angle), z = std::sin(angle);
+        const float north = 57.f * std::max(0.f, z);
+        const float variation = float(grain(i, 11));
+        profile[i] = {{
+            {38.f * x, -.12f, 58.f * z + north},
+            {(51.f + variation * .65f) * x, 4.f + variation * .74f, (73.f + variation * .53f) * z + north},
+            {(73.f + variation) * x, 14.f + float(grain(i, 44)) * .89f, (88.f + variation) * z + north},
+            {(101.f + variation) * x, 25.f + float(grain(i, 52)) * 1.65f, (117.f + variation) * z + north},
+            {127.f * x, 19.f + variation, 142.f * z + north},
+        }};
+        if (b.desktopDetail()) {
+            const float escarpment = std::sin(angle * 3.f + .4f) + .58f * std::sin(angle * 7.f - 1.7f);
+            const float cleft = std::sin(angle * 11.f + std::cos(angle * 4.f)) + .29f * std::sin(angle * 24.f);
+            const float buttress = std::max(0.f, std::sin(angle * 5.f + .6f));
+            profile[i][1] = {(52.f + escarpment * 5.f) * x, 8.5f + escarpment * 4.2f,
+                             (76.f + escarpment * 5.f) * z + north};
+            profile[i][2] = {(75.f - cleft * 3.f) * x, 17.f + escarpment * 5.f + cleft * 3.f,
+                             (97.f - cleft * 4.f) * z + north};
+            profile[i][3] = {(104.f - buttress * 7.f) * x, 27.f + escarpment * 5.f + cleft * 5.4f,
+                             (127.f - buttress * 6.f) * z + north};
+            profile[i][4] = {(152.f + cleft * 5.f) * x, 46.f + 7.7f * escarpment + 9.2f * buttress + cleft * 4.f,
+                             (155.f + cleft * 7.f) * z + north};
+        }
+    }
+    const int texWidth = b.desktopDetail() ? 1024 : 192, texHeight = b.desktopDetail() ? 256 : 64;
+    Texture strata{texWidth, texHeight, {}};
+    strata.pixels.reserve(texWidth * texHeight);
+    for (int y = 0; y < texHeight; ++y) {
+        const float height = 4.f * y / (texHeight - 1);
+        const int j = std::min(3, int(height));
+        for (int x = 0; x < texWidth; ++x) {
+            const float angle = float(slices * x) / (texWidth - 1);
+            const int i = std::min(slices - 1, int(angle));
+            const auto& left = profile[i];
+            const auto& right = profile[(i + 1) % slices];
+            const Vec3 at = mix(mix(left[j], right[j], angle - i),
+                                mix(left[j + 1], right[j + 1], angle - i), height - j);
+            strata.pixels.push_back(mountainColor(at, smoothStep((height - 1.0f) / 2.f), false));
+        }
+    }
+    const auto [lowerSlope, upperSlope] = b.mountainMaterials(std::move(strata));
+    for (int i = 0; i < slices; ++i) {
+        const auto& left = profile[i];
+        const auto& right = profile[(i + 1) % slices];
+        const float u0 = (.5f + float(i) * (texWidth - 1) / slices) / texWidth;
+        const float u1 = (.5f + float(i + 1) * (texWidth - 1) / slices) / texWidth;
+        for (int j = 0; j < 4; ++j) {
+            const float v0 = (.5f + j * (texHeight - 1) / 4.f) / texHeight;
+            const float v1 = (.5f + (j + 1) * (texHeight - 1) / 4.f) / texHeight;
+            b.backdropQuad({Vertex{left[j + 1], u0, v1}, {left[j], u0, v0}, {right[j], u1, v0}, {right[j + 1], u1, v1}},
+                           j == 0 ? lowerSlope : upperSlope);
+        }
+        const int count = b.desktopDetail() ? (i % 5 == 1 ? 0 : 1 + int(grain(i, 90) > 8)) : 3;
+        for (int tree = 0; tree < count; ++tree) {
+            const auto at = mix(left[1], right[1], .13f + tree * .34f);
+            pine(b, at - Vec3{0, .6f, 0}, 4.5f + float(grain(i, tree)) * .22f, PineShade, false);
+        }
+    }
 }
 
 void roadFlare(Builder& b, float x, float y) {
@@ -2313,6 +3074,44 @@ void finalizeProceduralMesh(Mesh& mesh) {
     mesh.triangles.shrink_to_fit();
 }
 
+void buildScoutCargo(Mesh& mesh, uint16_t firstMat) {
+    const auto mat = [firstMat](Surface s) { return uint16_t(firstMat + s); };
+    MeshWriter w{mesh};
+    constexpr std::array<Vec3, 8> profile{{
+        {-.68f, 0, -.59f}, {.68f, 0, -.59f}, {.94f, 0, -.37f}, {.94f, 0, .37f},
+        {.68f, 0, .59f}, {-.68f, 0, .59f}, {-.94f, 0, .37f}, {-.94f, 0, -.37f}
+    }};
+    const auto at = [&](size_t i, float y, float span) { return profile[i] * span + Vec3{0, y, 0}; };
+    for (size_t i = 0; i < profile.size(); ++i) {
+        const size_t j = (i + 1) % profile.size();
+        const auto strip = [&](float bottom, float top, float lowSpan, float highSpan, Surface skin) {
+            w.quad(at(i, bottom, lowSpan), at(i, top, highSpan), at(j, top, highSpan), at(j, bottom, lowSpan), mat(skin));
+        };
+        strip(.07f, .23f, .82f, 1.f, CargoFrame);
+        strip(.23f, .68f, 1.f, 1.f, i % 2 ? CargoFrame : CargoInset);
+        strip(.68f, .9f, 1.f, .8f, CargoCeramic);
+        w.tri({0, .9f, 0}, at(j, .9f, .8f), at(i, .9f, .8f), mat(CargoInset));
+        w.tri({0, .07f, 0}, at(i, .07f, .82f), at(j, .07f, .82f), mat(AlienHull));
+    }
+    for (const float side : {-1.f, 1.f}) {
+        const float z = side * .59f;
+        const float outside = z + .014f * side;
+        w.box({-.49f, .28f, std::min(z, outside)}, {.49f, .62f, std::max(z, outside)}, mat(AlienHull));
+        const float panel = outside + .016f * side;
+        for (const float x : {-.32f, -.17f, -.02f}) {
+            w.box({x - .039f, .346f, std::min(outside, panel)},
+                  {x + .039f, .546f, std::max(outside, panel)}, mat(CargoTeal));
+        }
+        w.box({.14f, .36f, std::min(outside, panel)}, {.39f, .53f, std::max(outside, panel)}, mat(CargoAmber));
+    }
+    for (const float x : {-.41f, .41f})
+        w.box({x - .32f, 0, -.47f}, {x + .32f, .112f, .47f}, mat(CargoFrame));
+    for (const float x : {-.41f, .41f})
+        w.box({x - .054f, .898f, -.45f}, {x + .054f, .919f, .45f}, mat(CargoCeramic));
+    w.quad({-.27f, .919f, 0}, {0, .919f, .18f}, {.27f, .919f, 0}, {0, .919f, -.18f}, mat(CargoTeal));
+    finalizeProceduralMesh(mesh);
+}
+
 // Ground aliens face +z with their feet at y = 0.
 struct CreaturePose {
     float phase = 0;   // Lope cycle 0..1
@@ -2322,6 +3121,7 @@ struct CreaturePose {
     float writhe = 0;  // Tendril and tongue wave, radians
     float aim = 0;     // 0 = low-ready carry, 1 = raised two-hand ray gun aim
     float recoil = 0;  // 0..1 ray gun firing kickback
+    bool guard = false;
 };
 
 class CreatureWriter {
@@ -2366,7 +3166,7 @@ private:
     void loft(const Vec3* p, const float* ru, const float* rv, size_t n, int sides,
               Vec3 ref, uint16_t mat, bool capStart) {
         ++part;
-        std::array<Vec3, 10> angles{}, previous{}, current{};
+        std::array<Vec3, 12> angles{}, previous{}, current{};
         assert(n > 1 && sides >= 3 && size_t(sides) <= angles.size());
         for (int k = 0; k < sides; ++k) {
             const float a = 2 * pi * k / sides;
@@ -2425,7 +3225,7 @@ private:
 };
 
 Vec3 writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint16_t sinew, uint16_t tooth,
-                   uint16_t maw, uint16_t gum, uint16_t eye, bool armored) {
+                   uint16_t maw, uint16_t gum, uint16_t eye, bool armored, uint16_t emitterMetal, uint16_t emitterLens) {
     const float cycle = 2 * pi * q.phase;
     const Vec3 up{0, 1, 0}, side{1, 0, 0}, ahead{0, 0, 1};
 
@@ -2512,6 +3312,7 @@ Vec3 writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
     for (int l = 0; l < 2; ++l) {
         const auto& leg = legs[l];
         const float s = l == 0 ? -1.f : 1.f;
+        w.group = 2;
         w.tube({leg.hip + Vec3{0, .07f, 0}, leg.hip, (leg.hip + leg.knee) * .5f, leg.knee,
                 (leg.knee + leg.ankle) * .5f, leg.ankle},
                {.17f, .18f, .17f, .11f, .1f, .075f}, {.17f, .19f, .18f, .12f, .11f, .08f}, 6, ahead, skin);
@@ -2529,6 +3330,7 @@ Vec3 writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
             w.spike(root, root + Vec3{0, -.04f, .1f}, side, .015f, tooth);
         }
     }
+    w.group = 0;
 
     // Long, heavy arms: the right arm wields the alien ray gun (low-ready at idle/stride,
     // raised forward when aiming, kicking back on recoil), while the left arm balances or
@@ -2553,11 +3355,16 @@ Vec3 writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
             const Vec3 braceWrist = {.27f, hipY + .37f + .09f * q.recoil, .78f - .10f * q.recoil};
             elbow = freeElbow + (braceElbow - freeElbow) * q.aim;
             wrist = freeWrist + (braceWrist - freeWrist) * q.aim;
+            if (q.guard) {
+                elbow = enforcerGuardEmitter + Vec3{-.26f, -.15f, -.21f};
+                wrist = enforcerGuardEmitter + Vec3{.22f, .09f, -.05f};
+            }
         }
     };
     Vec3 grip{};
     for (int a = 0; a < 2; ++a) {
         const float s = a == 0 ? -1.f : 1.f;
+        w.group = armored && a == 0 ? 1 : 0;
         Vec3 shoulder, elbow, wrist;
         armJoints(a, shoulder, elbow, wrist);
         w.tube({shoulder, shoulder + (elbow - shoulder) * .45f, elbow, elbow + (wrist - elbow) * .4f, wrist},
@@ -2573,7 +3380,20 @@ Vec3 writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
             const Vec3 curl = dir * .12f + Vec3{0, -.06f - .015f * std::abs(c - 1.5f), 0} + across * (spread * .7f);
             w.spike(root, root + curl + dir * .08f + Vec3{0, -.06f, 0}, across, .02f, tooth);
         }
+        if (armored && a == 0) {
+            const Vec3 mount = elbow + (wrist - elbow) * .54f + Vec3{0, .02f, 0};
+            const Vec3 axis = q.guard ? ahead : normalized(Vec3{-.55f, .15f, 1.f});
+            w.tube({mount - axis * .06f, mount + axis * .058f, mount + axis * .114f},
+                   {.093f, .207f, .156f}, {.095f, .159f, .126f}, 5, up, emitterMetal);
+            w.tube({mount + axis * .106f, mount + axis * .147f, mount + axis * .155f},
+                   {.079f, .078f, 0}, {.062f, .061f, 0}, 5, up, emitterLens, false);
+        }
+        if (armored) {
+            const Vec3 mid = elbow + (wrist - elbow) * .35f + Vec3{s * .06f, .04f, 0};
+            w.spike(mid, mid + (elbow - wrist) * .55f + Vec3{s * .14f, .1f, 0}, up, .045f, tooth);
+        }
     }
+    w.group = 0;
 
     // Three rear feelers rise behind the carapace, leaving the shoulders as the silhouette.
     const struct { Vec3 root, dir, curl; float length; } tendrils[]{
@@ -2601,10 +3421,6 @@ Vec3 writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
             const Vec3 root{s * (.32f + .12f * float(k)), hipY + .84f - .05f * float(k), .08f - .08f * float(k)};
             w.spike(root, root + Vec3{s * (.16f + .06f * float(k)), .3f - .08f * float(k), -.12f}, ahead, .055f, tooth);
         }
-        Vec3 shoulder, elbow, wrist;
-        armJoints(a, shoulder, elbow, wrist);
-        const Vec3 mid = elbow + (wrist - elbow) * .35f + Vec3{s * .06f, .04f, 0};
-        w.spike(mid, mid + (elbow - wrist) * .55f + Vec3{s * .14f, .1f, 0}, up, .045f, tooth);
     }
     for (int k = 0; k < 4; ++k) {
         const Vec3 root{0, hipY + .3f + .14f * float(k), -.18f - .02f * float(k)};
@@ -2615,15 +3431,19 @@ Vec3 writeCreature(CreatureWriter& w, const CreaturePose& q, uint16_t skin, uint
 
 // Build the base mesh from the first pose and every pose as a position-only frame on its
 // topology. Writers emit vertices in the same order for every pose.
-template <typename Pose, typename Write>
-void buildPosedMesh(Mesh& base, std::vector<Mesh>& frames, const std::vector<Pose>& poses, Write write) {
+template <typename Pose, typename Frame, typename Write>
+void buildPosedMesh(Mesh& base, std::vector<Frame>& frames, const std::vector<Pose>& poses, Write write,
+                    bool keepGroups = false) {
     base = {};
     write(poses[0], base.vertices, &base.triangles);
     const size_t raw = base.vertices.size();
-    const auto remap = weld(base.vertices, [](const Vertex& v) {
-        return std::array{v.position.x, v.position.y, v.position.z, v.u, 0.f};
+    const auto remap = weld(base.vertices, [keepGroups](const Vertex& v) {
+        return std::array{v.position.x, v.position.y, v.position.z, v.u, keepGroups ? v.v : 0.f};
     });
-    for (auto& v : base.vertices) v.u = v.v = 0;
+    for (auto& v : base.vertices) {
+        v.u = 0;
+        if (!keepGroups) v.v = 0;
+    }
     Bounds bounds{base.vertices.front().position, base.vertices.front().position};
     for (const auto& v : base.vertices) {
         bounds.min = {std::min(bounds.min.x, v.position.x), std::min(bounds.min.y, v.position.y), std::min(bounds.min.z, v.position.z)};
@@ -2637,7 +3457,7 @@ void buildPosedMesh(Mesh& base, std::vector<Mesh>& frames, const std::vector<Pos
     base.chunks = {{bounds, 0, uint32_t(base.triangles.size())}};
     base.triangles.shrink_to_fit();
 
-    frames.assign(poses.size(), Mesh{});
+    frames.assign(poses.size(), Frame{});
     std::vector<Vertex> scratch;
     scratch.reserve(raw);
     auto& first = frames.front().posePositions;
@@ -2646,12 +3466,21 @@ void buildPosedMesh(Mesh& base, std::vector<Mesh>& frames, const std::vector<Pos
     for (size_t p = 1; p < poses.size(); ++p) {
         scratch.clear();
         write(poses[p], scratch, nullptr);
+        assert(scratch.size() == raw);
         auto& positions = frames[p].posePositions;
         positions.assign(base.vertices.size(), Vec3{});
         for (size_t i = 0; i < raw && i < scratch.size(); ++i) positions[remap[i]] = scratch[i].position;
-        positions.shrink_to_fit();
     }
 }
+
+#ifndef ESP_PLATFORM
+PoseRegion poseRegion(const Mesh& mesh, float group) {
+    const auto hasGroup = [group](const Vertex& v) { return v.v == group; };
+    const auto first = std::find_if(mesh.vertices.begin(), mesh.vertices.end(), hasGroup);
+    const auto last = std::find_if_not(first, mesh.vertices.end(), hasGroup);
+    return {size_t(first - mesh.vertices.begin()), size_t(last - first)};
+}
+#endif
 
 void buildCreature(Assets& assets, uint16_t firstMat) {
     const auto mat = [&](Surface s) { return uint16_t(firstMat + s); };
@@ -2671,16 +3500,41 @@ void buildCreature(Assets& assets, uint16_t firstMat) {
     for (int i = 0; i < alienRecoilPoses; ++i) {
         poses.push_back({0, false, 1.f - .3f * i, 1.f, 3.1f + 1.4f * i, 1.f, 1.f - .35f * i});
     }
-    for (const bool armored : {false, true}) {
-        buildPosedMesh(armored ? assets.alienEnforcer : assets.alienTrooper,
-                       armored ? assets.alienEnforcerPoses : assets.alienTrooperPoses, poses,
-                       [&](const CreaturePose& pose, std::vector<Vertex>& vertices, std::vector<Triangle>* triangles) {
-            CreatureWriter w(vertices, triangles);
-            assets.alienGunSockets[size_t(&pose - poses.data())] =
-                writeCreature(w, pose, mat(AlienSkin), mat(AlienSinew), mat(AlienTooth), mat(AlienMaw), mat(AlienGum),
-                              mat(AlienGlow), armored);
-        });
-    }
+    const auto write = [&](const CreaturePose& pose, std::vector<Vertex>& vertices, std::vector<Triangle>* triangles,
+                           bool armored) {
+        CreatureWriter w(vertices, triangles);
+        return writeCreature(w, pose, mat(AlienSkin), mat(AlienSinew), mat(AlienTooth), mat(AlienMaw), mat(AlienGum),
+                             mat(AlienGlow), armored, mat(ScoutPearl), mat(RayCore));
+    };
+    buildPosedMesh(assets.alienTrooper, assets.alienTrooperPoses, poses,
+                   [&](const CreaturePose& pose, std::vector<Vertex>& vertices, std::vector<Triangle>* triangles) {
+        assets.alienGunSockets[size_t(&pose - poses.data())] = write(pose, vertices, triangles, false);
+    }, true);
+#ifndef ESP_PLATFORM
+    assets.alienLegs[0] = poseRegion(assets.alienTrooper, 2.f);
+#endif
+    for (auto& v : assets.alienTrooper.vertices) v.v = 0.f;
+    // Weld the extra pose with the usual frames, then keep just the braced arm.
+    CreaturePose braced = poses.front();
+    braced.guard = true;
+    poses.push_back(braced);
+    auto& mesh = assets.alienEnforcer;
+    auto& frames = assets.alienEnforcerPoses;
+    buildPosedMesh(mesh, frames, poses,
+                   [&](const CreaturePose& pose, std::vector<Vertex>& vertices, std::vector<Triangle>* triangles) {
+        write(pose, vertices, triangles, true);
+    }, true);
+    const auto arm = std::find_if(mesh.vertices.begin(), mesh.vertices.end(), [](Vertex v) { return v.v == 1.f; });
+    const auto end = std::find_if(arm, mesh.vertices.end(), [](Vertex v) { return v.v != 1.f; });
+    const size_t first = size_t(arm - mesh.vertices.begin());
+    const auto& positions = frames.back().posePositions;
+    assets.alienGuardArmFirst = first;
+    assets.alienGuardArm.assign(positions.begin() + first, positions.begin() + first + (end - arm));
+#ifndef ESP_PLATFORM
+    assets.alienLegs[1] = poseRegion(mesh, 2.f);
+#endif
+    for (auto& v : mesh.vertices) v.v = 0;
+    frames.pop_back();
 }
 
 // Retro-futuristic alien ray guns: sleek bio-metallic receiver, glowing plasma capacitor bulb,
@@ -2811,12 +3665,15 @@ struct CivilianPose {
     float shiver = 0;  // Cower tremble 0..1
 };
 
-void writeCivilian(CreatureWriter& w, const CivilianPose& q, uint16_t firstMat) {
-    const auto mat = [&](Surface s) { return uint16_t(firstMat + s); };
-    const auto skin = mat(CivSkin), hair = mat(CivHair), top = mat(CivTop), pants = mat(CivPants), shoes = mat(CivShoes);
-    const Vec3 up{0, 1, 0}, side{1, 0, 0}, ahead{0, 0, 1};
-    struct { Vec3 hip, knee, ankle, toe, shoulder, elbow, wrist, hand; } limb[2];
+struct HumanPose {
+    struct Limb { Vec3 hip, knee, ankle, toe, shoulder, elbow, wrist, hand; };
+    std::array<Limb, 2> limb;
     Vec3 pelvis, waist, chest, shoulders, neck, head, headUp;
+};
+
+HumanPose civilianRig(const CivilianPose& q) {
+    HumanPose pose{};
+    auto& [limb, pelvis, waist, chest, shoulders, neck, head, headUp] = pose;
     if (q.mode == CivilianMode::Cower) {
         const float t = q.shiver * .025f;
         for (int l = 0; l < 2; ++l) {
@@ -2882,7 +3739,15 @@ void writeCivilian(CreatureWriter& w, const CivilianPose& q, uint16_t firstMat) 
         head = {0, hipY + .76f + breath, .04f + lean * 1.1f};
         headUp = normalized(Vec3{run ? 0.f : q.shiver * .08f, 1, lean * .78f});
     }
+    return pose;
+}
 
+void writeCivilian(CreatureWriter& w, const CivilianPose& q, uint16_t firstMat) {
+    const auto mat = [&](Surface s) { return uint16_t(firstMat + s); };
+    const auto skin = mat(CivSkin), hair = mat(CivHair), top = mat(CivTop), pants = mat(CivPants), shoes = mat(CivShoes);
+    const Vec3 up{0, 1, 0}, side{1, 0, 0}, ahead{0, 0, 1};
+    const auto pose = civilianRig(q);
+    const auto& [limb, pelvis, waist, chest, shoulders, neck, head, headUp] = pose;
     // Torso in the top colour, hips in the trouser colour.
     w.tube({pelvis + Vec3{0, -.04f, 0}, pelvis, waist}, {.16f, .17f, .15f}, {.1f, .11f, .1f}, 8, side, pants);
     w.tube({waist, chest, shoulders, neck}, {.155f, .19f, .2f, .07f}, {.1f, .12f, .11f, .065f}, 8, side, top);
@@ -2890,10 +3755,10 @@ void writeCivilian(CreatureWriter& w, const CivilianPose& q, uint16_t firstMat) 
     // Brow, cheek and jaw planes give a recognizable face at the handheld resolution.
     const Vec3 face = normalized(cross(side, headUp));
     const Vec3 faceSide = cross(headUp, face);
-    const auto facial = [&](float x, float y, float z) { return head + faceSide * x + headUp * y + face * z; };
+    const auto facial = [&](float x, float y, float z) { return pose.head + faceSide * x + pose.headUp * y + face * z; };
     const auto facePatch = [&](float x, float y, float z, float hw, float hh, uint16_t material) {
         w.quad(facial(x - hw, y - hh, z), facial(x + hw, y - hh, z), facial(x + hw, y + hh, z),
-               facial(x - hw, y + hh, z), head, material);
+               facial(x - hw, y + hh, z), pose.head, material);
     };
     w.tube({facial(0, -.107f, .016f), facial(0, -.056f, .006f), facial(0, .029f, -.002f), facial(0, .104f, -.01f)},
            {.063f, .085f, .083f, 0}, {.054f, .086f, .089f, 0}, 8, faceSide, skin);
@@ -2949,6 +3814,10 @@ void buildCivilian(Assets& assets, uint16_t firstMat) {
         writeCivilian(w, pose, firstMat);
     });
 }
+
+#ifndef ESP_PLATFORM
+#include "campaign_art.inc"
+#endif
 
 // A utility helicopter in two pieces: the airframe (groups 0 and 1, cabin and tail) and the
 // main rotor (group 2, centred on the mast head at y = 0). Built facing +z, wheels at y = 0.
@@ -3503,7 +4372,7 @@ void townCombatProps(Builder& b) {
     // West Timberline Lane (Walt Marsh's district): Ship Box forestry box truck, abandoned sedan,
     // crashed pod, supply crates, barrels, and sunset barricades.
     crashedPod(b, -225, 420, true);
-    coverWall(-285, 248, -272, 298, 1.15f);
+    coverWall(-113, -130, -100, -80, 1.15f);
     coverWall(-265, 96, -252, 146, 1.10f);
     shipTruck(-345, 151, pi * 0.5f - 0.10f, {0, 0, -1}, {-1, 0, 0}, rgb(75, 119, 87), rgb(147, 151, 103));
     shipCar(-352, 330, pi * 0.5f + 0.20f, rgb(99, 143, 76));
@@ -3512,7 +4381,7 @@ void townCombatProps(Builder& b) {
     barrelAt(-292, 308);
     crateAt(-264, 78, -0.22f, 0.85f);
     barrelAt(-254, 64);
-    roadFlare(b, -295, 242);
+    roadFlare(b, -123, -136);
 }
 
 // High-detail town dressing emitted after beginDecoration() so grass tufts, lamp poles, fences,
@@ -3795,6 +4664,7 @@ void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
 
     buildCreature(assets, firstMat);
     buildRayGuns(assets, firstMat);
+    buildScoutCargo(assets.scoutCargoCrate, firstMat);
     buildCivilian(assets, firstMat);
     buildTransport(assets, firstMat);
     buildOperationMeshes(assets, firstMat);
@@ -3815,11 +4685,11 @@ void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
                  {.06f, .37f, .33f, 0}, {.06f, .37f, .33f, 0}, 6, {1, 0, 0}, core);
     finalizeProceduralMesh(assets.alienUplinkCore);
 
-    // Hovering alien scout drone (centered around y = 0, ~0.9m span, facing +z).
+    // A deep hull and wide luminous vanes stay readable from below and through dusk fog.
     assets.alienDrone = {};
     MeshWriter d{assets.alienDrone};
     constexpr int sides = 8;
-    constexpr float r = .44f, hTop = .20f, hBot = -.18f;
+    constexpr float r = .52f, hTop = .35f, hBot = -.32f;
     for (int i = 0; i < sides; ++i) {
         const float a0 = 2 * pi * i / sides, a1 = 2 * pi * (i + 1) / sides;
         const Vec3 e0{std::sin(a0) * r, 0, std::cos(a0) * r};
@@ -3829,21 +4699,23 @@ void buildAlienMeshes(Assets& assets, uint16_t firstMat) {
     }
     // Swept stabilizers with luminous vanes visible from below.
     for (const float s : {-1.f, 1.f}) {
-        const Vec3 shoulder{s * .26f, .03f, .19f}, corner{s * .69f, .055f, -.32f},
-                   rear{s * .40f, -.02f, -.31f}, keel{s * .33f, -.13f, .01f};
+        const Vec3 shoulder{s * .31f, .07f, .22f}, corner{s * .84f, .06f, -.31f},
+                   rear{s * .46f, .015f, -.40f}, keel{s * .37f, -.19f, .02f};
         d.tri(shoulder, corner, rear, trim);
         d.tri(shoulder, keel, corner, hull);
         d.tri(corner, keel, rear, hull);
-        d.tri(keel + Vec3{0, -.009f, .051f}, corner + Vec3{-s * .06f, -.025f, .005f},
-              keel + Vec3{s * .09f, .005f, -.087f}, glow);
+        d.tri(keel + Vec3{0, -.012f, .01f}, corner + Vec3{-s * .04f, -.026f, .012f},
+              rear + Vec3{s * .06f, -.091f, .034f}, glow);
     }
     // Recessed scanner with a bright inner lens and an underside plasma emitter.
-    d.box({-.19f, -.079f, .37f}, {.19f, .09f, .46f}, hull);
-    d.quad({-.14f, -.039f, .465f}, {.14f, -.039f, .465f}, {.082f, .058f, .47f},
-           {-.082f, .058f, .47f}, glow);
-    d.quad({-.062f, -.014f, .477f}, {.062f, -.014f, .477f}, {.056f, .031f, .477f},
-           {-.056f, .031f, .477f}, uint16_t(firstMat + RayCore));
-    d.box({-.11f, -.22f, -.11f}, {.11f, -.16f, .11f}, core);
+    d.box({-.25f, -.13f, .43f}, {.25f, .13f, .58f}, hull);
+    d.quad({-.21f, -.091f, .59f}, {.21f, -.091f, .59f}, {.15f, .092f, .59f},
+           {-.15f, .092f, .59f}, glow);
+    d.quad({-.09f, -.04f, .595f}, {.09f, -.04f, .595f}, {.078f, .05f, .595f},
+           {-.078f, .05f, .595f}, uint16_t(firstMat + RayCore));
+    d.box({-.19f, -.37f, -.21f}, {.19f, -.23f, .22f}, glow);
+    d.quad({-.11f, -.372f, -.15f}, {-.11f, -.372f, .16f}, {.11f, -.372f, .16f},
+           {.11f, -.372f, -.15f}, uint16_t(firstMat + RayCore));
     finalizeProceduralMesh(assets.alienDrone);
     buildFleet(assets);
 }
@@ -4138,8 +5010,16 @@ void optimizeShipBoxWorld(Assets& assets) {
     world = std::move(next);
 }
 
-void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
-    if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == mode) return;
+void buildBriarHouse(Assets& assets, BriarHouseMode mode, CampaignArt art) {
+    const bool invasion = mode == BriarHouseMode::Invasion;
+#ifndef ESP_PLATFORM
+    const bool desktopArt = invasion && art == CampaignArt::Desktop;
+    const bool sameArt = assets.hasDesktopCampaignArt() == desktopArt;
+#else
+    (void)art;
+    constexpr bool desktopArt = false, sameArt = true;
+#endif
+    if (assets.arena == Arena::BriarHouse && assets.briarHouseMode == mode && sameArt) return;
     const uint64_t shared = assets.residentBytes - std::min(assets.residentBytes, arenaBytes(assets));
     if (assets.arena == Arena::ShipBox) {
         assets.briarBaseline = {assets.materials.size(), assets.textures.size(), assets.audio.size()};
@@ -4150,6 +5030,8 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
         assets.textures.resize(assets.briarBaseline.textures);
         assets.audio.resize(assets.briarBaseline.audio);
     }
+    assets.timberline.reset();
+    assets.scoutInterior.reset();
     assets.propInstances.clear();
     assets.world = {};
     assets.shotVertices = decltype(assets.shotVertices){};
@@ -4165,6 +5047,8 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     assets.alienTrooperPoses.clear();
     assets.alienEnforcer = {};
     assets.alienEnforcerPoses.clear();
+    assets.alienGuardArm = std::vector<Vec3>{};
+    assets.alienGuardArmFirst = 0;
     assets.alienRayGun = {};
     assets.alienRayRings = {};
     assets.alienHeavyRayGun = {};
@@ -4172,19 +5056,33 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     assets.alienGunSockets = {};
     assets.alienUplink = {};
     assets.alienUplinkCore = {};
+    assets.scoutCargoCrate = {};
     assets.relayTerminal = {};
     assets.civilianMesh = {};
     assets.civilianPoses.clear();
+#ifndef ESP_PLATFORM
+    assets.campaignPeople = {};
+    assets.alienLegs = {};
+    assets.desktopScout = {};
+    assets.desktopScoutGear = {};
+    assets.desktopAttackDrone = {};
+    assets.desktopJammer = {};
+    assets.desktopDusk = {};
+    assets.desktopTimberlineSky = {};
+#endif
     assets.transportHelo = {};
     assets.transportRotor = {};
     assets.smoke.clear();
     assets.mist.clear();
+    assets.hillside.clear();
+    assets.hillside.shrink_to_fit();
     assets.fires.clear();
     assets.roadFlares.clear();
     assets.alienDrone = {};
     for (auto& craft : assets.alienFleet) craft = {};
     assets.commanderUniform.clear();
     assets.enforcerUniform.clear();
+    assets.thermalUniform.clear();
     for (auto& u : assets.civilianUniforms) u.clear();
     assets.arena = Arena::BriarHouse;
     assets.briarHouseMode = mode;
@@ -4202,7 +5100,7 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     }};
 
     const uint16_t briarFirstMaterial = uint16_t(assets.materials.size());
-    Builder builder(assets, mode == BriarHouseMode::Invasion);
+    Builder builder(assets, invasion, desktopArt);
     grounds(builder);
     shell(builder);
     hallStructure(builder);
@@ -4235,12 +5133,51 @@ void buildBriarHouse(Assets& assets, BriarHouseMode mode) {
     }
     builder.finish();
     assets.world.triangles.shrink_to_fit();
-    navigation(assets);
-    if (mode == BriarHouseMode::Invasion) {
+    const bool campaign = mode == BriarHouseMode::Invasion;
+    navigation(assets, campaign ? NavGrid{79, 53, 20, -440, -330} : NavGrid{62, 49, 12, -54, -79},
+               campaign ? position(368, 305) : assets.spawns[0].position);
+    if (campaign) {
+        assets.navNodes.shrink_to_fit();
+        assets.navEdges.shrink_to_fit();
+        auto remote = std::make_shared<ArenaGeometry>();
+        remote->extent = mission_detail::timberline::extent;
+        remote->spawns[0] = {mission_detail::timberline::dismount, 0};
+        builder.beginMap(*remote);
+        timberlineBasin(builder);
+        builder.finish();
+        remote->world.triangles.shrink_to_fit();
+        navigation(*remote, {39, 98, 30, -254, -1777.5f}, mission_detail::timberline::dismount);
+        remote->navNodes.shrink_to_fit();
+        remote->navEdges.shrink_to_fit();
+        assets.timberline = std::move(remote);
+        auto scout = std::make_shared<ArenaGeometry>();
+        scout->extent = {19, 31};
+        scout->spawns[0] = {mission_detail::scout::entry, 0};
+        builder.beginMap(*scout);
+        scoutInterior(builder);
+        builder.finish();
+        navigation(*scout, {28, 44, 28, -48, -371.5f}, mission_detail::scout::entry);
+        scout->world.triangles.shrink_to_fit();
+        scout->navNodes.shrink_to_fit();
+        scout->navEdges.shrink_to_fit();
+        assets.scoutInterior = std::move(scout);
         buildAlienMeshes(assets, briarFirstMaterial);
+#ifndef ESP_PLATFORM
+        if (desktopArt) {
+            buildCampaignPeople(assets);
+            buildDesktopScout(assets);
+            buildDesktopSkies(assets);
+            buildDesktopDrones(assets);
+        }
+#endif
         buildMissionUniforms(assets, briarFirstMaterial);
+        const auto signalMaterial = uint16_t(assets.materials.size());
+        assets.materials.push_back({rgb(255, 0, 255), -1, 255, true, true, 7});
+        assets.thermalUniform.assign(assets.materials.size(), signalMaterial);
         synthesizeMissionAudio(assets);
     }
+    assets.materials.shrink_to_fit();
+    assets.textures.shrink_to_fit();
     assets.residentBytes = shared + arenaBytes(assets);
     assets.peakBytes = std::max(assets.peakBytes, assets.residentBytes);
 }

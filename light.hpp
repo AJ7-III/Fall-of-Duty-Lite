@@ -33,7 +33,8 @@ public:
     static constexpr int size = 256, levels = 5;
     static constexpr uint16_t noPatch = 0xffff;
 
-    void bake(const Assets& assets);
+    void bake(const Assets& assets) { bake(assets, assets); }
+    void bake(const Assets& assets, const ArenaGeometry& geometry);
 
     // Express the arena's lighting in the moving mesh's coordinate space.
     SurfaceLight moving(Vec3 sunDir, Vec3 upDir) const {

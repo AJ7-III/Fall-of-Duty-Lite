@@ -33,15 +33,16 @@ constexpr Survivor family[3]{
      CampaignLine::BenAskAboutNora, CampaignLine::BenNoraIsSafe, CampaignLine::BenWhereIsNora, CampaignLine::DeltaBenLost},
     {535, -215, pi, "NORA / NORTH VALLEY", CampaignLine::DeltaFindNora, CampaignLine::DeltaNoraUnderFire,
      CampaignLine::NoraRoofArray, CampaignLine::NoraRoofArray, CampaignLine::NoraRoofArray, CampaignLine::DeltaNoraLost},
-    {-298, 252, pi / 2, "WALT / WEST TIMBERLINE", CampaignLine::DeltaFindWalt, CampaignLine::DeltaWaltUnderFire,
+    {-126, -126, pi / 2, "WALT / WEST TIMBERLINE", CampaignLine::DeltaFindWalt, CampaignLine::DeltaWaltUnderFire,
      CampaignLine::WaltAskAboutNora, CampaignLine::WaltNoraIsSafe, CampaignLine::WaltWhereIsNora, CampaignLine::DeltaWaltLost},
 };
 constexpr int ben = 0;
 constexpr int nora = 1;
 constexpr int walt = 2;
-constexpr Vec3 waltPickupApproach = mapPoint(-250, 225);
-constexpr Vec3 waltCoverRoute[]{mapPoint(-298, 221), mapPoint(-245, 215), mapPoint(-240, 124)};
-constexpr Vec3 districtApproach[]{mapPoint(908, 489), mapPoint(500, -225), mapPoint(-282, 280)};
+constexpr Vec3 waltPickupApproach = mapPoint(-78, -153);
+constexpr Vec3 waltCoverRoute[]{mapPoint(-126, -157), mapPoint(-73, -135), mapPoint(78, -130)};
+constexpr Vec3 rescueRestart = mapPoint(368, 565);
+constexpr Vec3 districtApproach[]{mapPoint(908, 489), mapPoint(500, -225), mapPoint(-110, -98)};
 
 struct Patrol {
     MissionRole role;
@@ -52,41 +53,41 @@ struct Patrol {
 constexpr Patrol roadPatrol[]{
     {MissionRole::AlienTrooper, mapPoint(460, 668), -.2f},
     {MissionRole::AlienTrooper, mapPoint(272, 672), .35f},
-    {MissionRole::AlienDrone, mapPoint(378, 638, 3.4f)},
+    {MissionRole::AlienDrone, mapPoint(407, 640, 3.4f)},
 };
 constexpr Patrol districtPatrol[][2]{
     {{MissionRole::AlienTrooper, mapPoint(975, 305), pi},
      {MissionRole::AlienTrooper, mapPoint(845, 555), .4f}},
     {{MissionRole::AlienTrooper, mapPoint(655, -225), -pi / 2, 1},
-     {MissionRole::AlienDrone, mapPoint(565, -248, 2.4f), -pi / 2}},
-    {{MissionRole::AlienDrone, mapPoint(-338, 260, 3.4f), pi / 2},
-     {MissionRole::AlienTrooper, mapPoint(-318, 395)}},
+     {MissionRole::AlienDrone, mapPoint(550, -249, 2.4f), -pi / 2}},
+    {{MissionRole::AlienDrone, mapPoint(-166, -183, 3.4f), pi / 2},
+     {MissionRole::AlienTrooper, mapPoint(-146, 17)}},
 };
 constexpr Vec3 breachFlank[]{mapPoint(625, 645), mapPoint(145, 645)};
-constexpr Vec3 uplinkGuard[]{mapPoint(435, -246, 3.f), mapPoint(514, -248)};
+constexpr double dropWarning = .85;
 constexpr Patrol lzVanguard[]{
-    {MissionRole::AlienTrooper, mapPoint(40, -225), 0.f, 1},
-    {MissionRole::AlienTrooper, mapPoint(395, -245)},
-    {MissionRole::AlienDrone, mapPoint(210, -268, 2.5f)},
+    {MissionRole::AlienTrooper, mapPoint(-42, -225), 0.f, 1},
+    {MissionRole::AlienTrooper, mapPoint(405, -233)},
+    {MissionRole::AlienDrone, mapPoint(250, -385, 2.5f)},
     {MissionRole::AlienTrooper, mapPoint(-135, -192)},
 };
 constexpr Vec3 lzGroundDrops[]{
-    mapPoint(-150, -195), mapPoint(38, -242), mapPoint(388, -258),
-    mapPoint(565, -240), mapPoint(215, -112), mapPoint(-255, -75),
+    mapPoint(-150, -195), mapPoint(-38, -242), mapPoint(455, -255),
+    mapPoint(545, -260), mapPoint(215, -112), mapPoint(-255, -75),
 };
 constexpr Vec3 lzDroneDrops[]{
-    mapPoint(-140, -180, 2.3f), mapPoint(420, -235, 2.3f),
-    mapPoint(225, -265, 2.4f), mapPoint(560, -210, 2.3f),
+    mapPoint(-138, -199, 2.3f), mapPoint(420, -235, 2.3f),
+    mapPoint(225, -265, 2.4f), mapPoint(558, -265, 2.3f),
 };
 
-// North Avenue: Nora's dish pulses on a timer and pulls the shield drone's attention for a moment.
-constexpr double dishPulseInterval = 7.0, dishDistraction = 2.2;
+// On North Avenue, each pulse from Nora's dish briefly opens the Enforcer's frontal guard.
+constexpr double dishPulseInterval = 7.0, dishGuardOpening = 2.2;
 // How far away Ben can see the player wave him over, and how far a watcher can see a survivor break cover.
 constexpr float benSignalRange = 26.f, watcherRange = 30.f;
 constexpr double signalCooldown = 2.5;
 
 constexpr double exfilArrive = 4.4, exfilClimb = 3.2, liftDuration = 5.8;
-constexpr Vec3 exfilHover = mapPoint(210, -235, 2.4f), exfilApproach = mapPoint(60, -560, 19.f);
-constexpr Vec3 exfilAway = mapPoint(420, -680, 34.f), exfilEye = mapPoint(268, -162, 1.75f);
+constexpr Vec3 exfilHover = mapPoint(210, -235, .12f), exfilApproach = mapPoint(870, -450, 21.f);
+constexpr Vec3 exfilAway = mapPoint(-530, -480, 24.f), exfilEye = mapPoint(268, -162, 1.75f);
 
 } // namespace fod::mission_detail

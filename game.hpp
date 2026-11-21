@@ -99,7 +99,7 @@ struct Snapshot {
     Device device = Device::None;
     bool airstrikeReady = false, apacheReady = false, apacheActive = false;
     bool radarContact = false, strikeInbound = false;
-    bool lethalMarker = false, headshot = false;
+    bool lethalMarker = false, headshot = false, guardHit = false;
     bool emptyReload = false;
     bool dead = false, grounded = true, crouch = false, prone = false, sprint = false, alternateRival = false;
     Actor secondRival{};
@@ -112,6 +112,8 @@ struct Snapshot {
 #ifdef FOD_LOCAL_DUEL
     float rivalHeightScale = 1.f;
     bool localDuel = false;
+    int8_t campaignSeat = -1;
+    bool stabilizingScout = false;
 #endif
 
     int leadingRivalScore() const { return rivalScore > secondRivalScore ? rivalScore : secondRivalScore; }
@@ -148,7 +150,9 @@ public:
     bool advanceCampaign(uint32_t seed, int difficulty);
     void startExtractionReplay(uint32_t seed, int difficulty);
     // Begin a later campaign mission directly, with Nora alive, for replays and qualification.
-    void startChapterReplay(uint32_t seed, int difficulty, MissionChapter chapter);
+    void startChapterReplay(uint32_t seed, int difficulty, MissionChapter chapter, bool noraAlive = true);
+    void startArrayGroundReplay(uint32_t seed, int difficulty);
+    void startScoutReplay(uint32_t seed, int difficulty);
     // Begin The Array at the rear door with the mothership's beam under the player's pointer.
     void startFinaleReplay(uint32_t seed, int difficulty);
     bool isMission() const;
@@ -164,6 +168,10 @@ public:
     void startLocalDuel(uint32_t seed);
     void stepLocalDuel(std::array<Input, 2> inputs);
     void resumeLocalDuel();
+    void startLocalCampaign(uint32_t seed, int difficulty, MissionChapter chapter);
+    void continueLocalCampaign(uint32_t seed, int difficulty);
+    void stepLocalCampaign(std::array<Input, 2> inputs);
+    void resumeLocalCampaign(const std::array<Input, 2>& inputs);
     const Snapshot& localView(int slot) const;
     // Use the player-side fields of each fixture after starting a local duel.
     void setupLocalDuelFixture(const std::array<Fixture, 2>& fixtures);

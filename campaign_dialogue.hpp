@@ -9,6 +9,7 @@ enum class CampaignLine : uint8_t {
     None,
 #define CAMPAIGN_LINE(id, speaker, text, profile) id,
 #include "campaign_dialogue.inc"
+#include "scout_dialogue.inc"
 #undef CAMPAIGN_LINE
     Count,
 };
@@ -24,6 +25,7 @@ inline constexpr CampaignDialogue campaignDialogue[] = {
     {"", ""},
 #define CAMPAIGN_LINE(id, speaker, text, profile) {speaker, text},
 #include "campaign_dialogue.inc"
+#include "scout_dialogue.inc"
 #undef CAMPAIGN_LINE
 };
 

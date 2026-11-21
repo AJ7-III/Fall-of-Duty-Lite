@@ -62,14 +62,25 @@ inline Vec3 silhouette(Vec3 from, const BotTarget& target, int i) {
 
 class Navigation {
 public:
-    explicit Navigation(const Assets& assets) : assets_(assets), size_(assets.navNodes.size()), g_(size_), f_(size_),
-        parent_(size_), state_(size_), heap_(size_), heapPosition_(size_),
-        orderedByX_(std::is_sorted(assets.navNodes.begin(), assets.navNodes.end(),
-                                  [](const NavNode& a, const NavNode& b) { return a.position.x < b.position.x; })) {}
+    explicit Navigation(const ArenaGeometry& geometry) { useGeometry(geometry); }
 
-    bool valid(int n) const { return n >= 0 && n < int(size_) && assets_.navNodes[n].walkable; }
+    void useGeometry(const ArenaGeometry& geometry) {
+        if (geometry_ == &geometry) return;
+        geometry_ = &geometry;
+        size_ = geometry.navNodes.size();
+        g_.resize(size_);
+        f_.resize(size_);
+        parent_.resize(size_);
+        state_.resize(size_);
+        heap_.resize(size_);
+        heapPosition_.resize(size_);
+        orderedByX_ = std::is_sorted(geometry.navNodes.begin(), geometry.navNodes.end(),
+            [](const NavNode& a, const NavNode& b) { return a.position.x < b.position.x; });
+    }
+
+    bool valid(int n) const { return n >= 0 && n < int(size_) && geometry_->navNodes[n].walkable; }
     int size() const { return int(size_); }
-    const NavNode& node(int i) const { return assets_.navNodes[i]; }
+    const NavNode& node(int i) const { return geometry_->navNodes[i]; }
 
     int nearest(Vec3 p) const {
         constexpr int side = 26;
@@ -134,7 +145,7 @@ public:
             }
             const auto& from = node(here);
             for (uint32_t i = from.first; i < from.first + from.count; ++i) {
-                const auto& edge = assets_.navEdges[i];
+                const auto& edge = geometry_->navEdges[i];
                 const int to = int(edge.to);
                 if (state_[to] == 2) continue;
                 const double cost = double(g_[here]) + edgeCost(edge.cost);
@@ -156,7 +167,7 @@ public:
 private:
     static constexpr double step = 1.2;
     static constexpr double diagonal = step * 1.4142135623730951;
-    const Assets& assets_;
+    const ArenaGeometry* geometry_ = nullptr;
     size_t size_;
     std::vector<float> g_, f_;
     std::vector<int> parent_;
@@ -166,7 +177,7 @@ private:
     int used_ = 0;
 
     int nearestInColumns(Vec3 p) const {
-        const auto& nodes = assets_.navNodes;
+        const auto& nodes = geometry_->navNodes;
         const auto split = std::lower_bound(nodes.begin(), nodes.end(), p.x,
                                             [](const NavNode& n, float x) { return n.position.x < x; });
         const int first = int(split - nodes.begin());

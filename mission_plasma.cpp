@@ -16,7 +16,7 @@ void MissionController::launchPlasma(Vec3 origin, Vec3 dir, bool charged, float 
         // The world is static apart from glass. Cache the first obstacle so flying shots only
         // check moving actors each tick. Trace through the barrel too when the gun is against cover.
         const Vec3 bore = origin - dir * barrel;
-        auto obstruction = world_.shot(bore, dir, snap.brokenGlass);
+        auto obstruction = world_.missionShot(bore, dir, snap.brokenGlass);
         obstruction.distance -= barrel;
         cloud = {origin, dir, plasmaRadius * (charged ? 1.24f : 1.f), charged};
         plasmaFlights_[i] = {obstruction, range, damage, ally};
@@ -24,19 +24,20 @@ void MissionController::launchPlasma(Vec3 origin, Vec3 dir, bool charged, float 
     }
 }
 
-void MissionController::updatePlasma(Snapshot& snap, float dt, MissionHost& host) {
+void MissionController::updatePlasma(Snapshot& snap, const Snapshot* partner, float dt, MissionHost& host) {
+    constexpr int playerTarget = -1, noTarget = -2, partnerTarget = -3;
     for (size_t i = 0; i < state_.plasma.size(); ++i) {
         auto& cloud = state_.plasma[i];
         if (cloud.radius == 0.f) continue;
         auto& flight = plasmaFlights_[i];
         const int glass = flight.obstruction.glass;
         if (glass >= 0 && glass < 64 && (snap.brokenGlass & (uint64_t(1) << glass))) {
-            flight.obstruction = world_.shot(cloud.position, cloud.direction, snap.brokenGlass);
+            flight.obstruction = world_.missionShot(cloud.position, cloud.direction, snap.brokenGlass);
         }
         const float step = std::min(flight.remaining, (cloud.charged ? 34.f : 28.f) * dt);
         const float wall = flight.obstruction.hit ? flight.obstruction.distance : infinity;
         float distance = std::min(step, wall);
-        int target = -2;
+        int target = noTarget;
         const auto test = [&](int slot, Vec3 feet, float radius, float height) {
             const Vec3 bottom = feet - Vec3{0, cloud.radius, 0};
             const float width = radius + cloud.radius, span = height + 2.f * cloud.radius;
@@ -48,22 +49,26 @@ void MissionController::updatePlasma(Snapshot& snap, float dt, MissionHost& host
                 distance = hit;
             }
         };
-        if (flight.damage > 0.f && !snap.dead) test(-1, snap.player.position, .40f, snap.eyeHeight + .15f);
+        if (flight.damage > 0.f) {
+            if (!snap.dead) test(playerTarget, snap.player.position, .40f, snap.eyeHeight + .15f);
+            if (partner && !partner->dead) test(partnerTarget, partner->player.position, .40f, partner->eyeHeight + .15f);
+        }
         if (flight.ally >= 0 && !agents_[flight.ally].isDead()) {
             const auto& ally = agents_[flight.ally];
             test(flight.ally, ally.actor.position, .38f, flight.ally == 0 ? 1.85f : 1.12f);
         }
         const Vec3 position = cloud.position + cloud.direction * distance;
-        if (target != -2 || wall <= step || step == flight.remaining) {
+        if (target != noTarget || wall <= step || step == flight.remaining) {
             // Pull a wall impact slightly forward so its soft particles survive depth testing.
-            const Vec3 flash = target == -2 && wall <= step ? position - cloud.direction * .06f : position;
+            const Vec3 flash = target == noTarget && wall <= step ? position - cloud.direction * .06f : position;
             addTracer(flash, flash - cloud.direction, cloud.charged ? chargedPlasmaTint : plasmaImpactColor,
                       TracerStyle::PlasmaImpact, cloud.charged ? 1.35f : 1.f);
-            if (target == -1) {
-                hurtPlayer(flight.damage, position - cloud.direction, snap, host);
+            if (target == playerTarget || target == partnerTarget) {
+                const bool hitPartner = target == partnerTarget;
+                hurtPlayer(flight.damage, position - cloud.direction, hitPartner ? *partner : snap, host, hitPartner);
             } else if (target > 0) {
                 damageAgent(target, flight.damage * .7f, false, false, snap, host);
-            } else if (target == -2 && wall <= step && flight.obstruction.glass >= 0) {
+            } else if (target == noTarget && wall <= step && flight.obstruction.glass >= 0) {
                 host.hitWorld(flight.obstruction, position);
             }
             cloud.radius = 0.f;

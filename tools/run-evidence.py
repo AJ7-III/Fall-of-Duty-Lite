@@ -18,6 +18,7 @@ def check_campaign(scene, start, ticks):
         "timberline": (10, range(0, 4)),
         "array": (10, range(4, 10)),
         "array-finale": (10, range(7, 10)),
+        "scout": (10, range(14, 23)),
     }[start]
     valid = mission[0]["phase"] == initial_phase
     if stages is not None:
@@ -34,6 +35,9 @@ def check_campaign(scene, start, ticks):
     elif scene == "briar-finale":
         valid = (valid and start == "array-finale" and phases == [10] and {m["stage"] for m in mission} == {7}
                  and any(m["dish"] for m in mission) and max(m["aliens"] for m in mission) >= 2)
+    elif scene == "scout-takeover":
+        valid = (valid and start == "scout" and phases == [8, 10] and {m["stage"] for m in mission} == set(stages)
+                 and any(m["dish"] for m in mission) and mission[-1]["stage"] == 22)
     peak_plasma = max(sample["plasma"] for sample in mission)
     if scene in {"briar-breakout", "briar-landing-zone", "briar-finale"}:
         valid = valid and peak_plasma > 0 and any(sample["shock"] > 0 for sample in mission)

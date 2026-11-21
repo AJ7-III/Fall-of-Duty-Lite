@@ -97,7 +97,7 @@ Vec3 MissionController::gunGrip(const Agent& a) const {
 
 Vec3 MissionController::rayGunMuzzle(const Agent& a) const {
     const auto grip = gunGrip(a);
-    if (a.role == MissionRole::AlienDrone) return grip + forward(a.gunYaw, a.gunPitch) * .52f;
+    if (a.role == MissionRole::AlienDrone) return grip + forward(a.gunYaw, a.gunPitch) * droneMuzzle;
     return alienGunFrame(grip, a.gunYaw, a.gunPitch, a.variant).muzzle(a.variant);
 }
 
@@ -108,6 +108,7 @@ void MissionController::resetAll() {
     state_ = {};
     state_.mistDensity = 0.50f;
     operation_ = {};
+    scout_ = {};
     for (auto& a : agents_) a = {};
     for (auto& s : sectors_) s = {};
     radioQueue_ = {};
@@ -120,13 +121,12 @@ void MissionController::resetAll() {
     introSkipped_ = false;
     wakeSounds_ = false;
     overwatchNudgeSent_ = false;
-    regroupBriefSent_ = false;
     lzEnforcerLanded_ = false;
     pendingFlankers_ = 0;
     flankersCalled_ = false;
     wallCalled_ = false;
     overchargeWarned_ = false;
-    droneLinkWarned_ = false;
+    guardHintShown_ = false;
     interruptPraised_ = false;
     mistRemarked_ = false;
     resupplyReadyAt_ = 0;
@@ -143,7 +143,6 @@ void MissionController::resetAll() {
     elapsed_ = 0;
     heartbeatAt_ = 0;
     failDelay_ = 0;
-    uplinkGuards_ = 0;
     rescueObjective_ = -1;
     activeSector_ = -1;
     routeReadyAt_ = 0;
@@ -151,8 +150,8 @@ void MissionController::resetAll() {
     evacTimer_ = 0;
     evacDuration_ = 1;
     nextReinforceAt_ = 0;
-    graceUntil_ = 0;
-    graceReadyAt_ = 0;
+    graceUntil_.fill(0);
+    graceReadyAt_.fill(0);
     signalEdge_ = signalHeld_ = false;
     signalReadyAt_ = 0;
     dishPulseAt_ = 0;
@@ -170,6 +169,12 @@ void MissionController::dismissRadio(MissionHost& host) {
     host.setCampaignVoice({});
 }
 
+void MissionController::discardQueuedRadio(Line line) {
+    const auto end = std::remove_if(radioQueue_.begin(), radioQueue_.begin() + radioQueued_,
+                                    [line](const RadioLine& pending) { return pending.cue.line == line; });
+    radioQueued_ = int(end - radioQueue_.begin());
+}
+
 void MissionController::showRadio(const RadioLine& line, MissionHost& host) {
     radioLine_ = line.cue.line;
     const auto& dialogue = campaignDialogue[size_t(radioLine_)];
@@ -179,7 +184,7 @@ void MissionController::showRadio(const RadioLine& line, MissionHost& host) {
     const size_t chirpFrames = line.cue.chirp && chirp < assets_.audio.size() ? assets_.audio[chirp].samples.size() : 0;
     const double playback = double(campaignVoiceFrames[size_t(radioLine_)] + chirpFrames) / audioHz;
     radioReadSeconds_ = std::max(readSeconds(dialogue.text), playback + .05);
-    state_.radioTimer = std::max(line.duration, float(playback + .25));
+    state_.radioTimer = std::max({line.duration, float(playback + .25), float(radioReadSeconds_)});
     radioShownAt_ = elapsed_;
     radioPriority_ = line.priority;
     host.setCampaignVoice(line.cue);
@@ -199,12 +204,11 @@ void MissionController::setRadio(Line line, float duration,
     next.queuedAt = elapsed_;
 
     const bool idle = state_.radioTimer <= 0;
-    const bool read = elapsed_ - radioShownAt_ >= radioReadSeconds_;
     // Walt breaks off his own escort instructions when a scanner sweeps across him.
     const bool scanner = line == Line::WaltScanner;
     const bool scannerInterrupt = scanner && radioLine_ == Line::WaltLeadWay;
     const bool interrupt = priority == RadioUrgent && (radioPriority_ < RadioUrgent || scannerInterrupt);
-    if (idle || interrupt || (read && (radioQueued_ == 0 || scanner))) {
+    if (idle || interrupt || (!radioSpeaking() && (radioQueued_ == 0 || scanner))) {
         showRadio(next, host);
         return;
     }
@@ -228,13 +232,16 @@ void MissionController::pumpRadio(MissionHost& host) {
         const double waited = elapsed_ - radioQueue_[i].queuedAt;
         const int sector = radioQueue_[i].sector;
         const auto priority = radioQueue_[i].priority;
+        const auto line = radioQueue_[i].cue.line;
         const bool aged = priority == RadioChatter ? waited > 4.0 : priority == RadioOrder && waited > 9.0;
-        const bool stale = aged || (sector >= 0 && sector < 3 && sectors_[sector].resolved);
+        const bool relayGone = (line == Line::NoraRelayLock || line == Line::DeltaDestroyRelay) &&
+                               state_.uplinkHealth <= 0.f;
+        const bool stale = aged || relayGone || (sector >= 0 && sector < 3 && sectors_[sector].resolved);
         if (!stale) radioQueue_[kept++] = radioQueue_[i];
     }
     radioQueued_ = kept;
     if (!radioQueued_) return;
-    if (state_.radioTimer > 0 && elapsed_ - radioShownAt_ < radioReadSeconds_) return;
+    if (radioSpeaking()) return;
     const RadioLine next = radioQueue_[0];
     for (int i = 1; i < radioQueued_; ++i) radioQueue_[i - 1] = radioQueue_[i];
     --radioQueued_;
@@ -266,22 +273,26 @@ void MissionController::addTracer(Vec3 from, Vec3 to, uint16_t color, TracerStyl
     state_.tracers[chosen] = {from, to, life, color, style};
 }
 
+float MissionController::scannerYaw(const Agent& a) const {
+    const float speed = a.role == MissionRole::AlienDrone ? 1.15f : .85f;
+    return a.actor.yaw + std::sin(float(elapsed_) * speed + a.hoverPhase) * .45f;
+}
+
 void MissionController::emitScannerBeam(const Agent& a) {
     const bool drone = a.role == MissionRole::AlienDrone;
     const Vec3 eye = drone ? a.actor.position : rayGunMuzzle(a);
-    const float sweepYaw = a.actor.yaw + std::sin(float(elapsed_) * (drone ? 1.15f : 0.85f) + a.hoverPhase) * 0.45f;
-    const float pitch = drone ? 0.36f : 0.14f;
-    const Vec3 dir = forward(sweepYaw, pitch);
-    // OBB world_.ray is ~18x faster than full shot-triangle mesh intersection.
-    const float dist = std::min(14.f, world_.ray(eye, dir, 14.f));
+    const float pitch = drone ? .36f : .14f;
+    const Vec3 dir = forward(scannerYaw(a), pitch);
+    // Stop the sweep at the first solid cover or the hillside.
+    constexpr float reach = 14.f;
+    const float dist = std::min(reach, world_.ray(eye, dir, reach));
     if (dist > 0.6f) {
         addTracer(eye + dir * 0.15f, eye + dir * dist, a.variant > 0 ? crimsonPlasma : scanCyan, TracerStyle::Scanner, 0.32f);
     }
 }
 
 void MissionController::updateMistDensity(double dt) {
-    // Dusk mist steadily descends on the Colorado valley as the mission advances,
-    // staying clear enough for long sniper lines in Overwatch and rolling thickest during Extraction.
+    // The low banks behind the houses thin again as the player descends to East Ridge.
     float target = 0.56f;
     switch (state_.phase) {
     case MissionPhase::Intro:      target = 0.48f + 0.08f * state_.introProgress; break;
@@ -293,50 +304,74 @@ void MissionController::updateMistDensity(double dt) {
     case MissionPhase::Incoming:   target = 0.84f; break;
     case MissionPhase::Extraction: target = 0.86f + 0.03f * float(state_.waveIntensity); break;
     case MissionPhase::Boarding:   target = 0.88f; break;
-    case MissionPhase::Operation:  target = state_.chapter == MissionChapter::Array ? 0.74f : 0.60f; break;
+    case MissionPhase::Operation:
+        target = timberlineRetreat(state_) ? .99f
+               : state_.chapter == MissionChapter::Array ? .74f : .60f;
+        break;
     default:                       target = 0.88f; break;
     }
     state_.mistDensity += (target - state_.mistDensity) * float(1.0 - std::exp(-0.45 * dt));
 }
 
-// Alerted Scout Drones project an energy shield-link to the nearest ground alien within 12.5m,
-// rewarding players who spot the glowing tether through the mist and drop the drone first.
-void MissionController::updateDroneLinks(double dt) {
-    for (int i = 4; i < int(agents_.size()); ++i) {
-        agents_[i].linked = false;
-        if (agents_[i].role == MissionRole::AlienDrone) agents_[i].linkTarget = -1;
+// Scale only the stick delta. A released stick cannot pull the camera after a moving target.
+float MissionController::stickGain(const Snapshot& snap, bool dronesOnly) const {
+    const Vec3 eye = snap.camera.position;
+    const Vec3 dir = forward(snap.camera.yaw, snap.camera.pitch);
+    float friction = 0.f;
+    for (size_t i = 4; i < agents_.size(); ++i) {
+        const auto& a = agents_[i];
+        if (!a.used || a.dead || !a.actor.visible || a.spawnFx > 0.f) continue;
+        const bool drone = a.role == MissionRole::AlienDrone;
+        if (dronesOnly && !drone) continue;
+        const Vec3 center = drone ? a.actor.position : atHeight(a.actor.position, 1.2f * alienScale(a.variant));
+        const Vec3 rel = center - eye;
+        const float along = dot(rel, dir);
+        if (along < 1.f || along > 48.f) continue;
+        // A narrow angular feather around the silhouette, tighter when looking through a scope.
+        const float feather = along * .022f * std::clamp(snap.camera.fov / (70.f * pi / 180.f), .25f, 1.f);
+        const Vec3 miss = rel - dir * along;
+        const float width = (drone ? droneWingCenter.x + droneWingHalf.x : .42f) + feather;
+        const float height = (drone ? droneBodyHalf.y : .82f) + feather;
+        const float offset = planarSquared(miss) / (width * width) + miss.y * miss.y / (height * height);
+        if (offset >= 1.f || world_.blocked(eye, center)) continue;
+        friction = std::max(friction, 1.f - offset);
     }
-    for (int i = 4; i < int(agents_.size()); ++i) {
-        auto& drone = agents_[i];
-        if (!drone.used || drone.dead || !drone.alerted || drone.spawnFx > 0 || drone.role != MissionRole::AlienDrone ||
-            drone.operationJammer || elapsed_ < drone.distractedUntil) continue;
-        int best = -1;
-        float bestDistSq = 12.5f * 12.5f;
-        for (int j = 4; j < int(agents_.size()); ++j) {
-            const auto& mate = agents_[j];
-            if (!mate.used || mate.dead || !mate.alerted || mate.role != MissionRole::AlienTrooper) continue;
-            const float d2 = planarSquared(mate.actor.position - drone.actor.position);
-            if (d2 < bestDistSq && !world_.blocked(drone.actor.position, atHeight(mate.actor.position, 1.4f))) {
-                bestDistSq = d2;
-                best = j;
-            }
-        }
-        if (best >= 0) {
-            drone.linkTarget = int8_t(best);
-            auto& mate = agents_[best];
-            mate.linked = true;
-            const float linkCap = mate.variant > 0 ? mate.maxShield : 26.f + difficulty_ * 2.f;
-            mate.maxShield = std::max(mate.maxShield, linkCap);
-            if (elapsed_ >= mate.shieldRegenAt) {
-                mate.shield = std::min(mate.maxShield, mate.shield + float(18.0 * dt));
-            }
-            if ((int(elapsed_ * 60.0) & 3) == 0) {
-                addTracer(drone.actor.position + Vec3{0, -0.18f, 0},
-                          atHeight(mate.actor.position, 1.35f * alienScale(mate.variant)),
-                          shieldCyan, TracerStyle::ShieldLink, 0.45f);
-            }
+    return (dronesOnly ? 1.f : .94f) - .18f * friction;
+}
+
+void MissionController::moveBriarFleet(double dt) {
+    const bool searching = state_.uplinkVisible && state_.uplinkHealth <= 0.f;
+    const bool town = state_.phase != MissionPhase::Intro && state_.phase != MissionPhase::Overwatch &&
+                      state_.phase != MissionPhase::Breach;
+    const float t = float(elapsed_);
+    // The flagship searches North Avenue until it loses the receiver. The cruiser covers
+    // the wreck first, then crosses town. Aircraft share the lower airspace over the clearing.
+    const std::array<Vec3, 3> stations{{
+        searching ? Vec3{23, 13, 21} : Vec3{std::sin(t * .105f) * 8.f, 0, -5.f},
+        searching ? Vec3{18, 14, 51} : town ? Vec3{13, 10, 30} : Vec3{-4, 5, 9},
+        town ? Vec3{std::cos(t * .12f) * 4.f, 10, 14} : Vec3{4, 4, -6}
+    }};
+    const float follow = float(1. - std::exp(-.48 * dt));
+    for (size_t i = 0; i < stations.size(); ++i) {
+        const Vec3 delta = stations[i] - state_.fleetShift[i];
+        state_.fleetShift[i] += delta * std::min(follow, float(4. * dt) / std::max(.01f, length(delta)));
+    }
+    state_.flagshipBeam = !searching;
+}
+
+void MissionController::stageFleetDrop(Agent& a, MissionHost& host, int carrier) {
+    a.carrier = int8_t(carrier);
+    float best = infinity;
+    for (size_t i = 0; carrier < 0 && i < fleetHulls.size(); ++i) {
+        const float distance = planarSquared(fleetHulls[i].center + state_.fleetShift[i] - a.home);
+        if (distance < best) {
+            best = distance;
+            a.carrier = int8_t(i);
         }
     }
+    a.spawnFx = dropWarning + arrivalDuration;
+    a.actor.visible = false;
+    host.playSound(Sound::RayCharge, .68f, true, a.home);
 }
 
 void MissionController::spawnCommander(Vec3 pos, float yaw) {
@@ -372,9 +407,36 @@ void MissionController::spawnCivilian(int slot, int sector, Vec3 pos, float yaw,
     civ.radar = 1.f;
 }
 
-int MissionController::spawnAlien(MissionRole role, int sector, Vec3 pos, float yaw, uint8_t variant, int difficulty) {
+size_t MissionController::freeAlienSlots() const {
+    return size_t(std::count_if(agents_.begin() + MissionSnapshot::firstAlien, agents_.begin() + alienSlotLimit(),
+                               [](const Agent& a) { return !a.used || (a.dead && a.deathElapsed > reuseDelay); }));
+}
+
+Vec3 MissionController::escortPosition(Vec3 pos, float yaw, MissionRole role) const {
+    const Vec3 ahead = forward(yaw, 0.f), right{ahead.z, 0.f, -ahead.x};
+    const float height = pos.y - world_.groundHeight(pos);
+    const bool drone = role == MissionRole::AlienDrone;
+    const float clearance = drone ? .55f : 1.75f;
+    const float eyeHeight = drone ? 0.f : 1.f;
+    const Vec3 eye = atHeight(pos, eyeHeight);
+    for (const auto dir : {right, right * -1.f, ahead * -1.f, ahead}) {
+        for (float distance : {2.1f, 1.15f}) {
+            Vec3 at = pos + dir * distance;
+            if (world_.clampX(at.x) != at.x || world_.clampZ(at.z) != at.z) continue;
+            at.y = world_.groundHeight(at) + height;
+            if (!world_.canStand(at, clearance) || world_.blocked(eye, atHeight(at, eyeHeight))) continue;
+            const bool occupied = std::any_of(agents_.begin() + MissionSnapshot::firstAlien, agents_.end(), [&](const Agent& a) {
+                return a.used && !a.dead && length(a.actor.position - at) < 1.f;
+            });
+            if (!occupied) return at;
+        }
+    }
+    return pos; // Tight spaces still receive their full group.
+}
+
+int MissionController::spawnSingleAlien(MissionRole role, int sector, Vec3 pos, float yaw, uint8_t variant, int difficulty) {
     int chosen = -1;
-    for (int i = 4; i < int(agents_.size()); ++i) {
+    for (int i = int(MissionSnapshot::firstAlien); i < int(alienSlotLimit()); ++i) {
         if (!agents_[i].used || (agents_[i].dead && agents_[i].deathElapsed > reuseDelay)) {
             chosen = i;
             break;
@@ -395,35 +457,55 @@ int MissionController::spawnAlien(MissionRole role, int sector, Vec3 pos, float 
     const float baseHp = role == MissionRole::AlienDrone ? (42.f + difficulty * 5.f) : (62.f + difficulty * 8.f);
     a.maxHealth = variant > 0 ? baseHp * 1.45f : baseHp;
     a.actor.health = a.maxHealth;
-    // Enforcers deploy with a crimson phase-shield that regenerates if left unpressured.
+    // Each guard has a finite charge. Cracking it creates a permanent opening.
     if (role == MissionRole::AlienTrooper && variant > 0) {
-        a.maxShield = 34.f + difficulty * 4.f;
-        a.shield = a.maxShield;
+        a.guard = a.guardCapacity = 60.f + difficulty * 3.f;
         a.overchargeCooldown = 3.2 + rng_.draw("enforcer.oc") * 1.8;
     }
     a.home = pos;
     a.goal = pos;
-    a.hoverBase = pos.y > 0.5f ? pos.y : 2.0f;
+    const float hoverHeight = pos.y - world_.groundHeight(pos);
+    a.hoverBase = hoverHeight > .5f ? hoverHeight : 2.f;
     a.hoverPhase = float(rng_.draw("drone.phase") * 2 * pi);
     a.fireCooldown = 0.65 + rng_.draw("alien.fire") * 0.6;
     a.radar = 0.f;
     return chosen;
 }
 
+MissionController::AlienGroup MissionController::spawnAlien(MissionRole role, int sector, Vec3 pos, float yaw,
+                                                             uint8_t variant, int difficulty) {
+    const bool paired = aliensPerSpawn() == 2;
+    if (paired && freeAlienSlots() < 2) return {};
+    if (paired && role == MissionRole::AlienTrooper && variant &&
+        std::any_of(agents_.begin() + MissionSnapshot::firstAlien, agents_.end(), [&](const Agent& a) {
+            if (!a.used || a.dead || a.role != MissionRole::AlienTrooper || !a.variant) return false;
+            return sector >= 0 ? a.sector == sector : planarSquared(a.actor.position - pos) < 24.f * 24.f;
+        })) variant = 0;
+    AlienGroup group;
+    group.lead = spawnSingleAlien(role, sector, pos, yaw, variant, difficulty);
+    if (paired && group) {
+        group.escort = spawnSingleAlien(role, sector, escortPosition(pos, yaw, role), yaw + .35f, 0, difficulty);
+    }
+    return group;
+}
+
 // Reinforcements arrive on a visible drop beam so the player can read where they land.
-int MissionController::dropAlien(MissionRole role, Vec3 pos, uint8_t variant, const Snapshot& snap, MissionHost& host) {
+MissionController::AlienGroup MissionController::dropAlien(MissionRole role, Vec3 pos, uint8_t variant,
+                                                            const Snapshot& snap, MissionHost& host, int carrier) {
     const Vec3 to = snap.player.position - pos;
-    const int slot = spawnAlien(role, -1, pos, std::atan2(to.x, to.z), variant, difficulty_);
-    if (slot < 0) return -1;
-    auto& a = agents_[slot];
-    a.alerted = true;
-    a.spawnFx = arrivalDuration;
-    a.radar = 2.f;
-    a.burstPause = 0.9 + rng_.draw("drop.settle") * 0.5;
-    if (role == MissionRole::AlienTrooper) roar(pos, host);
-    else host.playSound(Sound::PlasmaFire, 0.7f, true, pos);
+    const auto group = spawnAlien(role, -1, pos, std::atan2(to.x, to.z), variant, difficulty_);
+    if (!group) return group;
+    configureAliens(group, [&](Agent& a) {
+        a.alerted = true;
+        a.spawnFx = arrivalDuration;
+        a.radar = 2.f;
+        a.burstPause = 0.9 + rng_.draw("drop.settle") * 0.5;
+        if (carrier >= 0 || state_.chapter == MissionChapter::BriarHouse) stageFleetDrop(a, host, carrier);
+        else if (role == MissionRole::AlienTrooper) roar(a.home, host);
+        else host.playSound(Sound::PlasmaFire, 0.7f, true, a.home);
+    });
     state_.aliensRemaining = livingAliens();
-    return slot;
+    return group;
 }
 
 void MissionController::spawnOverwatchWave(int difficulty) {
@@ -439,17 +521,15 @@ void MissionController::spawnOverwatchWave(int difficulty) {
     state_.aliensRemaining = livingAliens();
 }
 
-void MissionController::spawnSectorWave(int sector) {
+void MissionController::spawnSectorWave(int sector, MissionHost& host) {
     auto& sec = sectors_[sector];
-    size_t free = 0;
-    for (size_t i = 4; i < agents_.size(); ++i) {
-        const auto& a = agents_[i];
-        free += !a.used || (a.dead && a.deathElapsed > reuseDelay);
-    }
-    if (free < std::size(districtPatrol[sector])) return;
+    if (freeAlienSlots() < std::size(districtPatrol[sector]) * aliensPerSpawn()) return;
     for (const auto& p : districtPatrol[sector]) {
-        const int slot = spawnAlien(p.role, sector, p.position, p.yaw, p.tier, difficulty_);
-        agents_[slot].alerted = sector == nora;
+        const auto group = spawnAlien(p.role, sector, p.position, p.yaw, p.tier, difficulty_);
+        configureAliens(group, [&](Agent& a) {
+            a.alerted = sector == nora;
+            stageFleetDrop(a, host);
+        });
     }
     sec.spawned = true;
 }
@@ -484,7 +564,7 @@ bool MissionController::spawnReinforcement(const Snapshot& snap, MissionHost& ho
         }
     }
     if (best < 0) return false;
-    if (dropAlien(drone ? MissionRole::AlienDrone : MissionRole::AlienTrooper, options[best], variant, snap, host) < 0) {
+    if (!dropAlien(drone ? MissionRole::AlienDrone : MissionRole::AlienTrooper, options[best], variant, snap, host)) {
         return false;
     }
     ++reinforcements_;
@@ -506,9 +586,10 @@ void MissionController::saveCheckpoint(MissionCheckpoint stage) {
     checkpoint_.shieldsBroken = state_.shieldsBroken;
     checkpoint_.ambushKills = state_.ambushKills;
     checkpoint_.seconds = state_.missionSeconds;
+    checkpoint_.receiverDown = state_.uplinkVisible && state_.uplinkHealth <= 0.f;
     for (int c = 0; c < 3; ++c) {
         const auto& civ = agents_[c + 1];
-        checkpoint_.civilians[c] = {civ.civilian, civ.actor.position, civ.actor.health};
+        checkpoint_.civilians[c] = {civ.civilian, civ.actor.position, civ.actor.health, sectors_[c].coverLeg};
     }
 }
 
@@ -523,7 +604,7 @@ void MissionController::seedExtractionReplay() {
     }
 }
 
-void MissionController::seedChapterReplay(MissionChapter chapter, bool noraAlive) {
+void MissionController::seedChapterReplay(MissionChapter chapter, bool noraAlive, bool legacyArray) {
     checkpoint_ = {};
     retries_ = 0;
     state_ = {};
@@ -533,13 +614,15 @@ void MissionController::seedChapterReplay(MissionChapter chapter, bool noraAlive
     state_.civiliansSaved = noraAlive ? 3 : 2;
     state_.civiliansBoarded = 2;
     noraAlive_ = noraAlive;
+    legacyArray_ = legacyArray;
+    legacyScout_ = false;
     for (auto& sec : sectors_) sec = {};
     sectors_[nora].civSlot = nora + 1;
     agents_[size_t(nora + 1)].civilian = noraAlive ? CivilianOutcome::Stayed : CivilianOutcome::Lost;
 }
 
 void MissionController::seedFinaleReplay() {
-    seedChapterReplay(MissionChapter::Array);
+    seedChapterReplay(MissionChapter::Array, true, true);
     state_.chapter = MissionChapter::Array;
     state_.phase = MissionPhase::Operation;
     checkpoint_.stage = MissionCheckpoint::Operation;
@@ -563,8 +646,15 @@ void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, 
                               Vec3& playerPosOut, float& playerYawOut, MissionHost& host) {
     const bool replay = mode == MissionStart::ExtractionReplay;
     if (replay) seedExtractionReplay();
+    if (mode == MissionStart::ArrayGroundReplay) seedChapterReplay(MissionChapter::Array, true, true);
+    if (mode == MissionStart::ScoutReplay) {
+        seedChapterReplay(MissionChapter::Array);
+        legacyScout_ = true;
+    }
     const bool retry = mode == MissionStart::Retry && canRetryCheckpoint();
-    const bool advance = mode == MissionStart::NextChapter && state_.nextMissionReady();
+    const bool advance = (mode == MissionStart::NextChapter || mode == MissionStart::ArrayGroundReplay ||
+                          mode == MissionStart::ScoutReplay) &&
+                         state_.nextMissionReady();
     const auto next = state_.chapter == MissionChapter::BriarHouse ? MissionChapter::Timberline : MissionChapter::Array;
     const auto chapter = advance ? next : retry ? state_.chapter : MissionChapter::BriarHouse;
     const bool campaign = mode == MissionStart::Campaign || ((retry || advance) && state_.campaign);
@@ -575,8 +665,13 @@ void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, 
         noraAlive_ = agents_[sectors_[nora].civSlot].civilian == CivilianOutcome::Stayed;
     } else if (!retry && !advance) {
         noraAlive_ = true;
+        legacyArray_ = false;
+        legacyScout_ = false;
     }
     resetAll();
+#ifdef FOD_LOCAL_DUEL
+    coOp_ = snap.campaignSeat == 0;
+#endif
     difficulty_ = std::clamp(difficulty, 1, 10);
     rng_.state = seed ? seed : 0x44454c54u;
     rng_.tick = 0;
@@ -591,10 +686,15 @@ void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, 
         state_.civiliansSaved = saved;
         state_.civiliansBoarded = boarded;
         state_.civiliansLost = state_.civiliansTotal - saved;
-        startOperation(snap, playerPosOut, playerYawOut, host, retry);
+        if (chapter == MissionChapter::Array &&
+            (legacyScout_ || (retry && scoutStage(checkpoint_.operationStage))))
+            startScoutOperation(snap, playerPosOut, playerYawOut, host, retry);
+        else
+            startOperation(snap, playerPosOut, playerYawOut, host, retry);
         return;
     }
 
+    state_.fleetShift[0] = {-12, 5, 10};
     for (int s = 0; s < int(sectors_.size()); ++s) {
         const auto& person = family[s];
         auto& sec = sectors_[s];
@@ -611,16 +711,18 @@ void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, 
         state_.introProgress = 1.f;
         state_.concussion = 0.f;
         state_.letterbox = 0.f;
+        const bool atLz = checkpoint_.stage == MissionCheckpoint::Uplink || checkpoint_.stage == MissionCheckpoint::Extraction;
         for (size_t c = 0; c < sectors_.size(); ++c) {
             const auto& saved = checkpoint_.civilians[c];
             auto& civ = agents_[c + 1];
             civ.civilian = saved.outcome;
+            sectors_[c].coverLeg = saved.coverLeg;
             civ.actor.position = saved.position;
             civ.actor.health = saved.health;
             if (civ.isDead()) {
                 civ.deathElapsed = 10.0;
                 civ.actor.visible = false;
-            } else if (checkpoint_.stage >= MissionCheckpoint::Uplink && civ.civilian == CivilianOutcome::Evacuating) {
+            } else if (atLz && civ.civilian == CivilianOutcome::Evacuating) {
                 civ.civilian = CivilianOutcome::Sheltered;
                 civ.actor.position = mapPoint(evacSpots[c][0], evacSpots[c][1]);
             }
@@ -628,7 +730,7 @@ void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, 
             if (!civ.isDead()) poseCivilian(civ);
         }
         refreshCivilianTotals();
-        if (checkpoint_.stage >= MissionCheckpoint::Uplink) {
+        if (atLz) {
             spawnCommander(mapPoint(commanderLz[0], commanderLz[1]), 0.f);
             if (checkpoint_.stage == MissionCheckpoint::Uplink) {
                 playerPosOut = mapPoint(295, -216);
@@ -650,11 +752,13 @@ void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, 
         } else {
             state_.phase = MissionPhase::Rescue;
             nextPatrolAt_ = 10.0;
-            // Checkpoint 2 resumes outside Briar House on South Boulevard ready to sweep the town.
-            playerPosOut = mapPoint(368, 565);
-            playerYawOut = pi / 2;
-            spawnCommander(mapPoint(335, 545), pi / 2);
-            setObjective("SWEEP THE TOWN 0/3", "CHECKPOINT LOADED / FIND BEN, NORA AND WALT");
+            // Resume on South Boulevard or beside the disabled receiver.
+            state_.uplinkVisible = checkpoint_.receiverDown;
+            state_.flagshipBeam = !checkpoint_.receiverDown;
+            playerPosOut = checkpoint_.receiverDown ? mapPoint(395, -216) : rescueRestart;
+            playerYawOut = checkpoint_.receiverDown ? -pi / 2 : -.49f;
+            spawnCommander(checkpoint_.receiverDown ? mapPoint(425, -215) : mapPoint(333, 552), playerYawOut);
+            setObjective("FIND THE MARSH FAMILY", "CHECKPOINT LOADED / FOLLOW THE DISTRICT MARKER");
         }
         auto atCheckpoint = snap;
         atCheckpoint.player.position = playerPosOut;
@@ -671,6 +775,7 @@ void MissionController::start(uint32_t seed, int difficulty, MissionStart mode, 
     playerPosOut = hallWake;
     playerYawOut = baseWakeYaw_;
     spawnCommander(mapPoint(388, 336), -0.58f);
+    spawnOverwatchWave(difficulty_);
     setObjective("OPERATION BRIAR", "BRIAR HOUSE, COLORADO");
     // The title card plays over the closed eyes first; the wake-up starts at introTime_ zero.
     introTime_ = -titleCardDuration;
@@ -755,7 +860,7 @@ void MissionController::enterOverwatch(Snapshot& snap, MissionHost& host, bool u
     state_.concussion = 0.f;
     state_.letterbox = 0.f;
     state_.heartbeatPulse = 0.f;
-    spawnOverwatchWave(difficulty_);
+    if (livingAliens() == 0) spawnOverwatchWave(difficulty_);
     saveCheckpoint(MissionCheckpoint::Overwatch);
     updateWaypoint(snap);
     // No order here. The wreck is framed in the doorway; the scope and the silence do the rest.
@@ -808,7 +913,7 @@ void MissionController::steerAlongPath(Agent& agent, Vec3 target, float speed, d
         agent.actor.trackMotion({}, motionBlend);
         if (flying) {
             agent.hoverPhase += float(dt * 2.4);
-            agent.actor.position.y = agent.hoverBase + std::sin(agent.hoverPhase) * 0.14f;
+            agent.actor.position.y = world_.groundHeight(agent.actor.position) + agent.hoverBase + std::sin(agent.hoverPhase) * 0.14f;
         }
         return;
     }
@@ -846,11 +951,11 @@ void MissionController::steerAlongPath(Agent& agent, Vec3 target, float speed, d
     if (len > 0.01f) dir *= (speed / len);
     agent.velocity = dir;
     if (flying) {
-        Vec3 groundPos{agent.actor.position.x, 0, agent.actor.position.z};
+        Vec3 groundPos{agent.actor.position.x, world_.groundHeight(agent.actor.position), agent.actor.position.z};
         Vec3 groundVel{dir.x, 0, dir.z};
         world_.move(groundPos, groundVel, float(dt), 1.8f, 0.42f);
         agent.hoverPhase += float(dt * 2.8);
-        agent.actor.position = {groundPos.x, agent.hoverBase + std::sin(agent.hoverPhase) * 0.14f, groundPos.z};
+        agent.actor.position = {groundPos.x, groundPos.y + agent.hoverBase + std::sin(agent.hoverPhase) * 0.14f, groundPos.z};
         agent.actor.speed = planar(groundVel);
         agent.actor.trackMotion(groundVel, motionBlend);
     } else {
@@ -867,6 +972,9 @@ void MissionController::steerAlongPath(Agent& agent, Vec3 target, float speed, d
 void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& host) {
     auto& cmd = agents_[0];
     if (!cmd.used) return;
+#ifndef ESP_PLATFORM
+    cmd.shouldAim = false;
+#endif
     cmd.radar = 1.f;
     if (state_.phase == MissionPhase::Intro) {
         cmd.actor.speed = 0;
@@ -943,6 +1051,18 @@ void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& 
         setRadio(Line::DeltaFreshMags, 1.8f, host, true, RadioChatter);
     }
 
+    if (timberlineRetreat(state_)) {
+        const int contact = state_.operation.spotted;
+        if (contact >= 4) {
+            const auto& target = agents_[size_t(contact)];
+            const Vec3 direction = target.actor.position - cmd.actor.position;
+            cmd.actor.yaw += wrapDelta(cmd.actor.yaw, std::atan2(direction.x, direction.z)) *
+                float(1. - std::exp(-5. * dt));
+        }
+        host.updateActorFrame(cmd.actor);
+        return;
+    }
+
     int bestTarget = -1;
     float bestScore = infinity;
     const Vec3 eye = atHeight(cmd.actor.position, botEye);
@@ -972,6 +1092,10 @@ void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& 
                                                                 : atHeight(target.actor.position, alienChest * alienScale(target.variant));
         const float wantedYaw = std::atan2(aim.x - eye.x, aim.z - eye.z);
         cmd.actor.yaw += wrapDelta(cmd.actor.yaw, wantedYaw) * float(1.0 - std::exp(-10.0 * dt));
+#ifndef ESP_PLATFORM
+        cmd.shouldAim = true;
+        cmd.aimPitch = -std::atan2(aim.y - eye.y, planar(aim - eye));
+#endif
         cmd.fireCooldown -= dt;
         if (cmd.fireCooldown <= 0 && std::abs(wrapDelta(cmd.actor.yaw, wantedYaw)) < 0.28f) {
             cmd.fireCooldown = 0.24 + rng_.draw("cmd.fire") * 0.16;
@@ -982,13 +1106,18 @@ void MissionController::updateCommander(Snapshot& snap, double dt, MissionHost& 
             dir.z += float(rng_.between("cmd.spread.z", -0.45, 0.45));
             dir = normalized(dir);
             const float maxD = std::min(40.f, world_.ray(muzzle, dir, 40.f));
-            const Vec3 end = muzzle + dir * std::min(maxD, length(aim - muzzle));
+            const float limit = std::min(maxD, length(aim - muzzle));
+            const float guardDistance = guardShot(target, muzzle, dir);
+            const Vec3 end = muzzle + dir * std::min(limit, guardDistance);
             addTracer(muzzle, end, amberTracer, TracerStyle::Ballistic);
             host.playSound(Sound::Mp44, 0.62f, true, muzzle);
+#ifndef ESP_PLATFORM
+            cmd.motion.recoil = 1.f;
+#endif
             target.suppression = std::min(1.f, target.suppression + 0.16f);
             if (target.overcharging) target.chargeTime = std::max(0.0, target.chargeTime - 0.12);
             if (rng_.draw("cmd.hit") < 0.5) {
-                damageAgent(bestTarget, 13.f, false, false, snap, host);
+                damageAgent(bestTarget, 13.f, false, false, snap, host, guardDistance < limit);
             }
         }
     } else if (cmd.actor.speed > 0.3f) {
@@ -1017,8 +1146,10 @@ void MissionController::updateCivilian(int slot, Snapshot& snap, double dt, Miss
     };
     if (state_.phase == MissionPhase::Operation) {
         // Nora in the later missions walks wherever the operation sends her.
-        if (planarSquared(civ.goal - civ.actor.position) > .36f) steerAlongPath(civ, civ.goal, 4.2f, dt, false);
-        else civ.actor.speed = 0;
+        if (planarSquared(civ.goal - civ.actor.position) > .36f) {
+            const float speed = timberlineRetreat(state_) ? 5.6f : 4.2f;
+            steerAlongPath(civ, civ.goal, speed, dt, false);
+        } else civ.actor.speed = 0;
         faceTravel();
         if (civ.actor.speed <= .3f) {
             const Vec3 toPlayer = snap.player.position - civ.actor.position;
@@ -1048,20 +1179,19 @@ void MissionController::updateCivilian(int slot, Snapshot& snap, double dt, Miss
                            : mapPoint(spot[0], spot[1]);
         // Ben runs to the player who waved him over, then on toward the clearing.
         if (civ.rallying) {
-            if (planarSquared(snap.player.position - civ.actor.position) < 3.f * 3.f) civ.rallying = false;
-            else dest = snap.player.position;
+            if (planarSquared(civ.goal - civ.actor.position) < 3.f * 3.f) civ.rallying = false;
+            else dest = civ.goal;
         }
         const bool close = planarSquared(snap.player.position - civ.actor.position) < 6.f * 6.f;
         // Walt reads his own yard: he waits while a scanner sweeps his way, then goes.
         if (escort && nextCover && elapsed_ >= civ.holdUntil && sec.held < 4.f) {
             for (size_t i = 4; i < agents_.size(); ++i) {
                 const auto& a = agents_[i];
-                if (!a.used || a.dead || a.alerted || a.sector != civ.sector) continue;
+                if (!a.used || a.dead || a.spawnFx > 0 || a.alerted || a.sector != civ.sector) continue;
                 const Vec3 to = civ.actor.position - a.actor.position;
                 if (planarSquared(to) > 12.f * 12.f) continue;
                 // The same sweep the scanner beam draws: Walt moves when it has passed him.
-                const bool drone = a.role == MissionRole::AlienDrone;
-                const float sweep = a.actor.yaw + std::sin(float(elapsed_) * (drone ? 1.15f : .85f) + a.hoverPhase) * .45f;
+                const float sweep = scannerYaw(a);
                 if (std::abs(wrapDelta(sweep, std::atan2(to.x, to.z))) > .32f) continue;
                 if (world_.blocked(a.role == MissionRole::AlienDrone ? a.actor.position : atHeight(a.actor.position, 1.6f),
                                    atHeight(civ.actor.position, .9f))) continue;
@@ -1149,26 +1279,39 @@ void MissionController::poseAlien(Agent& a) const {
 
 // Only a few aliens may aim at the player at once; the rest flank, pin Delta-1 or lay down
 // loose suppressing fire. Also coordinates live squad roles (Vanguard, Suppressor, Flanker, Support).
-void MissionController::assignAttackTokens(const Snapshot& snap) {
-    const int tokens = difficulty_ <= 5 ? 1 : 2;
+void MissionController::assignAttackTokens(const Snapshot& snap, const Snapshot* partner) {
+    const int tokens = (difficulty_ <= 5 ? 1 : 2) + (partner && !partner->dead && !snap.dead ? 1 : 0);
     const Vec3 playerEye = atHeight(snap.player.position, snap.eyeHeight);
     std::array<float, MissionSnapshot::maxActors> score{};
     score.fill(infinity);
     for (int i = 4; i < int(agents_.size()); ++i) {
         auto& a = agents_[i];
         const bool held = a.token;
+        const bool hadPartner = a.targetsPartner;
         a.token = false;
         a.seesPlayer = false;
+        a.targetsPartner = false;
         a.tacRole = rolePatrol;
         if (!a.used || a.dead) continue;
         const Vec3 eye = a.role == MissionRole::AlienDrone ? a.actor.position
                                                            : atHeight(a.actor.position, alienWeakPoint.y * alienScale(a.variant));
-        const float dist = planar(snap.player.position - a.actor.position);
+        float dist = planar(snap.player.position - a.actor.position);
         a.seesPlayer = !snap.dead && dist < 26.f && !world_.blocked(eye, playerEye);
+        if (partner && !partner->dead) {
+            const float range = planar(partner->player.position - a.actor.position);
+            const bool seesPartner = range < 26.f &&
+                !world_.blocked(eye, atHeight(partner->player.position, partner->eyeHeight));
+            const float preference = a.variant && a.role == MissionRole::AlienTrooper ? (hadPartner ? 1.5f : -1.5f) : 0.f;
+            if (snap.dead || (seesPartner != a.seesPlayer ? seesPartner : range < dist + preference)) {
+                dist = range;
+                a.seesPlayer = seesPartner;
+                a.targetsPartner = true;
+            }
+        }
         if (!a.alerted || a.spawnFx > 0) continue;
         score[i] = dist - (a.seesPlayer ? 40.f : 0.f) - (held ? 4.f : 0.f) - (a.variant > 0 ? 5.f : 0.f);
     }
-    // Hand out aimed-fire slots to the lowest scores; there are only ever one or two.
+    // Hand out the limited aimed-fire slots to the lowest scores.
     for (int k = 0; k < tokens; ++k) {
         int best = -1;
         for (int i = 4; i < int(agents_.size()); ++i) {
@@ -1196,33 +1339,58 @@ void MissionController::assignAttackTokens(const Snapshot& snap) {
 
 // A hit that would cross into last-stand health never kills outright and buys a short
 // window to reach cover. The window shrinks with difficulty and recharges slowly.
-void MissionController::hurtPlayer(float amount, Vec3 from, const Snapshot& snap, MissionHost& host) {
-    if (elapsed_ < graceUntil_) return;
+void MissionController::hurtPlayer(float amount, Vec3 from, const Snapshot& snap, MissionHost& host, bool partner) {
+    auto& graceUntil = graceUntil_[partner];
+    auto& graceReadyAt = graceReadyAt_[partner];
+    if (elapsed_ < graceUntil) return;
     const float hp = snap.player.health;
-    if (hp > lastStandHealth && hp - amount <= lastStandHealth && elapsed_ >= graceReadyAt_) {
+    if (hp > lastStandHealth && hp - amount <= lastStandHealth && elapsed_ >= graceReadyAt) {
         amount = std::min(amount, hp - 5.f);
-        graceUntil_ = elapsed_ + std::max(0.45, 1.2 - difficulty_ * 0.075);
-        graceReadyAt_ = elapsed_ + 7.0;
+        graceUntil = elapsed_ + std::max(0.45, 1.2 - difficulty_ * 0.075);
+        graceReadyAt = elapsed_ + 7.0;
     }
-    if (state_.plasmaShock < plasmaShockDuration * .55f) host.playSound(Sound::PlasmaShock, .86f, false, {});
-    state_.plasmaShock = plasmaShockDuration;
-    host.damagePlayer(amount, from);
+    auto& shock = partner ? state_.partnerPlasmaShock : state_.plasmaShock;
+    if (shock < plasmaShockDuration * .55f) host.playSound(Sound::PlasmaShock, .86f, false, {});
+    shock = plasmaShockDuration;
+    host.damagePlayer(amount, from, partner);
 }
 
-void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool playerFired, MissionHost& host) {
+bool MissionController::guardActive(const Agent& a) const {
+    return a.guard > 0.f && a.alerted && !a.dead && a.spawnFx <= 0. && a.leapAt < 0 &&
+           elapsed_ >= a.guardDownUntil && elapsed_ >= a.staggerUntil && a.chargeTime <= 0. && a.burstLeft == 0;
+}
+
+float MissionController::guardShot(const Agent& a, Vec3 origin, Vec3 dir) const {
+    if (a.guardLift <= .08f || !guardActive(a)) return infinity;
+    const float scale = alienScale(a.variant);
+    const Vec3 ahead = forward(a.actor.yaw, 0), right{ahead.z, 0, -ahead.x};
+    const Vec3 local = enforcerGuardOffset(a.guardLift) * scale;
+    const Vec3 center = atHeight(a.actor.position, local.y) + right * local.x + ahead * local.z;
+    const Vec3 offset = origin - center;
+    const float facing = dot(offset, ahead), approach = dot(dir, ahead);
+    if (facing <= 0.f || approach >= -1e-5f) return infinity;
+    const float distance = -facing / approach;
+    const Vec3 at = offset + dir * distance;
+    const float u = dot(at, right) / (enforcerGuardWidth * scale * a.guardLift);
+    const float v = at.y / (enforcerGuardHeight * scale * a.guardLift);
+    return enforcerGuardContour(u, v) <= 1.f ? distance : infinity;
+}
+
+void MissionController::updateAlien(int slot, const Snapshot& snap, double dt, bool playerFired, MissionHost& host) {
     auto& a = agents_[slot];
     if (!a.used) return;
     const bool drone = a.role == MissionRole::AlienDrone;
+    const bool heavy = !drone && a.variant > 0;
     if (a.dead) {
         a.deathElapsed += dt;
         a.gunCharge = 0;
         a.gunRecoil = std::max(0.f, a.gunRecoil - float(dt * 4.0));
         a.overcharging = false;
-        a.shield = 0;
+        a.guardLift = 0;
         const float k = float(std::clamp(a.deathElapsed / 0.85, 0.0, 1.0));
         a.actor.fall = k * k * (1.6f - 0.6f * k);
         if (drone) {
-            a.actor.position.y = std::max(0.22f, a.actor.position.y - float(3.8 * dt));
+            a.actor.position.y = std::max(world_.groundHeight(a.actor.position) + .22f, a.actor.position.y - float(3.8 * dt));
             a.actor.yaw += float(4.2 * dt);
         }
         a.radar = 0;
@@ -1230,22 +1398,30 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         return;
     }
 
+    if (a.carrier >= 0 && a.spawnFx > 0) {
+        a.spawnFx = std::max(0., a.spawnFx - dt);
+        if (a.spawnFx > arrivalDuration) return;
+        if (!a.actor.visible) {
+            a.actor.visible = true;
+            if (drone) host.playSound(Sound::DroneFire, .55f, true, a.home);
+            else roar(a.home, host);
+        }
+        const auto& ship = fleetHulls[size_t(a.carrier)];
+        const Vec3 source = ship.center + state_.fleetShift[size_t(a.carrier)] + ship.emitter();
+        const float fall = float(a.spawnFx / arrivalDuration);
+        a.actor.position = a.home + normalized(source - a.home) * (4.f * fall * fall);
+        if (a.spawnFx > 0) return;
+        a.carrier = -1;
+    }
     a.gunRecoil = std::max(0.f, a.gunRecoil - float(dt * 4.5));
     a.suppression = std::max(0.f, a.suppression - float(dt * 0.45));
     a.overchargeCooldown = std::max(0.0, a.overchargeCooldown - dt);
-    // Enforcer natural phase-shield recharge after staying out of fire.
-    if (!drone && a.variant > 0 && a.maxShield > 0 && elapsed_ >= a.shieldRegenAt && a.shield < a.maxShield) {
-        a.shield = std::min(a.maxShield, a.shield + float(9.5 * dt));
+    const bool braced = guardActive(a);
+    a.guardLift = std::clamp(a.guardLift + float(dt) * (braced ? 5.5f : -10.f), 0.f, 1.f);
+    if (braced && !guardHintShown_) {
+        guardHintShown_ = true;
+        setTacticalCallout("FLANK OR BREAK THE GUARD", shieldCyan, 2.6f);
     }
-    // Unlinked standard troopers lose temporary drone-granted shield quickly.
-    if (!drone && a.variant == 0 && !a.linked && a.shield > 0) {
-        a.shield = std::max(0.f, a.shield - float(14.0 * dt));
-    }
-    if (a.linked && !droneLinkWarned_ && state_.phase != MissionPhase::Overwatch) {
-        droneLinkWarned_ = true;
-        setRadio(Line::DeltaShieldDrone, 3.2f, host, true, RadioOrder);
-    }
-
     poseAlien(a);
 
     if (a.spawnFx > 0) a.spawnFx -= dt;
@@ -1258,20 +1434,14 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         a.actor.speed = 0;
         return;
     }
-    if (elapsed_ < a.distractedUntil) {
-        // A pulse from Nora's dish: the drone swings its emitter toward the house and holds still.
-        const Vec3 to = dishFocus() - a.actor.position;
-        const float yaw = std::atan2(to.x, to.z);
-        a.actor.yaw += wrapDelta(a.actor.yaw, yaw) * float(1.0 - std::exp(-9.0 * dt));
+    if (!a.alerted && elapsed_ < a.cargoDiversionUntil) {
+        steerAlongPath(a, a.home, 2.8f, dt, false);
+        const float yaw = std::atan2(a.velocity.x, a.velocity.z);
+        if (a.actor.speed > .2f) a.actor.yaw += wrapDelta(a.actor.yaw, yaw) * float(1.0 - std::exp(-8.0 * dt));
         a.gunYaw = a.actor.yaw;
-        a.gunPitch = -std::atan2(to.y, planar(to));
-        a.gunCharge = std::max(0.f, a.gunCharge - float(dt * 5.0));
-        a.chargeTime = 0;
-        a.burstLeft = 0;
-        steerAlongPath(a, a.actor.position, 0.f, dt, drone);
+        a.gunPitch = .15f;
         return;
     }
-
     a.radar = std::max(0.f, a.radar - float(dt));
     const Vec3 eye = drone ? a.actor.position : atHeight(a.actor.position, alienWeakPoint.y * alienScale(a.variant));
     const Vec3 playerEye = atHeight(snap.player.position, snap.eyeHeight);
@@ -1300,8 +1470,13 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         }
         if (!a.alerted) {
             const float patrolOffset = std::sin(float(elapsed_) * 0.45f + a.hoverPhase) * 1.9f;
-            const Vec3 patrolTarget = a.home + Vec3{patrolOffset, 0, std::cos(float(elapsed_) * 0.35f + a.hoverPhase) * 1.1f};
+            Vec3 patrolTarget = a.home + Vec3{patrolOffset, 0, std::cos(float(elapsed_) * 0.35f + a.hoverPhase) * 1.1f};
             steerAlongPath(a, patrolTarget, drone ? 1.5f : 1.15f, dt, drone);
+            if (!drone && a.actor.speed > .35f &&
+                (state_.chapter == MissionChapter::BriarHouse || scoutDeck(state_.operation.stage))) {
+                const float yaw = std::atan2(a.velocity.x, a.velocity.z);
+                a.actor.yaw += wrapDelta(a.actor.yaw, yaw) * float(1. - std::exp(-2.8 * dt));
+            }
             a.gunYaw = a.actor.yaw - .14f;
             a.gunPitch = .25f;
             emitScannerBeam(a);
@@ -1323,6 +1498,9 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         if (outcome == CivilianOutcome::Pinned || outcome == CivilianOutcome::Escorting) protectedSlot = cSlot;
     } else if (state_.phase == MissionPhase::Operation && state_.chapter == MissionChapter::Timberline && a.huntAt > 0 &&
                agents_[1].used && !agents_[1].isDead()) {
+        protectedSlot = 1;
+    } else if (state_.chapter == MissionChapter::Array && state_.operation.stage == OperationStage::Door &&
+               a.squad == arrayBreachSquad) {
         protectedSlot = 1;
     }
     if (state_.phase == MissionPhase::Boarding && !drone) {
@@ -1372,15 +1550,50 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
     const bool seesTarget = atCommander || (targetCiv < 0 ? seesPlayer : !world_.blocked(eye, targetAim));
     const float preferredRange = drone ? 9.0f : 7.5f;
 
-    if (vaultWall(a, dt, host)) {
+    const auto plant = [&] {
+        a.velocity = {};
+        a.actor.speed = 0.f;
+        a.actor.trackMotion({}, std::min(1.f, float(dt * 10)));
+    };
+    const bool firing = a.chargeTime > 0 || a.burstLeft > 0;
+    const bool holdingJam = a.farJammer || (a.operationJammer && planarSquared(a.actor.position - jammerPost_) <= 1.f);
+    if (holdingJam || ((drone || heavy) && firing && seesTarget)) {
+        // A stationary emitter opens a predictable shot during a charge or an active jam.
+        plant();
+    } else if (vaultWall(a, dt, host)) {
         // The vault owns movement until the alien is inside the grounds.
     } else if (a.spawnFx > 0) {
         a.velocity = {};
         a.actor.speed = 0;
-    } else if (a.farJammer) {
-        steerAlongPath(a, a.home, 1.2f, dt, true);
     } else if (a.operationJammer) {
         steerAlongPath(a, jammerPost_, 3.8f, dt, true);
+    } else if (braced && seesTarget && targetCiv < 0 && !atCommander && !a.pursuer && distTarget < 22.f) {
+        if (distTarget > preferredRange) steerAlongPath(a, targetPos, 1.85f, dt, false);
+        else plant();
+    } else if (a.pursuer) {
+        // Pursuers share sightings and investigate the last place they saw or heard the player.
+        const bool heard = (snap.sprint && distPlayer < 12.f) || (playerFired && distPlayer < 24.f);
+        const bool squadHasEyes = std::any_of(agents_.begin() + 4, agents_.end(), [](const Agent& mate) {
+            return mate.pursuer && mate.used && !mate.dead && mate.spawnFx <= 0 && mate.seesPlayer;
+        });
+        if (seesPlayer || heard || squadHasEyes) a.tacGoal = snap.player.position;
+        else if (planarSquared(a.tacGoal - a.actor.position) < 2.1f * 2.1f) {
+            a.tacGoal = operation_.pursuitTrail;
+        }
+        Vec3 toward = a.tacGoal - a.actor.position;
+        toward.y = 0.f;
+        const Vec3 heading = normalized(toward);
+        if (seesPlayer && distPlayer < 5.f) {
+            const Vec3 side = Vec3{heading.z, 0.f, -heading.x} * (slot % 2 ? 2.f : -2.f);
+            const Vec3 strafe = a.actor.position + side + heading * (distPlayer - 4.f);
+            steerAlongPath(a, strafe, 2.7f, dt, drone);
+        } else {
+            const Vec3 step = a.actor.position + heading * .95f;
+            const float rise = world_.groundHeight(step) - world_.groundHeight(a.actor.position);
+            const float uphill = std::clamp(rise, 0.f, 1.f);
+            const float rush = drone ? 5.6f : seesTarget && firing ? 2.9f : (5.10f + .065f * difficulty_) * (1.f - .34f * uphill);
+            steerAlongPath(a, a.tacGoal, rush, dt, drone);
+        }
     } else if (targetCiv < 0) {
         tacticalMove(a, slot, snap, dt);
     } else if (!seesTarget || distTarget > preferredRange + 2.5f) {
@@ -1394,12 +1607,20 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
     }
 
     const float wantedYaw = std::atan2(targetAim.x - eye.x, targetAim.z - eye.z);
-    a.actor.yaw += wrapDelta(a.actor.yaw, wantedYaw) * float(1.0 - std::exp(-8.0 * dt));
+    const float turn = wrapDelta(a.actor.yaw, wantedYaw);
+    const float guardTurn = 1.18f * float(dt);
+    a.actor.yaw += braced ? std::clamp(turn, -guardTurn, guardTurn) : turn * float(1.0 - std::exp(-8.0 * dt));
     const auto aimGun = [&](Vec3 dir) {
         a.gunYaw = std::atan2(dir.x, dir.z);
         a.gunPitch = -std::atan2(dir.y, planar(dir));
     };
     if (a.gunRecoil < .81f) aimGun(targetAim - gunGrip(a) - Vec3{0, drone ? 0.f : rayBoreHeight * alienScale(a.variant), 0});
+    if (a.operationJammer) {
+        a.chargeTime = 0.;
+        a.gunCharge = 0.f;
+        a.burstLeft = 0;
+        return;
+    }
 
     a.fireCooldown -= dt;
     a.burstPause -= dt;
@@ -1421,13 +1642,17 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
     // Telegraphed ray-gun charging: Troopers briefly spin up their ray rifles before bursts,
     // while Enforcers periodically charge a a stronger, interruptible plasma charge.
     if (a.burstLeft <= 0 && a.burstPause <= 0 && a.chargeTime <= 0) {
-        const bool startOvercharge = !drone && a.variant > 0 && targetCiv < 0 && !atCommander && a.token &&
+        const bool startOvercharge = heavy && targetCiv < 0 && !atCommander && a.token &&
                                      a.overchargeCooldown <= 0 && a.sightTime > 0.7 && distTarget < 22.f;
         a.overcharging = startOvercharge;
         a.chargeDuration = startOvercharge ? std::max(0.95, 1.32 - 0.03 * difficulty_)
-                                           : (drone ? 0.24 : 0.34);
+                                           : heavy ? .80 : drone ? .56 : .34;
         a.chargeTime = 0.001;
         a.chargeSoundPlayed = false;
+        if (braced) {
+            a.chargeSoundPlayed = true;
+            host.playSound(Sound::RayCharge, .82f, true, rayGunMuzzle(a));
+        }
         if (startOvercharge && !overchargeWarned_) {
             overchargeWarned_ = true;
             setRadio(Line::DeltaHeavyCharge, 2.6f, host, true, RadioUrgent);
@@ -1460,6 +1685,7 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         if (a.burstLeft == 0) {
             a.overcharging = false;
             a.chargeSoundPlayed = false;
+            if (heavy) a.guardDownUntil = std::max(a.guardDownUntil, elapsed_ + .65);
             if (heavyBeam) a.overchargeCooldown = std::max(4.5, 8.2 - 0.35 * difficulty_);
             a.burstPause = (std::max(0.8, 1.6 - difficulty_ * 0.06) + rng_.draw("alien.burst") * 0.45) *
                            (suppressing ? 1.55 : heavyBeam ? 1.35 : 1.0);
@@ -1488,7 +1714,7 @@ void MissionController::updateAlien(int slot, Snapshot& snap, double dt, bool pl
         dir.z += float(rng_.between("alien.sz", -spread, spread));
         aimGun(dir);
         const Vec3 muzzle = rayGunMuzzle(a);
-        const float barrel = drone ? .52f : rayMuzzle * rayLength(a.variant) * scale;
+        const float barrel = drone ? droneMuzzle : rayMuzzle * rayLength(a.variant) * scale;
         const float damage = (drone ? 6.5f + difficulty_ * .5f : 8.f + difficulty_ * .6f) + (a.variant > 0 ? 3.f : 0.f);
         launchPlasma(muzzle, forward(a.gunYaw, a.gunPitch), heavyBeam,
                      damage * (heavyBeam ? 2.f : 1.f) * (suppressing ? .5f : 1.f),
@@ -1597,7 +1823,7 @@ void MissionController::updateBoarding(Snapshot& snap, double dt, MissionHost& h
         heading = exfilHover - exfilApproach;
         state_.evacPitch = .14f * (1.f - k);
     } else {
-        state_.evacPos = exfilHover + Vec3{0, std::sin(float(t) * 1.7f) * .12f, 0};
+        state_.evacPos = exfilHover;
         state_.evacPitch = 0.f;
     }
     state_.evacYaw += wrapDelta(state_.evacYaw, std::atan2(heading.x, heading.z)) * float(1.0 - std::exp(-2.0 * dt));
@@ -1633,7 +1859,18 @@ void MissionController::updateBoarding(Snapshot& snap, double dt, MissionHost& h
             finishBoarding();
             crossing = 0;
         }
-        if (crossing == 0) beginLift(snap, host);
+        // Nora finishes telling her family why she's staying before the lift can be skipped.
+        const bool noraRefusing = radioLine_ >= Line::NoraStayBoth && radioLine_ <= Line::NoraStayAlone &&
+                                  radioSpeaking();
+        if (crossing == 0) {
+            if (noraRefusing) {
+                // Everyone is aboard. The rest of her line is outside the timed clear.
+                state_.missionSeconds -= float(dt);
+                setObjective("HOLD THE CLEARING", "DUSTOFF PREPARING TO LIFT");
+            } else {
+                beginLift(snap, host);
+            }
+        }
         return;
     }
     setSignalHint(waiting ? "SEND THEM TO DUSTOFF" : "SEND DUSTOFF");
@@ -1659,6 +1896,7 @@ void MissionController::updateBoarding(Snapshot& snap, double dt, MissionHost& h
     }
     boardingCalled_ = true;
     boardingCalledAt_ = t;
+    setObjective("HOLD THE CLEARING", waiting ? "FAMILY BOARDING DUSTOFF" : "DUSTOFF PREPARING TO LIFT");
     for (int s = 0; s < 3; ++s) {
         auto& civ = agents_[size_t(sectors_[s].civSlot)];
         if (s != nora && civ.civilian == CivilianOutcome::Sheltered) civ.running = true;
@@ -1672,7 +1910,7 @@ void MissionController::updateBoarding(Snapshot& snap, double dt, MissionHost& h
                                : goingWalt ? Line::NoraStayWalt
                                : goingBen  ? Line::NoraStayBen
                                            : Line::NoraStayAlone,
-                 4.0f, host, false, RadioStory);
+                 4.0f, host, false, RadioUrgent);
     }
 }
 
@@ -1712,8 +1950,10 @@ void MissionController::updateExfil(Snapshot& snap, const Input& input, double d
         snap.match = Match::Results;
         return;
     }
-    const float k = float(std::clamp(t / exfilClimb, 0.0, 1.0));
-    const Vec3 bird = exfilHover + (exfilAway - exfilHover) * (k * k);
+    const float progress = float(t / exfilClimb);
+    const float k = std::min(progress, 1.f);
+    const float travel = k * k + 2.f * (progress - k);
+    const Vec3 bird = exfilHover + (exfilAway - exfilHover) * travel;
     const Vec3 heading = exfilAway - exfilHover;
     state_.evacPos = bird;
     state_.evacYaw += wrapDelta(state_.evacYaw, std::atan2(heading.x, heading.z)) * float(1.0 - std::exp(-2.0 * dt));
@@ -1748,7 +1988,8 @@ void MissionController::tacticalMove(Agent& a, int slot, const Snapshot& snap, d
         if (node >= 0) {
             a.tacGoal = nav_.node(node).position;
             a.hasGoal = a.hiding = true;
-            a.hideUntil = elapsed_ + 1.6 + rng_.draw("alien.hide") * 1.2;
+            const float approach = state_.chapter == MissionChapter::BriarHouse ? planar(a.tacGoal - a.actor.position) / speed : 0.f;
+            a.hideUntil = elapsed_ + approach + 1.6 + rng_.draw("alien.hide") * 1.2;
             a.replanAt = a.hideUntil;
         }
     }
@@ -1904,7 +2145,7 @@ bool MissionController::vaultWall(Agent& a, double dt, MissionHost& host) {
 }
 
 void MissionController::damageAgent(int slot, float amount, bool critical, bool fromPlayer,
-                                    Snapshot& snap, MissionHost& host) {
+                                    Snapshot& snap, MissionHost& host, bool guardHit) {
     auto& a = agents_[slot];
     if (!a.used || a.isDead()) return;
 
@@ -1941,6 +2182,7 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
             return;
         }
         if (a.actor.health <= 0) {
+            const bool noraStayed = a.sector == nora && a.civilian == CivilianOutcome::Stayed;
             a.actor.health = 0;
             a.civilian = CivilianOutcome::Lost;
             a.deathElapsed = 0;
@@ -1948,7 +2190,7 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
             if (a.sector >= 0 && a.sector < 3) sectors_[a.sector].resolved = true;
             host.playSound(Sound::Death, 0.9f, true, a.actor.position);
             const bool allLost = state_.civiliansLost >= state_.civiliansTotal;
-            if (allLost) dismissRadio(host);
+            if (allLost || noraStayed) dismissRadio(host);
             setRadio(a.sector >= 0 && a.sector < 3 ? family[a.sector].lost : Line::CivilianLost, 3.5f, host,
                      true, RadioUrgent);
             if (allLost) {
@@ -1973,19 +2215,37 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
         }
     }
 
+    if (guardHit) {
+        a.guard = std::max(0.f, a.guard - amount);
+        const bool broken = a.guard <= 0.f;
+        if (broken) {
+            a.staggerUntil = std::max(a.staggerUntil, elapsed_ + .75);
+            host.playSound(Sound::ShieldBreak, .9f, true, a.actor.position);
+        }
+        if (fromPlayer) {
+            snap.lethalMarker = snap.headshot = false;
+            snap.hitMarker = broken ? .24f : .15f;
+            snap.guardHit = true;
+            if (broken) {
+                ++state_.shieldsBroken;
+                setTacticalCallout("GUARD BROKEN", shieldCyan, 1.5f);
+            } else host.playSound(Sound::Hit, .65f, false, {});
+        }
+        return;
+    }
+
     // Ambush Precision: a critical hit on an unalerted alien rewards careful overwatch & room-clearing.
     const bool ambush = fromPlayer && critical && wasUnalerted;
     if (ambush) amount *= 1.5f;
 
     // A critical hit or a heavy hit backfires a charging Enforcer's cannon.
-    bool interrupted = false;
     if (fromPlayer && a.overcharging && (critical || amount >= 48.f)) {
-        interrupted = true;
         a.overcharging = false;
         a.chargeTime = 0;
         a.gunCharge = 0;
         a.chargeSoundPlayed = false;
         a.staggerUntil = elapsed_ + 0.78;
+        a.guardDownUntil = elapsed_ + 1.2;
         a.overchargeCooldown = 5.5;
         amount += 28.f;
         ++state_.chargeInterrupts;
@@ -1995,34 +2255,13 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
             interruptPraised_ = true;
             setRadio(Line::DeltaReflectedCharge, 2.6f, host, true, RadioChatter);
         }
-    } else if (fromPlayer && critical && a.role == MissionRole::AlienTrooper && a.shield <= 0.f) {
+    } else if (fromPlayer && critical && a.role == MissionRole::AlienTrooper && elapsed_ >= a.staggerUntil) {
         a.staggerUntil = std::max(a.staggerUntil, elapsed_ + 0.34);
-    }
-
-    // Phase-shield absorption (Enforcers & Drone-linked Troopers).
-    bool hitShield = false;
-    bool brokeShield = false;
-    if (a.shield > 0.f) {
-        hitShield = true;
-        a.shieldRegenAt = elapsed_ + 5.5;
-        const float absorbed = std::min(a.shield, amount);
-        a.shield -= absorbed;
-        amount -= absorbed;
-        if (a.shield <= 0.01f) {
-            a.shield = 0.f;
-            brokeShield = true;
-            a.staggerUntil = std::max(a.staggerUntil, elapsed_ + 0.45);
-            host.playSound(Sound::ShieldBreak, 0.90f, true, a.actor.position);
-            if (fromPlayer) {
-                ++state_.shieldsBroken;
-                if (!interrupted) setTacticalCallout("SHIELD BROKEN", shieldCyan, 1.5f);
-            }
-        }
     }
 
     a.actor.health -= amount;
     if (a.role == MissionRole::AlienTrooper && !a.hidOnce && a.actor.health > 0 &&
-        (a.actor.health < a.maxHealth * .45f || (fromPlayer && brokeShield))) {
+        a.actor.health < a.maxHealth * .45f) {
         a.hidOnce = true;
         a.wantsCover = true;
     }
@@ -2030,7 +2269,7 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
         snap.lethalMarker = a.actor.health <= 0;
         snap.hitMarker = snap.lethalMarker ? 0.33f : 0.15f;
         snap.headshot = critical;
-        state_.shieldHit = hitShield && !brokeShield && !snap.lethalMarker;
+        snap.guardHit = false;
         host.playSound(Sound::Hit, 0.65f, false, {});
     }
     if (a.actor.health <= 0) {
@@ -2041,21 +2280,6 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
         a.token = false;
         a.overcharging = false;
         a.gunCharge = 0;
-        // Drone EMP Feedback: destroying a linking Drone shatters its ally's shield and staggers them!
-        if (a.role == MissionRole::AlienDrone && a.linkTarget >= 4 && a.linkTarget < int(agents_.size())) {
-            auto& mate = agents_[a.linkTarget];
-            if (mate.used && !mate.dead) {
-                mate.shield = 0.f;
-                mate.linked = false;
-                mate.overcharging = false;
-                mate.chargeTime = 0;
-                mate.gunCharge = 0;
-                mate.staggerUntil = std::max(mate.staggerUntil, elapsed_ + 0.70);
-                host.playSound(Sound::ShieldBreak, 0.85f, true, mate.actor.position);
-                if (fromPlayer) setTacticalCallout("LINK DISRUPTED", shieldCyan, 1.7f);
-            }
-            a.linkTarget = -1;
-        }
         ++state_.aliensKilled;
         state_.aliensRemaining = livingAliens();
         if (fromPlayer) {
@@ -2071,25 +2295,47 @@ void MissionController::damageAgent(int slot, float amount, bool critical, bool 
     }
 }
 
+float MissionController::droneShot(const Agent& a, Vec3 origin, Vec3 dir, float reach) const {
+    const float yaw = a.alerted ? a.gunYaw : a.actor.yaw;
+    const auto axes = alienGunFrame(a.actor.position, yaw, droneHullPitch(a.alerted, a.gunPitch, a.actor.speed), 0);
+    const Vec3 offset = origin - a.actor.position;
+    const Vec3 localOrigin{dot(offset, axes.right), dot(offset, axes.up), dot(offset, axes.axis)};
+    const Vec3 localDir{dot(dir, axes.right), dot(dir, axes.up), dot(dir, axes.axis)};
+    const auto wing = [&](float side) {
+        const Vec3 center{side * droneWingCenter.x, droneWingCenter.y, droneWingCenter.z};
+        return rayHitBox(localOrigin, localDir, center, droneWingHalf, reach);
+    };
+    float hit = std::min({rayHitBox(localOrigin, localDir, {}, droneBodyHalf, reach), wing(-1.f), wing(1.f)});
+#ifndef ESP_PLATFORM
+    if (a.operationJammer && !assets_.desktopJammer.triangles.empty()) {
+        for (const float sign : {-1.f, 1.f}) {
+            const Vec3 panel{sign * jammerPanelCenter.x, jammerPanelCenter.y, jammerPanelCenter.z};
+            hit = std::min(hit, rayHitBox(localOrigin, localDir, panel, jammerPanelHalf, hit));
+        }
+    }
+#endif
+    return hit;
+}
+
 bool MissionController::resolvePlayerShot(Vec3 origin, Vec3 dir, float damage, float worldDist, Snapshot& snap,
                                           MissionHost& host, Vec3& hitPointOut) {
     float best = worldDist;
     int victim = -1;
     float zone = 1.f;
-    bool critical = false;
+    bool critical = false, guardHit = false;
 
     for (int i = 0; i < int(agents_.size()); ++i) {
         const auto& a = agents_[i];
         if (!a.used || !a.actor.visible || a.isDead()) continue;
         float hit = infinity;
         float hitZone = 1.f;
-        bool isCritical = false;
+        bool isCritical = false, hitGuard = false;
         if (a.role == MissionRole::AlienDrone) {
-            hit = rayHitBox(origin, dir, a.actor.position, {0.58f, 0.28f, 0.58f}, best);
+            hit = droneShot(a, origin, dir, best);
             if (hit < best) {
                 const Vec3 toCenter = a.actor.position - origin;
                 const Vec3 perpendicular = toCenter - dir * dot(toCenter, dir);
-                isCritical = dot(perpendicular, perpendicular) < .20f * .20f;
+                isCritical = dot(perpendicular, perpendicular) < .23f * .23f;
                 hitZone = isCritical ? 2.1f : 1.25f;
             }
         } else if (a.role == MissionRole::AlienTrooper) {
@@ -2106,6 +2352,13 @@ bool MissionController::resolvePlayerShot(Vec3 origin, Vec3 dir, float damage, f
                 const float h = localOrigin.y + dir.y * hit;
                 hitZone = isCritical ? 2.2f : h > 1.1f * scale ? 1.4f : 1.f;
             }
+            const float guardDistance = guardShot(a, origin, dir);
+            if (guardDistance < std::min(hit, best)) {
+                hit = guardDistance;
+                hitGuard = true;
+                isCritical = false;
+                hitZone = 1.f;
+            }
         } else {
             // Pinned civilians cower about 1.1 m tall; the hitbox follows what is drawn.
             const bool cowering = a.role == MissionRole::Civilian && a.civilian == CivilianOutcome::Pinned;
@@ -2121,6 +2374,7 @@ bool MissionController::resolvePlayerShot(Vec3 origin, Vec3 dir, float damage, f
             victim = i;
             zone = hitZone;
             critical = isCritical;
+            guardHit = hitGuard;
         }
     }
 
@@ -2133,11 +2387,19 @@ bool MissionController::resolvePlayerShot(Vec3 origin, Vec3 dir, float damage, f
             state_.uplinkHealth = std::max(0.f, state_.uplinkHealth - damage);
             snap.lethalMarker = state_.uplinkHealth == 0.f;
             snap.headshot = false;
+            snap.guardHit = false;
             snap.hitMarker = snap.lethalMarker ? .33f : .15f;
             host.playSound(snap.lethalMarker ? Sound::ShieldBreak : Sound::Hit, .85f, true, center);
             if (snap.lethalMarker) {
                 addTracer(center, center + Vec3{0, 3.f, 0}, overchargeOrange, TracerStyle::DropBeam, 3.f);
-                enterIncoming(host);
+                state_.flagshipBeam = false;
+                setTacticalCallout("RECEIVER DOWN / FLEET SEARCHING", calloutGold, 3.0f);
+                if (nextSector() < 0) enterIncoming(host);
+                else {
+                    state_.phase = MissionPhase::Rescue;
+                    rescueObjective_ = -1;
+                    saveCheckpoint(MissionCheckpoint::Rescue);
+                }
             }
             return true;
         }
@@ -2161,7 +2423,13 @@ bool MissionController::resolvePlayerShot(Vec3 origin, Vec3 dir, float damage, f
     }
     hitPointOut = origin + dir * best;
     addTracer(origin + forward(snap.camera.yaw, snap.camera.pitch) * 0.5f, hitPointOut, amberTracer, TracerStyle::Ballistic);
-    damageAgent(victim, damage * zone, critical, true, snap, host);
+    damageAgent(victim, damage * zone, critical, true, snap, host, guardHit);
+    if (guardHit) {
+        const bool broken = agents_[size_t(victim)].guard <= 0.f;
+        const Vec3 hit = hitPointOut - dir * .045f;
+        addTracer(hit, hit - dir, broken ? chargedPlasmaTint : shieldCyan, TracerStyle::PlasmaImpact,
+                  broken ? 1.35f : .78f);
+    }
     return true;
 }
 
@@ -2170,7 +2438,7 @@ int MissionController::nearestAlienForApache(Vec3 gunPos) const {
     float bestScore = infinity;
     for (int i = 4; i < int(agents_.size()); ++i) {
         const auto& a = agents_[i];
-        if (!a.used || a.dead) continue;
+        if (!a.used || a.dead || !a.actor.visible) continue;
         const Vec3 aim = a.role == MissionRole::AlienDrone ? a.actor.position : atHeight(a.actor.position, alienChest);
         const float score = length(aim - gunPos) * (world_.blocked(gunPos, aim) ? 2.5f : 1.f);
         if (score < bestScore) {
@@ -2185,9 +2453,9 @@ bool MissionController::apacheShotAlien(int index, Vec3 gunPos, Vec3 dir, float 
                                         Snapshot& snap, MissionHost& host, Vec3& hitPointOut) {
     if (index < 4 || index >= int(agents_.size())) return false;
     const auto& a = agents_[index];
-    if (!a.used || a.dead) return false;
+    if (!a.used || a.dead || !a.actor.visible) return false;
     const float hit = a.role == MissionRole::AlienDrone
-        ? rayHitBox(gunPos, dir, a.actor.position, {0.65f, 0.35f, 0.65f}, worldDist)
+        ? droneShot(a, gunPos, dir, worldDist)
         : cylinder(gunPos, dir, a.actor.position, alienRadius + .08f, alienHeight * alienScale(a.variant));
     const bool struck = hit < worldDist;
     hitPointOut = gunPos + dir * (struck ? hit : std::min(80.f, worldDist));
@@ -2200,7 +2468,7 @@ void MissionController::explodeAliens(Vec3 center, float radius, Snapshot& snap,
     const Vec3 eye = atHeight(center, 1.1f);
     for (int i = 4; i < int(agents_.size()); ++i) {
         const auto& a = agents_[i];
-        if (!a.used || a.dead) continue;
+        if (!a.used || a.dead || !a.actor.visible) continue;
         const float d = planar(a.actor.position - center);
         const Vec3 aim = a.role == MissionRole::AlienDrone ? a.actor.position : atHeight(a.actor.position, alienChest);
         if (d <= radius && !world_.blocked(eye, aim)) {
@@ -2224,19 +2492,12 @@ bool MissionController::districtAlerted(int sector) const {
     });
 }
 
-int MissionController::nextSector(Vec3 position) const {
+int MissionController::nextSector() const {
     if (activeSector_ >= 0 && !sectors_[activeSector_].resolved) return activeSector_;
-    int best = -1;
-    float bestDist = infinity;
-    for (int s = 0; s < int(sectors_.size()); ++s) {
-        if (sectors_[s].resolved) continue;
-        const float dist = planarSquared(sectors_[s].center - position);
-        if (dist < bestDist) {
-            best = s;
-            bestDist = dist;
-        }
-    }
-    return best;
+    // From the wreck the east road reaches Ben, Nora's receiver, then Walt's path into the LZ.
+    // Walking into a different district still takes ownership of the marker.
+    for (const int sector : {ben, nora, walt}) if (!sectors_[sector].resolved) return sector;
+    return -1;
 }
 
 void MissionController::updateWaypoint(const Snapshot& snap) {
@@ -2261,6 +2522,12 @@ void MissionController::updateWaypoint(const Snapshot& snap) {
         goal = operationGoal_;
         break;
     case MissionPhase::Uplink:
+        if (!world_.blocked(snap.camera.position, uplinkPosition + uplinkEmitter)) {
+            state_.hasWaypoint = true;
+            state_.waypoint = uplinkPosition;
+            state_.waypointIsRoute = false;
+            return;
+        }
         goal = uplinkPosition;
         break;
     case MissionPhase::Incoming:
@@ -2272,7 +2539,7 @@ void MissionController::updateWaypoint(const Snapshot& snap) {
         state_.hasWaypoint = false;
         return;
     case MissionPhase::Rescue: {
-        const int s = nextSector(player);
+        const int s = nextSector();
         if (s < 0) {
             state_.hasWaypoint = false;
             return;
@@ -2327,7 +2594,6 @@ void MissionController::updateWaypoint(const Snapshot& snap) {
 }
 
 void MissionController::enterUplink(MissionHost& host) {
-    clearRadioQueue();
     state_.phase = MissionPhase::Uplink;
     state_.uplinkVisible = true;
     state_.uplinkHealth = uplinkMaxHealth;
@@ -2335,24 +2601,22 @@ void MissionController::enterUplink(MissionHost& host) {
     setObjective("DESTROY THE ALIEN RECEIVER", "NORTH AVENUE / SHOOT THE GLOWING CORE");
     // The tower is how they hear Nora's dish. Blind it and they have to come and look.
     if (survivorAlive(nora)) {
-        setRadio(Line::NoraRelayLock, 4.0f, host, false,
-                 RadioUrgent);
+        setRadio(Line::NoraRelayLock, 4.0f, host, false, RadioStory);
     } else {
         setRadio(Line::DeltaDestroyRelay, 3.6f, host, true, RadioUrgent);
     }
 }
 
 void MissionController::enterIncoming(MissionHost& host) {
-    clearRadioQueue();
     state_.phase = MissionPhase::Incoming;
+    state_.flagshipBeam = false;
     phaseTime_ = 0;
     saveCheckpoint(MissionCheckpoint::Extraction);
     setObjective("REGROUP AT THE NORTH LZ", "CHECKPOINT SAVED / MOVE TO THE FOUR FLARES");
-    setRadio(Line::DustoffInbound, 3.4f, host, true, RadioUrgent);
+    setRadio(Line::DustoffInbound, 3.4f, host);
 }
 
-// Nora's dish on the east wing still transmits on a timer. Each pulse swings the shield drone on
-// North Avenue round toward the house for a moment and drops its link to the Enforcer.
+// The North Avenue pulse collapses the guard field briefly without draining its charge.
 void MissionController::updateDishPulse(double dt, MissionHost& host) {
     state_.dishPulse = std::max(0.f, state_.dishPulse - float(dt * 1.25));
     const auto& sec = sectors_[nora];
@@ -2364,23 +2628,15 @@ void MissionController::updateDishPulse(double dt, MissionHost& host) {
     const Vec3 focus = dishFocus();
     host.playSound(Sound::RadioChirp, .75f, true, focus);
     for (size_t i = 4; i < agents_.size(); ++i) {
-        auto& drone = agents_[i];
-        if (!drone.used || drone.dead || drone.role != MissionRole::AlienDrone || drone.sector != nora) continue;
-        drone.distractedUntil = elapsed_ + dishDistraction;
-        addTracer(focus, drone.actor.position, pulseWhite, TracerStyle::ShieldLink, 1.3f);
-        if (drone.linkTarget < 4) continue;
-        auto& mate = agents_[size_t(drone.linkTarget)];
-        drone.linkTarget = -1;
-        if (!mate.used || mate.dead) continue;
-        mate.shield = 0.f;
-        mate.linked = false;
-        mate.shieldRegenAt = elapsed_ + dishDistraction;
-        mate.overcharging = false;
-        mate.chargeTime = 0;
-        mate.gunCharge = 0;
-        mate.staggerUntil = std::max(mate.staggerUntil, elapsed_ + .6);
-        host.playSound(Sound::ShieldBreak, .8f, true, mate.actor.position);
-        setTacticalCallout("LINK DISRUPTED", shieldCyan, 1.7f);
+        auto& a = agents_[i];
+        if (!a.used || a.dead || a.sector != nora || a.guard <= 0.f || a.spawnFx > 0.) continue;
+        if (guardActive(a)) {
+            a.staggerUntil = std::max(a.staggerUntil, elapsed_ + .36);
+            host.playSound(Sound::ShieldBreak, .66f, true, a.actor.position);
+        }
+        a.guardDownUntil = std::max(a.guardDownUntil, elapsed_ + dishGuardOpening);
+        addTracer(focus, atHeight(a.actor.position, enforcerGuardCenter.y), pulseWhite, TracerStyle::ShieldLink, 1.3f);
+        setTacticalCallout("DISH PULSE / GUARD OPEN", shieldCyan, 1.7f);
     }
 }
 
@@ -2393,7 +2649,7 @@ bool MissionController::signalThreat(const Agent& civ, Vec3 destination, int& sh
     shooter = -1;
     for (size_t i = 4; i < agents_.size(); ++i) {
         const auto& a = agents_[i];
-        if (!a.used || a.dead || a.spawnFx > 0 || elapsed_ < a.distractedUntil) continue;
+        if (!a.used || a.dead || a.spawnFx > 0) continue;
         const float range = planarSquared(a.actor.position - civ.actor.position);
         if (range >= best) continue;
         const Vec3 eye = a.role == MissionRole::AlienDrone ? a.actor.position
@@ -2432,10 +2688,11 @@ void MissionController::updateBenSignal(const Snapshot& snap, MissionHost& host)
     }
     civ.civilian = CivilianOutcome::Evacuating;
     civ.rallying = true;
+    civ.goal = snap.player.position;
     sec.resolved = true;
     refreshCivilianTotals();
     host.playSound(Sound::CivilianSaved, .85f, false, {});
-    setRadio(survivorLine(ben), 3.8f, host, false, RadioUrgent);
+    setRadio(survivorLine(ben), 3.8f, host, false, RadioStory);
 }
 
 Line MissionController::survivorLine(int sector) const {
@@ -2451,11 +2708,11 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
         if (sec.resolved) continue;
         const float rangeSq = planarSquared(player - sec.center);
         if (!sec.spawned && rangeSq < 17.5f * 17.5f) {
-            spawnSectorWave(s);
+            spawnSectorWave(s, host);
             if (sec.spawned) {
                 setRadio(family[s].callout, 3.4f, host, true, RadioOrder, s);
                 if (s == nora) {
-                    setRadio(Line::NoraDishPulse, 3.8f, host, false, RadioStory, s);
+                    setRadio(Line::NoraGuardPulse, 3.8f, host, false, RadioStory, s);
                 }
             }
         }
@@ -2492,14 +2749,17 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
     }
 
     state_.aliensRemaining = livingAliens();
-    const int next = nextSector(player);
-    if (next < 0) {
-        if (state_.civiliansSaved > 0) {
+    const int next = nextSector();
+    const bool atReceiver = sectors_[nora].resolved &&
+                            planarSquared(player - sectors_[nora].center) < 17.5f * 17.5f;
+    if (next < 0 || (!state_.uplinkVisible && atReceiver)) {
+        if (state_.civiliansSaved > 0 || next >= 0) {
             if (snap.clip <= 8 && snap.reserve <= 15) {
                 host.refillPlayer(false);
                 setTacticalCallout("DELTA-1 RESUPPLY", calloutGold, 1.8f);
             }
-            enterUplink(host);
+            if (state_.uplinkVisible) enterIncoming(host);
+            else enterUplink(host);
         }
         return;
     }
@@ -2510,9 +2770,9 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
                    : next == ben ? 6
                    : livingAliens(next) == 0 ? 2 : next == walt && !districtAlerted(next) ? 3
                    : next == nora && std::any_of(agents_.begin() + 4, agents_.end(), [](const Agent& a) {
-                         return a.used && !a.dead && a.sector == nora && a.role == MissionRole::AlienDrone;
+                         return a.used && !a.dead && a.sector == nora && a.guard > 0.f;
                      }) ? 7 : 1;
-    const int objective = (state_.civiliansSaved + state_.civiliansLost) * 18 + next * 8 + step;
+    const int objective = (state_.civiliansSaved + state_.civiliansLost) * 24 + next * 8 + step;
     if (objective != rescueObjective_) {
         rescueObjective_ = objective;
         char title[40], instruction[64];
@@ -2523,7 +2783,7 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
         else if (step == 4) copyText(instruction, sizeof(instruction), "STAY LOW AND FOLLOW WALT TO THE STONE WALL");
         else if (step == 5) copyText(instruction, sizeof(instruction), "WALT IS IN COVER. CLEAR THE PATROL TO CONTINUE");
         else if (step == 6) copyText(instruction, sizeof(instruction), "SIGNAL BEN ACROSS WHEN NOTHING CAN SEE HIM");
-        else copyText(instruction, sizeof(instruction), "HIT THE BIG ONE WHILE THE DISH HAS THE DRONE");
+        else copyText(instruction, sizeof(instruction), "FLANK THE GUARD OR USE NORA'S DISH PULSE");
         setObjective(title, instruction);
     }
 
@@ -2534,8 +2794,9 @@ void MissionController::updateRescue(Snapshot& snap, MissionHost& host) {
     const int node = nav_.nearest(player + normalized(sec.center - player) * 14.f);
     if (!nav_.valid(node)) return;
     const Vec3 spot = nav_.node(node).position;
+    if (std::abs(spot.x) < 19.f && std::abs(spot.z) < 15.5f) return;
     if (planarSquared(spot - player) <= 9.f * 9.f ||
-        dropAlien(MissionRole::AlienTrooper, spot, 0, snap, host) < 0) return;
+        !dropAlien(MissionRole::AlienTrooper, spot, 0, snap, host)) return;
     ++streetPatrols_;
     nextPatrolAt_ = elapsed_ + 22.0;
     setRadio(Line::DeltaStreetPatrol, 2.4f, host, true, RadioChatter);
@@ -2553,15 +2814,17 @@ void MissionController::enterExtraction(Snapshot& snap, MissionHost& host) {
     spawnExtractionWave(snap, host);
     snap.apacheReady = true;
     setObjective("HOLD THE NORTH TOWN LZ", "");
+    discardQueuedRadio(Line::DustoffInbound);
+    setRadio(Line::DeltaRelayDead, 3.8f, host);
 }
 
 void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, MissionHost& host) {
     if (state_.phase == MissionPhase::Breach) {
         phaseTime_ += dt;
         // Once the Warhorse crash patrol thins out, flankers drop onto South Boulevard East & West.
-        if (pendingFlankers_ > 0 && (phaseTime_ > 7.0 || livingAliens() <= 1)) {
+        if (pendingFlankers_ > 0 && (phaseTime_ > 7.0 || livingAliens() <= aliensPerSpawn())) {
             while (pendingFlankers_ > 0) {
-                if (dropAlien(MissionRole::AlienTrooper, breachFlank[pendingFlankers_ - 1], 0, snap, host) < 0) break;
+                if (!dropAlien(MissionRole::AlienTrooper, breachFlank[pendingFlankers_ - 1], 0, snap, host)) break;
                 --pendingFlankers_;
                 if (!flankersCalled_) {
                     flankersCalled_ = true;
@@ -2574,27 +2837,22 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
             clearRadioQueue();
             state_.phase = MissionPhase::Regroup;
             phaseTime_ = 0;
-            regroupBriefSent_ = false;
             snap.player.health = 100.f;
             host.refillPlayer(false);
             saveCheckpoint(MissionCheckpoint::Rescue);
-            setObjective("BREAKOUT CLEAR - MOVE INTO TOWN", "CHECKPOINT SAVED / AMMO RESUPPLIED");
+            setObjective("BREAKOUT CLEAR", "TOP OFF / FIND THE MARSH FAMILY");
             setRadio(Line::DeltaRoadClear, 2.2f, host, true, RadioUrgent);
+            setRadio(Line::DeltaFindMarsh, 4.6f, host, true, RadioStory);
         }
         return;
     }
 
     if (state_.phase == MissionPhase::Regroup) {
         phaseTime_ += dt;
-        if (!regroupBriefSent_ && phaseTime_ >= 2.0) {
-            regroupBriefSent_ = true;
-            setRadio(Line::DeltaFindMarsh, 4.6f, host, true, RadioStory);
-        }
         if (phaseTime_ >= regroupDuration) {
             state_.phase = MissionPhase::Rescue;
-            phaseTime_ = 0;
             nextPatrolAt_ = elapsed_ + 10.0;
-            setObjective("SWEEP THE TOWN 0/3", "FIND BEN (EAST), NORA (NORTH) AND WALT (WEST)");
+            setObjective("SWEEP THE TOWN 0/3", "BEN WAS LAST SEEN ON EAST RIDGE");
         }
         return;
     }
@@ -2604,26 +2862,11 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
         return;
     }
 
-    if (state_.phase == MissionPhase::Uplink) {
-        const float rangeSq = planarSquared(snap.player.position - uplinkPosition);
-        if (rangeSq < 19.f * 19.f) {
-            while (uplinkGuards_ < std::size(uplinkGuard)) {
-                const bool drone = uplinkGuards_ == 0;
-                if (dropAlien(drone ? MissionRole::AlienDrone : MissionRole::AlienTrooper,
-                              uplinkGuard[uplinkGuards_], drone ? 0 : 1, snap, host) < 0) break;
-                ++uplinkGuards_;
-            }
-        }
-        return;
-    }
-
     if (state_.phase == MissionPhase::Incoming) {
         const Vec3 lz = mapPoint(townLz[0], townLz[1]);
         if (planarSquared(snap.player.position - lz) >= assemblyRadius * assemblyRadius) return;
         if (phaseTime_ == 0) {
-            clearRadioQueue();
             host.playSound(Sound::AlienHorn, .88f, false, {});
-            setRadio(Line::DeltaRelayDead, 3.8f, host, true, RadioUrgent);
         }
         phaseTime_ += dt;
         if (phaseTime_ >= incomingLeadIn) enterExtraction(snap, host);
@@ -2652,11 +2895,8 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
                     setRadio(Line::NoraSpoofIdea, 4.2f, host,
                              false, RadioStory);
                 }
-            } else if (evacBeat_ == 1 && evacTimer_ <= evacDuration_ * 0.55) {
+            } else if (evacBeat_ == 1 && evacTimer_ <= 20.0) {
                 evacBeat_ = 2;
-                setRadio(Line::DeltaHearRotors, 3.0f, host, true, RadioChatter);
-            } else if (evacBeat_ == 2 && evacTimer_ <= 20.0) {
-                evacBeat_ = 3;
                 if (!state_.campaign) {
                     host.playSound(Sound::AlienHorn, 0.72f, false, {});
                     setRadio(Line::DeltaTwentySeconds, 2.8f, host, true, RadioOrder);
@@ -2678,7 +2918,100 @@ void MissionController::checkPhaseTransitions(Snapshot& snap, double dt, Mission
 }
 
 void MissionController::step(Snapshot& snap, const Input& input, double dt, bool playerFired,
-                             MissionHost& host) {
+                             MissionHost& host, MissionPartner partner) {
+    stepSimulation(snap, input, dt, playerFired, host, partner);
+#ifndef ESP_PLATFORM
+    if (state_.active && assets_.hasDesktopCampaignArt()) updateNpcMotion(snap, float(dt));
+#endif
+}
+
+#ifndef ESP_PLATFORM
+void MissionController::updateNpcMotion(const Snapshot& snap, float dt) {
+    const auto response = [dt](float rate) { return 1.f - std::exp(-rate * dt); };
+    const float follow = response(13.f), settle = response(8.8f), glance = response(10.5f);
+    const float flinchIn = response(24.f), flinchOut = response(9.f);
+    const float deltaTime = std::max(dt, .001f);
+    const auto approach = [](float& value, float target, float weight) { value += (target - value) * weight; };
+    const bool slopes = !world_.geometry().hillside.empty();
+    const bool pausedMotion = state_.phase == MissionPhase::Failed || state_.phase == MissionPhase::Victory;
+    for (auto& a : agents_) {
+        if (!a.used || !a.actor.visible || a.role == MissionRole::AlienDrone) continue;
+        auto& m = a.motion;
+        const bool civilian = a.role == MissionRole::Civilian;
+        const bool commander = a.role == MissionRole::Commander;
+        const bool human = civilian || commander;
+        const auto& actor = a.actor;
+        const Vec3 delta = actor.position - a.animationPosition;
+        const float traveled = m.ready && !pausedMotion ? planar(delta) : 0.f;
+        const bool reset = !m.ready || traveled > 1.15f;
+        const float wantedSpeed = !reset && !a.isDead() ? std::min(traveled / deltaTime, 7.8f) : 0.f;
+        const bool pinned = civilian && a.civilian == CivilianOutcome::Pinned;
+        const bool sneaking = civilian && a.civilian == CivilianOutcome::Escorting;
+        const float crouch = pinned ? 1.f : sneaking ? (elapsed_ < a.holdUntil ? .69f : .34f) : 0.f;
+        if (reset) {
+            m.speed = 0.f;
+            m.crouch = crouch;
+            m.phase = actor.phase;
+            m.lookYaw = m.lookPitch = m.lean = m.turn = m.travelYaw = 0.f;
+            m.footRise = {};
+            m.ready = true;
+        }
+        const float pace = m.speed;
+        approach(m.speed, wantedSpeed, wantedSpeed > pace ? follow : settle);
+        const float run = gaitRun(m.speed);
+        if (wantedSpeed > .09f) {
+            m.phase += traveled / gaitDistance(run);
+            m.phase -= std::floor(m.phase);
+        }
+        const float previousYaw = a.animationYaw;
+        const float offAxis = wantedSpeed > .2f
+            ? wrapDelta(actor.yaw, std::atan2(delta.x, delta.z)) : 0.f;
+        // Short lateral steps carry the body around corners while the head can look into the turn.
+        approach(m.travelYaw, std::clamp(offAxis, -1.35f, 1.35f), follow);
+        m.grounded = a.leapAt < 0. && a.spawnFx <= 0. && (human || !state_.cinematic);
+        a.animationPosition = actor.position;
+        a.animationYaw = actor.yaw;
+        if (!human) continue;
+
+        const float yawStep = reset ? 0.f : wrapDelta(previousYaw, actor.yaw);
+        approach(m.turn, std::clamp(yawStep / deltaTime * .075f, -.21f, .21f), follow);
+        approach(m.lean, std::clamp((wantedSpeed - pace) * .054f, -.15f, .19f), follow);
+        approach(m.crouch, crouch, crouch > m.crouch ? follow : settle);
+        const float flinch = civilian ? motionEase(float((a.flinchUntil - elapsed_ - .45) / .36)) : 0.f;
+        approach(m.flinch, flinch, flinch > m.flinch ? flinchIn : flinchOut);
+        approach(m.aim, commander && a.shouldAim ? 1.f : 0.f, follow);
+        m.recoil = std::max(0.f, m.recoil - dt * 5.5f);
+
+        float gaze = std::clamp(m.travelYaw * .53f + m.turn * 1.16f, -.62f, .62f);
+        float pitch = commander && a.shouldAim ? a.aimPitch : 0.f;
+        const Vec3 toward = snap.camera.position - atHeight(actor.position, pinned ? 1.08f : 1.60f);
+        if (m.speed < 1.8f && !snap.dead && planarSquared(toward) < 8.f * 8.f && (!commander || !a.shouldAim)) {
+            const float relative = wrapDelta(actor.yaw, std::atan2(toward.x, toward.z));
+            if (std::abs(relative) < 1.5f) {
+                gaze = std::clamp(relative, -.73f, .73f);
+                pitch = -std::atan2(toward.y, std::max(.3f, planar(toward)));
+            }
+        }
+        if (pinned) gaze *= .67f;
+        approach(m.lookYaw, gaze, glance);
+        approach(m.lookPitch, std::clamp(pitch, -.32f, .34f), glance);
+        if (slopes && m.grounded) {
+            const Vec3 front = forward(actor.yaw + m.travelYaw * .78f, 0.f);
+            const Vec3 right{front.z, 0, -front.x};
+            const float gait = gaitWeight(m.speed);
+            for (size_t foot = 0; foot < m.footRise.size(); ++foot) {
+                const float z = gaitFoot(m.phase + float(foot) * .5f, run).z * gait;
+                const Vec3 at = actor.position + right * (foot ? .134f : -.134f) + front * (z + .04f);
+                const float rise = std::clamp(world_.groundHeight(at) - actor.position.y, -.19f, .19f);
+                approach(m.footRise[foot], rise, follow);
+            }
+        } else m.footRise = {};
+    }
+}
+#endif
+
+void MissionController::stepSimulation(Snapshot& snap, const Input& input, double dt, bool playerFired,
+                                       MissionHost& host, MissionPartner partner) {
     if (!state_.active) return;
     elapsed_ += dt;
     rng_.tick = snap.tick;
@@ -2708,6 +3041,7 @@ void MissionController::step(Snapshot& snap, const Input& input, double dt, bool
         return;
     }
     if (state_.phase == MissionPhase::Victory) return;
+    if (state_.chapter == MissionChapter::BriarHouse) moveBriarFleet(dt);
     if (exfil_) {
         // The clock stopped when the last survivor boarded; the lift plays on its own time.
         updateExfil(snap, input, dt, host);
@@ -2715,15 +3049,29 @@ void MissionController::step(Snapshot& snap, const Input& input, double dt, bool
         return;
     }
 
+    if (state_.chapter == MissionChapter::Timberline && state_.cinematic) {
+        updateTimberlineFlight(snap, input, dt, host);
+        pumpRadio(host);
+        return;
+    }
+    if (state_.cinematic && scoutStage(state_.operation.stage)) {
+        stepScout(snap, input, dt, host, partner.stabilizing);
+        pumpRadio(host);
+        updateWaypoint(snap);
+        return;
+    }
+
     state_.missionSeconds += float(dt);
     state_.plasmaShock = std::max(0.f, state_.plasmaShock - float(dt));
-    if (!snap.dead) updatePlasma(snap, float(dt), host);
+    state_.partnerPlasmaShock = std::max(0.f, state_.partnerPlasmaShock - float(dt));
+    if (!snap.dead || (partner.view && !partner.view->dead)) updatePlasma(snap, partner.view, float(dt), host);
+    if (partner.view) partner.view->brokenGlass = snap.brokenGlass;
 
-    if (snap.dead) {
+    if (snap.dead && (!partner.view || partner.view->dead)) {
         dismissRadio(host);
         state_.plasma.fill({});
         state_.phase = MissionPhase::Failed;
-        copyText(state_.failReason, sizeof(state_.failReason), "DELTA OPERATIVE KIA");
+        copyText(state_.failReason, sizeof(state_.failReason), partner.view ? "BOTH OPERATIVES DOWN" : "DELTA OPERATIVE KIA");
         writeEpilogue();
         setRadio(Line::DeltaPlayerDown, 2.2f, host, true, RadioUrgent);
         failDelay_ = std::max(2.0, radioReadSeconds_);
@@ -2732,24 +3080,35 @@ void MissionController::step(Snapshot& snap, const Input& input, double dt, bool
 
     if (state_.phase == MissionPhase::Intro) {
         updateIntro(snap, input, dt, host);
+        if (state_.phase == MissionPhase::Intro && state_.introProgress > .18f) {
+            for (int i = 4; i < int(agents_.size()); ++i) updateAlien(i, snap, dt, false, host);
+        }
         updateCommander(snap, dt, host);
         for (int c = 1; c <= 3; ++c) updateCivilian(c, snap, dt, host);
         pumpRadio(host);
         return;
     }
 
-    if (state_.phase == MissionPhase::Overwatch) {
-        updateOverwatch(snap, dt, playerFired, host);
+    if (!snap.dead && state_.phase == MissionPhase::Overwatch) {
+        updateOverwatch(snap, dt, playerFired || partner.fired, host);
     }
 
     plannedThisTick_ = false;
-    assignAttackTokens(snap);
-    updateDroneLinks(dt);
+    assignAttackTokens(snap, partner.view);
     updateDishPulse(dt, host);
     updateCommander(snap, dt, host);
     for (int c = 1; c <= 3; ++c) updateCivilian(c, snap, dt, host);
-    for (int i = 4; i < int(agents_.size()); ++i) updateAlien(i, snap, dt, playerFired, host);
-    if (state_.phase == MissionPhase::Operation) stepOperation(snap, dt, host);
+    for (int i = 4; i < int(agents_.size()); ++i) {
+        if (agents_[i].targetsPartner) updateAlien(i, *partner.view, dt, partner.fired, host);
+        else updateAlien(i, snap, dt, playerFired, host);
+    }
+    if (snap.dead) {
+        pumpRadio(host);
+        return;
+    }
+    if (state_.phase == MissionPhase::Operation && scoutStage(state_.operation.stage))
+        stepScout(snap, input, dt, host, partner.stabilizing);
+    else if (state_.phase == MissionPhase::Operation) stepOperation(snap, dt, host);
     else checkPhaseTransitions(snap, dt, host);
     pumpRadio(host);
     updateWaypoint(snap);
@@ -2765,13 +3124,17 @@ void MissionController::publish(std::shared_ptr<const MissionSnapshot>& target) 
     *published_ = state_;
     for (size_t i = 0; i < agents_.size(); ++i) {
         const auto& a = agents_[i];
-        const float shieldRatio = a.maxShield > 0.f ? std::clamp(a.shield / a.maxShield, 0.f, 1.f) : 0.f;
+        const float integrity = a.guardCapacity > 0.f ? a.guard / a.guardCapacity : 0.f;
         const float staggerRatio = elapsed_ < a.staggerUntil ? float(std::clamp((a.staggerUntil - elapsed_) / 0.65, 0.0, 1.0)) : 0.f;
         published_->actors[i] = {
             a.actor, a.role, a.variant, a.tacRole, a.used && a.actor.visible,
             a.isDead(), a.civilian, a.alerted, a.radar,
-            a.gunYaw, a.gunPitch, a.gunCharge, a.gunRecoil, shieldRatio, staggerRatio,
-            a.overcharging, a.linked, std::max(0.f, float(a.spawnFx) / arrivalDuration), a.chargedShot
+            a.gunYaw, a.gunPitch, a.gunCharge, a.gunRecoil, integrity, a.guardLift, staggerRatio,
+            a.overcharging, std::max(0.f, float(a.spawnFx) / arrivalDuration),
+            a.carrier, a.home, a.chargedShot
+#ifndef ESP_PLATFORM
+            , a.operationJammer, a.motion
+#endif
         };
     }
     target = published_;

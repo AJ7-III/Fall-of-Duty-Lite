@@ -33,7 +33,7 @@ App::App(const Assets& assets, uint32_t voiceSeed)
     menu_.selection = menu_.campaign ? int(StartItem::Campaign) : int(StartItem::BotMatch);
 }
 
-void App::startImmediate(bool asCampaign) {
+void App::startImmediate(bool asCampaign, MissionChapter chapter) {
     menu_.campaign = asCampaign;
     menu_.setup = false;
     menu_.lanMenu = false;
@@ -41,7 +41,13 @@ void App::startImmediate(bool asCampaign) {
     menu_.selection = PlayRow;
     audio.setVolume(menu_.volume);
     audio.pauseSpeech(false);
-    beginMatch(false);
+    if (asCampaign && chapter != MissionChapter::BriarHouse) {
+        audio.stopSpeech();
+        game.startChapterReplay(seed_++, menu_.difficulty, chapter);
+        routeAudio();
+    } else {
+        beginMatch(false);
+    }
 }
 
 void App::beginMatch(bool retryCheckpoint) {
@@ -69,6 +75,9 @@ void App::stopAmbientLoops() {
 
 void App::routeAudio() {
     const Snapshot& snapshot = state();
+#ifdef FOD_LOCAL_DUEL
+    const auto* partner = snapshot.campaignSeat == 0 ? &game.localView(1).camera : nullptr;
+#endif
     if (snapshot.match == Match::Results && snapshot.mission && snapshot.mission->active) {
         audio.playCampaignVoice({});
     } else if (menu_.voice && snapshot.match == Match::Playing) {
@@ -80,9 +89,19 @@ void App::routeAudio() {
         if (!menu_.voice && (isVoiceSound(event.sound) || event.sound == Sound::RadioChirp)) continue;
         float gain = event.volume, pan = 0;
         if (event.positional) {
-            const Vec3 direction = event.position - snapshot.camera.position;
+            Vec3 direction = event.position - snapshot.camera.position;
+            float yaw = snapshot.camera.yaw;
+#ifdef FOD_LOCAL_DUEL
+            if (partner) {
+                const Vec3 second = event.position - partner->position;
+                if (dot(second, second) < dot(direction, direction)) {
+                    direction = second;
+                    yaw = partner->yaw;
+                }
+            }
+#endif
             const float distance = length(direction);
-            const Vec3 ear{std::cos(snapshot.camera.yaw), 0, -std::sin(snapshot.camera.yaw)};
+            const Vec3 ear{std::cos(yaw), 0, -std::sin(yaw)};
             pan = dot(ear, direction) / std::max(distance, 0.01f) * 0.8f;
             gain /= 1 + distance * 0.12f;
         }
@@ -107,7 +126,9 @@ void App::routeAudio() {
         rotor_ = false;
     }
     if (snapshot.match == Match::Playing && snapshot.mission && snapshot.mission->active) {
-        audio.loop(Sound::InvasionHum, 0.16f, 0.f);
+        const auto stage = snapshot.mission->operation.stage;
+        const float hum = stage == OperationStage::ScoutFlight ? .36f : scoutDeck(stage) ? .25f : .16f;
+        audio.loop(Sound::InvasionHum, hum, 0.f);
         invasionHum_ = true;
     } else if (invasionHum_) {
         audio.stop(Sound::InvasionHum);
@@ -174,6 +195,12 @@ void App::returnToStartMenu() {
     menu_.selection = int(menu_.campaign ? StartItem::Campaign : StartItem::BotMatch);
 }
 
+void App::selectCampaign(const Input& input) {
+    menu_.campaign = true;
+    if (loadedArena_ == Arena::BriarHouse && loadedBriarMode_ == BriarHouseMode::Invasion) startOrResume(input);
+    else menu_.pendingLaunch = LaunchAction::Campaign;
+}
+
 void App::startMenuInput(const Input& input) {
     moveSelection(menu_.selection, input, int(startCards.size()));
     const auto selected = StartItem(menu_.selection);
@@ -196,9 +223,14 @@ void App::startMenuInput(const Input& input) {
 
     switch (StartItem(menu_.selection)) {
     case StartItem::Campaign:
-        menu_.campaign = true;
-        if (loadedArena_ == Arena::BriarHouse && loadedBriarMode_ == BriarHouseMode::Invasion) startOrResume(input);
-        else menu_.pendingLaunch = LaunchAction::Campaign;
+#ifdef FOD_LOCAL_DUEL
+        if (menu_.desktopRenderWidth) {
+            menu_.campaignMenu = true;
+            menu_.selection = CampaignSoloRow;
+            break;
+        }
+#endif
+        selectCampaign(input);
         break;
     case StartItem::BotMatch:
         menu_.campaign = false;
@@ -218,6 +250,20 @@ void App::startMenuInput(const Input& input) {
         break;
     }
 }
+
+#ifdef FOD_LOCAL_DUEL
+void App::campaignMenuInput(const Input& input) {
+    moveSelection(menu_.selection, input, CampaignRows);
+    const int touch = touchMenuRow(input, CampaignRows);
+    if (touch >= 0) menu_.selection = touch;
+    const bool back = input.edge(Back) || input.edge(Pause);
+    if (!back && touch < 0 && !input.edge(Confirm)) return;
+    menu_.campaignMenu = false;
+    if (back || menu_.selection == CampaignBackRow) menu_.selection = int(StartItem::Campaign);
+    else if (menu_.selection == CampaignCoOpRow) menu_.pendingLaunch = LaunchAction::LocalCampaign;
+    else selectCampaign(input);
+}
+#endif
 
 void App::lanMenuInput(const Input& input) {
     const auto close = [&] {
@@ -284,6 +330,9 @@ void App::callsignInput(const Input& input) {
 
 void App::menuInput(const Input& input) {
     const bool starting = state().match == Match::Start;
+#ifdef FOD_LOCAL_DUEL
+    if (starting && menu_.campaignMenu) return campaignMenuInput(input);
+#endif
     if (starting && menu_.lanMenu) return lanMenuInput(input);
     if (starting && !menu_.setup) return startMenuInput(input);
     if (menu_.editing) return callsignInput(input);

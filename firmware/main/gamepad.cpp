@@ -272,7 +272,10 @@ fod::Input controllerAt(int64_t deadline) {
     }
     const auto [mx, my] = stick(report.lx, report.ly, 0.14f, false);
     const auto [rx, ry] = stick(report.rx, report.ry, 0.12f, true);
-    return {mx, -my, rx * (3.3f / 60.0f), ry * (2.5f / 60.0f), report.buttons, edge};
+    fod::Input input{mx, -my, rx * (3.3f / 60.0f), ry * (2.5f / 60.0f), report.buttons, edge};
+    input.stickX = input.lookX;
+    input.stickY = input.lookY;
+    return input;
 }
 
 bool hasController() {

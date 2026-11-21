@@ -41,6 +41,7 @@ bool ReplayTrace::load(const char* path, std::string& error, ArenaExtent extent)
         else if (std::strcmp(start, "timberline") == 0) next.campaignStart_ = CampaignStart::Timberline;
         else if (std::strcmp(start, "array") == 0) next.campaignStart_ = CampaignStart::Array;
         else if (std::strcmp(start, "array-finale") == 0) next.campaignStart_ = CampaignStart::ArrayFinale;
+        else if (std::strcmp(start, "scout") == 0) next.campaignStart_ = CampaignStart::Scout;
         else return badStart();
     } else {
         auto& f = next.fixture_;
@@ -148,8 +149,9 @@ void ReplayTrace::begin(App& app) {
     if (campaignStart_ == CampaignStart::Breakout) app.game.startMission(seed_, difficulty_);
     else if (campaignStart_ == CampaignStart::LandingZone) app.game.startExtractionReplay(seed_, difficulty_);
     else if (campaignStart_ == CampaignStart::Timberline) app.game.startChapterReplay(seed_, difficulty_, MissionChapter::Timberline);
-    else if (campaignStart_ == CampaignStart::Array) app.game.startChapterReplay(seed_, difficulty_, MissionChapter::Array);
+    else if (campaignStart_ == CampaignStart::Array) app.game.startArrayGroundReplay(seed_, difficulty_);
     else if (campaignStart_ == CampaignStart::ArrayFinale) app.game.startFinaleReplay(seed_, difficulty_);
+    else if (campaignStart_ == CampaignStart::Scout) app.game.startScoutReplay(seed_, difficulty_);
     else {
         app.game.start(seed_, difficulty_, opponent_);
         app.game.setupFixture(fixture_);

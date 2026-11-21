@@ -1,6 +1,6 @@
 set(core_sources)
 if(NOT CONFIG_FOD_BOARD_DIAGNOSTIC)
-    set(core_sources "../../app.cpp" "../../audio.cpp" "../../game.cpp" "../../assets.cpp" "../../light.cpp" "../../mission.cpp" "../../mission_operations.cpp" "../../mission_plasma.cpp" "../../render.cpp" "../../hud.cpp" "../../trace.cpp" "../../host/briar_house.cpp")
+    set(core_sources "../../app.cpp" "../../audio.cpp" "../../game.cpp" "../../assets.cpp" "../../light.cpp" "../../mission.cpp" "../../mission_operations.cpp" "../../mission_plasma.cpp" "../../mission_scout.cpp" "../../render.cpp" "../../hud.cpp" "../../trace.cpp" "../../host/briar_house.cpp")
 endif()
 idf_component_register(
     SRCS "board.cpp" "display.cpp" "gamepad.cpp" "audio.cpp" "main.cpp" ${core_sources}
@@ -11,3 +11,8 @@ idf_component_register(
 )
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_20)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wno-missing-field-initializers)
+if(NOT CONFIG_FOD_BOARD_DIAGNOSTIC)
+    # Keep campaign scripts and startup scene construction compact for the factory partition.
+    set_source_files_properties("../../mission_operations.cpp" "../../mission_scout.cpp" "../../host/briar_house.cpp"
+        PROPERTIES COMPILE_OPTIONS "-Os")
+endif()

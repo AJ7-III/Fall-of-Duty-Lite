@@ -46,25 +46,26 @@ The native tests complete first-to-ten duels against both rivals. The firmware a
 
 ## Briar House campaign
 
-There are three campaign traces:
+The campaign traces cover these starts:
 
 - **Breakout (737 ticks).** Opens fire from overwatch and records a plasma shock and the arrival of flankers.
 - **Landing zone (842 ticks).** Resumes from the extraction checkpoint and records the timed hold, plasma shock and the Apache fly-in.
-- **Finale (1,320 ticks).** Starts The Array at the rear door. It holds Signal to steer the mothership's beam while riflemen push the house, and records the dish link, plasma hits and a shock.
+- **Ground finale (1,320 ticks).** Exercises the original rear-door encounter for playback compatibility, including the dish link, plasma hits and shock.
+- **Scout takeover.** Replays the revised finale from Warhorse through boarding, cargo routing, the bridge fight, and the flight back to the clearing.
 
 Each trace produces an identical gameplay journal at 320×180 and 400×225. The journal now also records the operation stage, the saddle lock, the dish link and the beam's distance from the dish. [Campaign fixtures](reference/fixtures)
 
 The platform tests also finish a fresh Briar House and a checkpoint-retry run, covering skipped and natural lifts and both Walt escort outcomes. Rule tests on the mission controller cover:
 
-- **Briar House.** Ben waved over from 12–16 m, the dish pulse dropping the Enforcer's linked shield, a Dustoff signal under watch drawing fire, Nora refusing the bird, a civilian lost after rescue, and an obstructed boarding path.
+- **Briar House.** Ben waved over from 12–16 m, a dish pulse briefly opening the Enforcer's frontal guard, a Dustoff signal under watch drawing fire, Nora refusing the bird, a civilian lost after rescue, and an obstructed boarding path.
 - **Timberline.** Played without Nora: emitter refusals, calls landing unaware, the jammer hijack, the heavy call creeping toward the kit, and a retry that keeps the calls already answered.
-- **The Array.** Drifting onto the dish ends the mission, a burned clearing changes the ending, the last jammer holds the lock until shot, and Nora comes when signalled. A second run plays The Array without Nora and ends on Delta-1's line.
+- **Original ground finale.** Drifting onto the dish ends the encounter, a burned clearing changes the ending, and the last jammer holds the lock until shot. Both Nora branches remain covered for playback compatibility.
 
-The desktop platform test launches **Campaign** from the title screen and drives all three missions at difficulty 5 using scripted movement, aim, fire, Signal and menu input. The scripted player aims instantly, so its campaign clock of **3:25** is far below a human run. The test checks:
+The desktop platform test launches **Campaign** from the title screen and drives all three missions at difficulty 5 using scripted movement, aim, fire, Signal and menu input. The scripted player aims instantly. The test checks:
 
 - **Briar House.** Ben comes across on a Signal from range.
-- **Timberline.** Opens with Nora in the room under the dish. Painted ground moves the saucer, drops land unaware, and four calls complete it.
-- **The Array.** Opens with the garden squad unaware and ends with the beam steered around the clearing, a last jammer, the fleet setting down, and the signal to Nora. [Platform test](host/platform_tests.cpp)
+- **Timberline.** Opens aboard Dustoff. Painted ground moves the saucer, drops land unaware, and four readings send the squad back through the hills.
+- **The Array.** The scripted player uses the portico and garage routes, shoots the jammer from outside, recovers the fleet code, and commits the flagship before boarding. The test crosses both Nora outcomes with both landing sites, retries after the ground victory and aboard, and flies the approach beacons after the cockpit fade clears. The four scripted runs took 2:12–2:26, including 1:09–1:16 before the scout sequence. Human first-clear duration has yet to be measured. [Platform test](host/platform_tests.cpp)
 
 On desktop, a batch of 76,670 nearest-node queries across the 3,335-node valley graph matched the original linear search exactly. The median of five runs averaged 0.40 µs per lookup with the column search and 1.62 µs with the full scan. The search uses the existing node order and allocates no additional heap storage. [Navigation code](game_bot.hpp)
 

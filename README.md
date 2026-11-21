@@ -14,7 +14,7 @@
 
 ## Three ways to play
 
-- **Operation Briar (Campaign)** — A three-mission story set across the Colorado Front Range on Day One of an alien landing. Wake up in a wrecked drop zone, sweep a mist-covered mountain town, turn the invaders' own homing signal against them, and steer a mothership off the valley.
+- **Operation Briar (Campaign)** — A three-mission story set across the Colorado Front Range on Day One of an alien landing. Sweep a mist-covered mountain town, use the invaders' homing signal to ground the fleet, then seize a scout ship and fly it back for recovery.
 - **Bot Match (1v1 & Free-for-All)** — First to ten in **Ship Box** (a rain-soaked container yard) or **Briar House** (a two-lobby mansion with covered flanks). Face **IPwndUrMom**, **Hanz**, or both at once across difficulty levels 1–10 (default 5), complete with UAV radar (3 kills), targeted Airstrike laptop (5 kills), Apache gunship support (7 kills), and 27 voiced rival taunts.
 - **Local Two-Player Duel (Desktop)** — Plug in two SDL gamepads and run `--local-duel` for 60 fps split-screen matches on either arena.
 
@@ -22,33 +22,35 @@
 
 ## Operation Briar campaign
 
-Choose **Campaign** on the title screen, or launch straight into it on desktop with `build/host/fod_host --mission briar-house`. Choose **Next Mission** on the results screen to carry your time and survivor outcomes forward.
+Choose **Campaign** on the title screen. On desktop, choose **Solo Campaign** or **2 Player Co-op**. Choose the flight or mission listed on the results screen to carry your time and survivor outcomes forward.
+
+In desktop co-op, two gamepads control two operatives in the same campaign. Alien patrols and reinforcements double, with room for up to eight active aliens. Player 1 handles scripted interactions and pilots the scout. Player 2 can fight independently and hold **L1 / LB** during the scout flight to reduce crosswind. A downed player rejoins near their partner after five seconds if the partner stays alive. If both go down, use the shared checkpoint retry on the results screen.
 
 > **The premise:** The alien fleet came down on Briar House because Dr. Nora Marsh's rooftop radio array was transmitting. *Warhorse 2-1* was shot down on final approach to extract her family. The campaign follows what she — and Delta Squad — do with that signal.
 
 | Mission 1 — Briar House breakout | Mission 3 — The Array finale |
 | --- | --- |
-| ![Breaking out of Briar House's Grand Hall past shielded alien troopers and a drone tether](docs/images/briar-breakout.png) | ![Steering the mothership's landing beam from Briar House's rear door while Nora warns of a roof jammer](docs/images/briar-finale.png) |
+| ![Breaking out of Briar House's Grand Hall past alien troopers](docs/images/briar-breakout.png) | ![Piloting the captured scout through a sunset approach beacon above the grounded flagship](docs/images/briar-finale.png) |
 
 ### The three missions
 
-1. **Briar House** — Wake up concussed in the Grand Hall after Delta-1 drags you clear of the burning wreck. Open from sniper overwatch on the portico, break out onto South Boulevard, and sweep three town districts in any order:
-   - **East Ridge (Ben):** Clear the riflemen covering his pickup and wave him across when nothing has eyes on him. Signal too early and he draws fire and ducks back.
-   - On **North Valley Avenue**, a cyan tether connects the drone to the Enforcer pinning Nora. Shoot the drone to collapse the shield, or use the opening when Nora’s dish distracts it. Destroy the receiver on this visit to North Avenue.
+1. **Briar House** — Wake up concussed in the Grand Hall after Delta-1 drags you clear of the burning wreck. Break through the patrol on South Boulevard and search the three rescue districts in any order.
+   - **East Ridge (Ben):** Clear the patrol covering Ben’s pickup and wave him across when he has a clear run. Signal too early and he draws fire and ducks back.
+   - On **North Valley Avenue**, an Enforcer shields itself from the front while pinning Nora. Flank it, crack the guard with sustained fire, or use the opening when Nora’s dish pulses. Destroy the receiver on this visit to North Avenue.
    - In **West Timberline**, Walt waits at the western approach to the clearing. Crouch beside him to follow his covered route toward Dustoff’s flares, or clear the patrol and let him move on his own.
 
    Once the family is accounted for and the receiver is down, hold **North Town Clearing** with Apache support until **Dustoff-1** lands. Watch for beams from the fleet marking the next landing. Signal the family across when the wall is clear. Nora stays with her dish.
 
-2. **Timberline** — Carry Nora's portable emitter up to her father's lane. Hold **Signal** on clear ground to lure a scout saucer into dropping unaware squads wherever you point, while fighting off jammer drones and a final heavy pass that creeps toward the kit if you let go. Four answered calls give Nora the calibration she needs — and draw the mothership toward Briar House.
+2. **Timberline** — Take Dustoff from Briar House to a remote logging basin. Clear the patrol at the timber shed and hold **Signal** to lure the scout saucer onto two landing spots. Move Nora’s emitter to the quarry for the last two readings and stop the jammer from pulling a drop onto the kit. When the cruiser sends reinforcements, fall back through the hills with the thermal M40A3. Delta-1 spots contacts through the mist. Use the ridge cover to take a shot and move before the next drop cuts you off. At the north saddle, crouch behind the low wall while Dustoff lands. **Signal** at the cabin door to board under pursuit.
 
-3. **The Array** — Fight back through Briar House's front garden and Grand Hall to the rear doorway. While Delta-1 holds the door against incoming drops, hold **Signal** to walk the mothership's landing beam out to the west saddle without scorching Dustoff's clearing — then drop the final long-range jammer through the doorway to lock the fleet down beyond the ridge.
+3. **The Array** — Retake Briar House through the front portico or east garage. Calibrate the roof dish and take out the jammer from outside. Steal the fleet's landing code at the east bend, set the west repeater, and fight back to the house. Steer the flagship around the North Clearing and put the fleet down beyond the ridge. At the overlook, use Timberline's emitter to ride the last scout's retrieval beam aboard. Reroute cargo to draw out the crew, pair with the transponder, and cut the automatic return link. Claim the helm and follow Dustoff's approach beacons to whichever landing site survived.
 
 ### Campaign mechanics & voices
 
 - **One control for everything:** **Signal** (`F`, `L1`, or `LB`) calls people across cover, paints drop zones, and steers the mothership's beam. You cannot fire while holding it; the prompt beneath the reticle shows what it will do.
 - **Branching outcomes:** If Nora is lost in Briar House, Delta-1 works from her notes through Timberline and The Array — without her jammer warnings — and the closing lines and epilogues reflect who made it out and whether the clearing survived.
-- **Full voice acting with subtitle fallback:** All 104 lines across Delta-1, Nora Marsh, Dustoff-1, Walt Marsh, and Ben Marsh are encoded in `assets/campaign-voices.fodv` (12 kHz radio-bandpassed comms and 24 kHz in-person dialogue, IMA ADPCM). Keep `campaign-voices.fodv` beside `fall-of-duty.fodp`; subtitles remain active if the voice bank is missing or **Radio Sound** is muted.
-- **Tactical combat:** Ground aliens have four recessed eyes and a chest weak point — hit the chest for criticals or to backfire a charging heavy's cannon. Blue plasma clouds travel visibly downrange and can be dodged; hits crackle across the HUD and briefly slow movement. Dropping a shield-linking drone shatters its partner's shield.
+- **Campaign voices and subtitles:** The 104 recorded lines across Delta-1, Nora Marsh, Dustoff-1, Walt Marsh, and Ben Marsh are encoded in `assets/campaign-voices.fodv`. New Mission 3 exchanges appear as subtitles. Keep `campaign-voices.fodv` beside `fall-of-duty.fodp`. Subtitles remain active if the voice bank is missing or **Radio Sound** is muted.
+- **Tactical combat:** Enforcers lower their frontal guard before firing. Hit the exposed chest to interrupt a charging cannon. Scout drones sweep with scanners, and jammer drones hover while disrupting the emitter or dish. Blue plasma travels visibly downrange and briefly slows anyone it hits.
 - **Checkpoints & Rank S:** Checkpoints save at key transitions and restore civilian outcomes, kills, and time on retry. Rank S on Briar House requires all three civilians saved, zero checkpoint reloads, and a clear time under 5:00.
 
 ---
@@ -70,7 +72,7 @@ See [QUALITY.md](QUALITY.md), [EVIDENCE.md](EVIDENCE.md), and [ASSET_PIPELINE.md
 
 | Operation Briar — North Town LZ | Ship Box — Bot duel |
 | --- | --- |
-| ![Holding the flare-lit North Town Clearing LZ against a charging alien and shield-linking scout drone](docs/images/briar-lz.png) | ![A Ship Box duel with the MP44, Hanz across the yard, and an active UAV on the minimap](docs/images/gameplay.png) |
+| ![A scout drone crosses the North Town landing zone as the HUD prompts the player to flank or break the Enforcer's guard](docs/images/briar-lz.png) | ![A Ship Box duel with the MP44, Hanz across the yard, and an active UAV on the minimap](docs/images/gameplay.png) |
 
 | MP44 iron sights | M40A3 bolt cycle |
 | --- | --- |
@@ -104,12 +106,15 @@ build/host/fod_host
 ```sh
 build/host/fod_host                         # Ship Box bot duel (default)
 build/host/fod_host --mission briar-house   # Operation Briar campaign
+build/host/fod_host --local-campaign       # 2-player Operation Briar split-screen
+build/host/fod_host --mission array         # Start Mission 3 at the Warhorse wreck
 build/host/fod_host --map briar-house       # Briar House mansion bot duel
 build/host/fod_host --local-duel            # 2-player split-screen (two SDL gamepads)
 ```
 
 - **Display:** Solo renders at **1280×720** by default at 60 fps. Change **Render Size** in Match Setup or the pause menu, or pass `--mode 800`, `--mode 400`, or `--mode 320`. Pass `--look classic` for flat lighting and nearest-neighbor scaling, or `-DFOD_DESKTOP=OFF` to CMake for a headless CLI/test build without SDL2.
 - **Local two-player duel:** Connect two SDL-compatible gamepads (an 8BitDo Pro 2 in Switch mode may appear as *Pro Controller*). Press **Start** or **+** on each pad to claim a seat, then press Player 1's confirm button (**B** on the Pro 2). First to ten wins; simultaneous 10–10 is a draw. Renders at 640×360 per view by default (use `--duel-resolution 400` or `--duel-resolution 800` to change).
+- **Local campaign co-op:** Connect two SDL-compatible gamepads. Press **Start** or **+** on each pad to join, then confirm on Player 1's pad. Either pad can pause the game. Rejoin and resume if a pad disconnects.
 
 ---
 
@@ -168,8 +173,8 @@ Follow [INSTALL.md](INSTALL.md) to verify `SHA256SUMS`, copy `sd/` to the root o
 | Area | Status | Summary |
 | --- | --- | --- |
 | **Native & platform tests** | Verified on desktop | Release and ASan/UBSan builds pass all 6 CTest suites: 1v1 & FFA duels, local split-screen, desktop init failure, scripted 3-mission Operation Briar runs (with and without Nora), voice playback/muting, and checkpoint retries. |
-| **Replay parity** | Verified on desktop | 8 browser reference fixtures, `ffa-apache`, and 3 campaign traces (`briar-breakout`, `briar-landing-zone`, `briar-finale`) match byte for byte at 320×180 and 400×225, with voices enabled, muted, or absent. |
-| **Asset memory** | Verified on desktop | Ship Box loads at `9,830,221` resident bytes (`9,912,141` peak, 12 MiB loader limit); Briar House Campaign builds to `11,598,072` resident bytes plus the `3.38 MB` `campaign-voices.fodv` bank loaded only in Campaign mode. |
+| **Replay parity** | Verified on desktop | 8 browser reference fixtures, `ffa-apache`, and 4 campaign traces, including `scout-takeover`, match byte for byte at 320×180 and 400×225. |
+| **Asset memory** | Verified on desktop | Ship Box loads at `9,830,221` resident bytes (`9,912,141` peak, 12 MiB loader limit). The campaign maps and shared assets use `12,557,138` resident bytes plus the `3.38 MB` `campaign-voices.fodv` bank loaded only in Campaign mode. |
 | **Desktop benchmarks** | Measured on desktop | Projection reuse cut geometry setup p95 by 29–33% and whole-frame p95 by 1.6–14.6%; low-res art, sprint motion, and campaign voice mixing stay within measurement noise. |
 | **ESP32-P4 firmware** | Cross-build validated | ESP-IDF v5.5.3 image and release archive pass partition, flash-layout, and SHA-256 verification; physical hardware run pending ([BOARD.md](BOARD.md#qualification-status)). |
 
@@ -196,7 +201,10 @@ python3 tools/run-evidence.py \
 | `--pack PATH` | Load a custom `.fodp` pack (defaults to `assets/fall-of-duty.fodp`; looks beside it for `campaign-voices.fodv`) |
 | `--map ship-box\|briar-house` | Launch directly into a Ship Box or Briar House bot match |
 | `--mission briar-house` | Launch directly into the Operation Briar campaign |
+| `--mission array` | Start The Array with Nora alive |
 | `--local-duel` | Start local two-player split-screen (desktop only; pair with `--duel-resolution 400\|640\|800`) |
+| `--local-campaign` | Start Operation Briar in local two-player split-screen on desktop |
+| `--split-resolution 400\|640\|800` | Set the per-player render width for a local duel or co-op campaign (default 640) |
 | `--mode 320\|400\|800\|1280\|both` | Choose render resolution (`800`/`1280` on desktop; `both` runs 320 and 400 during `--bench`) |
 | `--look enhanced\|classic` | Select the enhanced renderer or the classic flat-lit renderer |
 | `--stick-sensitivity PERCENT` | Set desktop gamepad right-stick sensitivity (`1`–`200`) |
